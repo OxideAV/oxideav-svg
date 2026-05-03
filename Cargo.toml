@@ -1,0 +1,16 @@
+[package]
+name = "oxideav-svg"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT"
+repository = "https://github.com/OxideAV/oxideav-svg"
+homepage = "https://github.com/OxideAV/oxideav-svg"
+authors = ["Mark Karpeles"]
+description = "Pure-Rust SVG (read + write) for the oxideav framework — round 1 covers shapes, paths, gradients, transforms; text + filters deferred"
+readme = "README.md"
+keywords = ["multimedia", "image", "svg", "vector", "pure-rust"]
+categories = ["multimedia::encoding", "multimedia::images"]
+
+[dependencies]
+oxideav-core = "0.1"

@@ -1,0 +1,164 @@
+//! SVG container — one whole `.svg` file becomes one `Packet` on
+//! stream `0`. Same one-shot shape as [`oxideav-bmp`] / static
+//! [`oxideav-png`]. The probe accepts either an XML-prologue with the
+//! `svg` root tag or an `.svg` / `.svgz` file extension.
+//!
+//! Note: `.svgz` is gzip-compressed SVG. Round 1 doesn't decompress —
+//! we register the extension so callers can identify the format, but
+//! demuxing rejects gzip content (no `miniz_oxide` dep yet).
+
+use std::io::{Read, SeekFrom, Write};
+
+use oxideav_core::{
+    CodecId, CodecParameters, CodecResolver, ContainerRegistry, Demuxer, Error, MediaType, Muxer,
+    Packet, ProbeData, ProbeScore, ReadSeek, Result, StreamInfo, TimeBase, WriteSeek,
+    MAX_PROBE_SCORE, PROBE_SCORE_EXTENSION,
+};
+
+use crate::decoder::CODEC_ID_STR;
+
+pub fn register(reg: &mut ContainerRegistry) {
+    reg.register_demuxer("svg", open_demuxer);
+    reg.register_muxer("svg", open_muxer);
+    reg.register_extension("svg", "svg");
+    reg.register_extension("svgz", "svg");
+    reg.register_probe("svg", probe);
+}
+
+fn probe(data: &ProbeData) -> ProbeScore {
+    // Look at the first ~4 KiB for `<svg` (case-insensitive). We allow
+    // an XML prologue / DOCTYPE / comments before the root. Hits at
+    // top yield max score; an extension-only hit falls back to
+    // PROBE_SCORE_EXTENSION.
+    let head_len = data.buf.len().min(4096);
+    let head = &data.buf[..head_len];
+    if contains_token_ci(head, b"<svg") {
+        MAX_PROBE_SCORE
+    } else if matches!(data.ext, Some("svg") | Some("svgz")) {
+        PROBE_SCORE_EXTENSION
+    } else {
+        0
+    }
+}
+
+fn contains_token_ci(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return false;
+    }
+    haystack
+        .windows(needle.len())
+        .any(|w| w.eq_ignore_ascii_case(needle))
+}
+
+pub fn open_demuxer(
+    mut input: Box<dyn ReadSeek>,
+    _codecs: &dyn CodecResolver,
+) -> Result<Box<dyn Demuxer>> {
+    input.seek(SeekFrom::Start(0))?;
+    let mut buf = Vec::new();
+    input.read_to_end(&mut buf)?;
+    if buf.starts_with(&[0x1f, 0x8b]) {
+        return Err(Error::unsupported(
+            "SVG demuxer: gzip-compressed .svgz not supported in round 1",
+        ));
+    }
+    let head_len = buf.len().min(4096);
+    if !contains_token_ci(&buf[..head_len], b"<svg") {
+        return Err(Error::invalid("SVG: '<svg' tag not found in first 4 KiB"));
+    }
+
+    let params = CodecParameters::video(CodecId::new(CODEC_ID_STR));
+    let stream = StreamInfo {
+        index: 0,
+        params,
+        time_base: TimeBase::new(1, 1),
+        start_time: Some(0),
+        duration: None,
+    };
+    Ok(Box::new(SvgDemuxer {
+        streams: vec![stream],
+        data: Some(buf),
+    }))
+}
+
+struct SvgDemuxer {
+    streams: Vec<StreamInfo>,
+    data: Option<Vec<u8>>,
+}
+
+impl Demuxer for SvgDemuxer {
+    fn format_name(&self) -> &str {
+        "svg"
+    }
+    fn streams(&self) -> &[StreamInfo] {
+        &self.streams
+    }
+    fn next_packet(&mut self) -> Result<Packet> {
+        match self.data.take() {
+            Some(bytes) => {
+                let mut pkt = Packet::new(0, TimeBase::new(1, 1), bytes);
+                pkt.pts = Some(0);
+                pkt.dts = Some(0);
+                pkt.flags.keyframe = true;
+                Ok(pkt)
+            }
+            None => Err(Error::Eof),
+        }
+    }
+}
+
+pub fn open_muxer(output: Box<dyn WriteSeek>, streams: &[StreamInfo]) -> Result<Box<dyn Muxer>> {
+    if streams.len() != 1 {
+        return Err(Error::invalid("SVG muxer: expected exactly one stream"));
+    }
+    if streams[0].params.media_type != MediaType::Video {
+        return Err(Error::invalid("SVG muxer: stream must be video"));
+    }
+    Ok(Box::new(SvgMuxer { output }))
+}
+
+struct SvgMuxer {
+    output: Box<dyn WriteSeek>,
+}
+
+impl Muxer for SvgMuxer {
+    fn format_name(&self) -> &str {
+        "svg"
+    }
+    fn write_header(&mut self) -> Result<()> {
+        Ok(())
+    }
+    fn write_packet(&mut self, packet: &Packet) -> Result<()> {
+        self.output.write_all(&packet.data)?;
+        Ok(())
+    }
+    fn write_trailer(&mut self) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn probe_data<'a>(buf: &'a [u8], ext: Option<&'a str>) -> ProbeData<'a> {
+        ProbeData { buf, ext }
+    }
+
+    #[test]
+    fn probe_recognises_svg_root() {
+        let s = b"<?xml version=\"1.0\"?><svg/>";
+        assert_eq!(probe(&probe_data(s, None)), MAX_PROBE_SCORE);
+    }
+
+    #[test]
+    fn probe_falls_back_to_extension() {
+        let s = b"random binary garbage";
+        assert_eq!(probe(&probe_data(s, Some("svg"))), PROBE_SCORE_EXTENSION);
+    }
+
+    #[test]
+    fn probe_rejects_unrelated() {
+        assert_eq!(probe(&probe_data(b"<html></html>", None)), 0);
+    }
+}
