@@ -146,6 +146,7 @@ fn group_with_transform_survives() {
         opacity: 0.5,
         clip: None,
         children: vec![Node::Path(inner)],
+        cache_key: None,
     };
     let frame = VectorFrame {
         width: 50.0,

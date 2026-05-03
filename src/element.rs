@@ -504,6 +504,7 @@ pub fn parse_element_to_node(
                 opacity: state.opacity,
                 clip: None,
                 children: Vec::new(),
+                cache_key: None,
             };
             for child in &el.children {
                 if let XmlNode::Element(c) = child {
@@ -569,6 +570,7 @@ pub fn parse_element_to_node(
                     opacity: state.opacity,
                     clip: None,
                     children: vec![Node::Path(path_node)],
+                    cache_key: None,
                 };
                 Ok(Some(Node::Group(group)))
             } else {
