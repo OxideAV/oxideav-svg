@@ -14,7 +14,7 @@ fn first_path_commands(src: &[u8]) -> Vec<PathCommand> {
 }
 
 #[test]
-fn M_L_H_V_Z_round_trip() {
+fn m_l_h_v_z_round_trip() {
     let src = br#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
         <path d="M 0 0 L 5 0 H 10 V 10 Z"/>
     </svg>"#;

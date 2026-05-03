@@ -17,6 +17,7 @@ fn count_paths(frame: &VectorFrame) -> usize {
                 }
             }
             Node::Image(_) => {}
+            _ => {}
         }
     }
     let mut n = 0;
