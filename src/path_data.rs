@@ -42,7 +42,7 @@ pub fn parse_path_data(d: &str) -> Result<Vec<PathCommand>> {
 
         loop {
             match cmd {
-                'M' => {
+                b'M' => {
                     let (x, y) = p.read_point()?;
                     let pt = if first_in_run {
                         absolute_or_relative(absolute, current, x, y)
@@ -61,7 +61,7 @@ pub fn parse_path_data(d: &str) -> Result<Vec<PathCommand>> {
                     prev_cubic_ctrl = None;
                     prev_quad_ctrl = None;
                 }
-                'L' => {
+                b'L' => {
                     let (x, y) = p.read_point()?;
                     let pt = absolute_or_relative(absolute, current, x, y);
                     commands.push(PathCommand::LineTo(pt));
@@ -69,7 +69,7 @@ pub fn parse_path_data(d: &str) -> Result<Vec<PathCommand>> {
                     prev_cubic_ctrl = None;
                     prev_quad_ctrl = None;
                 }
-                'H' => {
+                b'H' => {
                     let x = p.read_number()?;
                     let pt = if absolute {
                         Point::new(x, current.y)
@@ -81,7 +81,7 @@ pub fn parse_path_data(d: &str) -> Result<Vec<PathCommand>> {
                     prev_cubic_ctrl = None;
                     prev_quad_ctrl = None;
                 }
-                'V' => {
+                b'V' => {
                     let y = p.read_number()?;
                     let pt = if absolute {
                         Point::new(current.x, y)
@@ -93,7 +93,7 @@ pub fn parse_path_data(d: &str) -> Result<Vec<PathCommand>> {
                     prev_cubic_ctrl = None;
                     prev_quad_ctrl = None;
                 }
-                'C' => {
+                b'C' => {
                     let (x1, y1) = p.read_point()?;
                     let (x2, y2) = p.read_point()?;
                     let (x, y) = p.read_point()?;
@@ -105,7 +105,7 @@ pub fn parse_path_data(d: &str) -> Result<Vec<PathCommand>> {
                     prev_quad_ctrl = None;
                     current = end;
                 }
-                'S' => {
+                b'S' => {
                     // Smooth cubic: c1 reflects the previous c2 about
                     // the current point if the previous command was
                     // `C`/`c`/`S`/`s`; otherwise c1 = current.
@@ -124,7 +124,7 @@ pub fn parse_path_data(d: &str) -> Result<Vec<PathCommand>> {
                     prev_quad_ctrl = None;
                     current = end;
                 }
-                'Q' => {
+                b'Q' => {
                     let (xc, yc) = p.read_point()?;
                     let (x, y) = p.read_point()?;
                     let control = absolute_or_relative(absolute, current, xc, yc);
@@ -134,7 +134,7 @@ pub fn parse_path_data(d: &str) -> Result<Vec<PathCommand>> {
                     prev_cubic_ctrl = None;
                     current = end;
                 }
-                'T' => {
+                b'T' => {
                     let (x, y) = p.read_point()?;
                     let end = absolute_or_relative(absolute, current, x, y);
                     let control = match prev_quad_ctrl {
@@ -148,7 +148,7 @@ pub fn parse_path_data(d: &str) -> Result<Vec<PathCommand>> {
                     prev_cubic_ctrl = None;
                     current = end;
                 }
-                'A' => {
+                b'A' => {
                     let rx = p.read_number()?;
                     let ry = p.read_number()?;
                     let x_axis_rot_deg = p.read_number()?;
@@ -171,7 +171,7 @@ pub fn parse_path_data(d: &str) -> Result<Vec<PathCommand>> {
                     prev_quad_ctrl = None;
                     current = end;
                 }
-                'Z' => {
+                b'Z' => {
                     commands.push(PathCommand::Close);
                     current = subpath_start;
                     prev_cubic_ctrl = None;

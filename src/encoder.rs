@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use oxideav_core::{
     DashPattern, Encoder, Error, FillRule, Frame, Group, LineCap, LineJoin, LinearGradient, Node,
     Packet, Paint, PathCommand, PathNode, Point, RadialGradient, Result, Rgba, SpreadMethod,
-    Stroke, TimeBase, Transform2D, VectorFrame,
+    TimeBase, Transform2D, VectorFrame,
 };
 
 use crate::decoder::CODEC_ID_STR;
@@ -97,6 +97,9 @@ fn write_node(out: &mut String, node: &Node, depth: usize, gradients: &GradientC
             // Round 1: serialising embedded raster images would
             // require base64 + a `<image>` href — defer.
         }
+        // `Node` is `#[non_exhaustive]` upstream; future variants
+        // (text, masks, filters) are silently dropped in round 1.
+        _ => {}
     }
 }
 
@@ -161,6 +164,9 @@ fn paint_to_attr(p: &Paint, gradients: &GradientCollector) -> String {
                 None => "none".to_string(),
             }
         }
+        // `Paint` is `#[non_exhaustive]` upstream; unknown future
+        // paint servers serialise as `none` rather than failing.
+        _ => "none".to_string(),
     }
 }
 
@@ -258,6 +264,9 @@ fn write_path_d(out: &mut String, cmds: &[PathCommand]) {
                 ));
             }
             PathCommand::Close => out.push('Z'),
+            // `PathCommand` is `#[non_exhaustive]` upstream; future
+            // shorthand variants are dropped from the serialisation.
+            _ => {}
         }
     }
 }
@@ -375,6 +384,9 @@ fn collect_paints_in_group(group: &Group, gradients: &mut GradientCollector) {
             }
             Node::Group(g) => collect_paints_in_group(g, gradients),
             Node::Image(_) => {}
+            // `Node` is `#[non_exhaustive]` upstream; ignore unknown
+            // variants when collecting referenced paints.
+            _ => {}
         }
     }
 }
