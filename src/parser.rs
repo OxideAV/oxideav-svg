@@ -1,7 +1,7 @@
 //! Hand-rolled SAX-style XML parser. The SVG-relevant XML subset is
-//! small (tags + attributes + text content + comments + CDATA + entities
-//! + processing instructions + DOCTYPE) so this avoids pulling
-//! `xml-rs` / `quick-xml` into the dependency tree.
+//! small (tags and attributes and text content and comments and CDATA
+//! and entities and processing instructions and DOCTYPE) so this avoids
+//! pulling `xml-rs` / `quick-xml` into the dependency tree.
 //!
 //! Tag names are kept verbatim (including any `prefix:`) so namespace-
 //! aware tooling can inspect them; matching helpers compare the local
