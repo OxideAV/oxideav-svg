@@ -619,10 +619,16 @@ pub fn parse_element_to_node(
             };
             Some(inner)
         }
-        // Round-2 deferral list — silently skip <text>, <use>,
-        // <script>, etc. so the rest of the document still loads.
-        // <text> support is wired in a follow-up commit (gated behind
-        // the optional `text` cargo feature).
+        #[cfg(feature = "text")]
+        "text" => {
+            let state = parent_state.merged_with(el)?;
+            crate::text::parse_text_element(el, &state, ctx)?
+        }
+        // <text> when text feature is disabled — silently skip.
+        #[cfg(not(feature = "text"))]
+        "text" => None,
+        // Round-2 deferral list — silently skip <use>, <script>, etc.
+        // so the rest of the document still loads.
         _ => None,
     };
     // Round-2: apply mask / clip-path / filter wrappers from this

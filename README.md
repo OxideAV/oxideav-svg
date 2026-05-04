@@ -29,6 +29,16 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
 
 ## Round 2 additions
 
+- `<text>` / `<tspan>` — vector-first via [`oxideav-scribe`]
+  `Shaper::shape_to_paths`. Caller installs a font resolver
+  (`oxideav_svg::text::set_font_resolver`) once at startup; each
+  `<text>` element looks up a `FaceChain` by `(font-family, font-size)`
+  and emits positioned glyph PathNodes wrapped in a Group at the
+  text's `(x, y)` origin. Nested `<tspan dx dy x y font-size
+  font-family>` updates the running pen + inheritance. Gated behind
+  the on-by-default `text` cargo feature; without a registered
+  resolver, every `<text>` parses to an empty `Group` so the rest of
+  the document still loads.
 - `<filter>` graceful pass-through. `<filter id="...">` definitions
   are captured into a side table; `filter="url(#id)"` on elements
   wraps content in an extra `Group` so the structural intent survives
@@ -49,7 +59,6 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
 
 ## Deferred to round 3+
 
-- `<text>` — needs `oxideav-scribe` font handling.
 - `<use>` cross-references beyond a captured `<symbol>` table.
 - `<script>`.
 - `.svgz` (gzip-compressed SVG) — registered as an extension but
@@ -72,4 +81,19 @@ std::fs::write("icon.out.svg", out)?;
 let mut codecs = oxideav_core::CodecRegistry::new();
 let mut containers = oxideav_core::ContainerRegistry::new();
 oxideav_svg::register(&mut codecs, &mut containers);
+```
+
+## Optional text rendering
+
+Round 2 emits glyph PathNodes for `<text>` / `<tspan>` only when a
+font resolver is installed. The SVG crate intentionally does not own
+a font registry — supply one at startup:
+
+```rust
+use oxideav_scribe::{Face, FaceChain};
+
+let dejavu = std::fs::read("DejaVuSans.ttf")?;
+oxideav_svg::text::set_font_resolver(move |_family, _size_px| {
+    Face::from_ttf_bytes(dejavu.clone()).ok().map(FaceChain::new)
+}).ok();
 ```

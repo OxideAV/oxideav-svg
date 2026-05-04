@@ -27,6 +27,14 @@
 //!
 //! # Round 2 additions
 //!
+//! * `<text>` / `<tspan>` — vector-first via
+//!   [`oxideav-scribe`](https://crates.io/crates/oxideav-scribe)'s
+//!   `Shaper::shape_to_paths`. Caller installs a font resolver
+//!   ([`text::set_font_resolver`]) once at startup; SVG-side parsing
+//!   extracts `font-family` / `font-size` / `x` / `y` / inline content
+//!   (and nested `<tspan dx dy>`) and emits positioned glyph PathNodes
+//!   wrapped in a Group at the text origin. Gated behind the
+//!   on-by-default `text` cargo feature.
 //! * `<filter>` graceful pass-through. `<filter id="...">` definitions
 //!   are captured into a side table; `filter="url(#id)"` on elements
 //!   is recognised and wraps content in an extra `Group` so the
@@ -48,8 +56,6 @@
 //!
 //! # Deferred to round 3+
 //!
-//! * `<text>` — needs font handling. Tracked under the round-5 scribe
-//!   vector-first work (#352).
 //! * `<use>` cross-references.
 //! * `<script>`.
 //! * `.svgz` (gzip-compressed SVG) — registered as an extension but
@@ -63,6 +69,8 @@ pub mod element;
 pub mod encoder;
 pub mod parser;
 pub mod path_data;
+#[cfg(feature = "text")]
+pub mod text;
 pub mod transform;
 
 pub use decoder::{make_decoder, parse_svg, CODEC_ID_STR};

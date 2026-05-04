@@ -7,12 +7,25 @@ license = "MIT"
 repository = "https://github.com/OxideAV/oxideav-svg"
 homepage = "https://github.com/OxideAV/oxideav-svg"
 authors = ["Mark Karpeles"]
-description = "Pure-Rust SVG (read + write) for the oxideav framework — round 2 adds <filter>/<mask>/<clipPath> graceful pass-through with multi-shape clip and SoftMask compositing"
+description = "Pure-Rust SVG (read + write) for the oxideav framework — round 2 covers <text>/<tspan> via scribe + <filter>/<mask>/<clipPath> graceful pass-through"
 readme = "README.md"
 keywords = ["multimedia", "image", "svg", "vector", "pure-rust"]
 categories = ["multimedia::encoding", "multimedia::images"]
+
+[features]
+# `text` enables `<text>` / `<tspan>` parsing via oxideav-scribe's
+# vector-first API (`Shaper::shape_to_paths`). Default-on so an
+# out-of-the-box `oxideav-svg = "0.1"` reads SVGs containing text;
+# downstream crates that don't need text (or want to avoid the scribe
+# dep tree) can opt out via `default-features = false`.
+default = ["text"]
+text = ["dep:oxideav-scribe"]
 
 [dependencies]
 # `Node::SoftMask` + `MaskKind` (used by round-2 `<mask>` / `<clipPath>`
 # mapping) require oxideav-core 0.1.15+.
 oxideav-core = "0.1.15"
+# Round-7 vector-text APIs (`Face::glyph_node` + `Shaper::shape_to_paths`)
+# land in 0.1.1; gated behind the `text` feature so the SVG crate stays
+# usable when callers don't need text shaping.
+oxideav-scribe = { version = "0.1.1", optional = true }
