@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/OxideAV/oxideav-svg/compare/v0.1.1...v0.1.2) - 2026-05-04
+
+### Added
+
+- round 3 — <use>, .svgz inflate, <animate>/<set> snapshot at t=0
+- round 2 — <text>/<tspan> via scribe vector-first API
+- round 2 — <mask>/<clipPath> + multi-shape clip + SoftMask compositing
+- round 2 — <filter> graceful pass-through via DefsTables
+
 ### Added
 
 - **Round 3** — `<use href="#id">` cross-references. Resolves the
