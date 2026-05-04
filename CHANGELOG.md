@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/OxideAV/oxideav-svg/compare/v0.1.0...v0.1.1) - 2026-05-04
+
+### Fixed
+
+- parse_number accepts unit suffixes; trim_float normalises -0
+- *(docs)* clippy doc_lazy_continuation in parser.rs (Rust 1.95)
+
+### Other
+
+- snake_case fn name + non-exhaustive Node arm
+
 ## [0.1.0] - 2026-05-04
 
 ### Added
