@@ -602,7 +602,8 @@ fn register_def(el: &Element, gradients: &mut GradientTable) -> Result<()> {
 }
 
 /// Parse a number literal — strips optional unit suffix (`px`, `pt`,
-/// etc.). Round 1 treats every unit as user units.
+/// `em`, `%`, etc.). Round 1 treats every unit as user units, so the
+/// numeric value is preserved as f32 with no scaling.
 pub fn parse_number(v: Option<&str>, default: f32) -> Result<f32> {
     let s = match v {
         None => return Ok(default),
@@ -611,18 +612,28 @@ pub fn parse_number(v: Option<&str>, default: f32) -> Result<f32> {
     if s.is_empty() {
         return Ok(default);
     }
-    // Strip a trailing unit (px / pt / mm / cm / in / em / ex / % etc).
-    let end = s
-        .find(|c: char| {
-            !(c.is_ascii_digit() || c == '.' || c == '+' || c == '-' || c == 'e' || c == 'E')
-        })
-        .unwrap_or(s.len());
-    let num = &s[..end];
-    if num.is_empty() {
-        return Err(Error::invalid("SVG: missing numeric value"));
+    // Find the longest prefix that parses as f32. This handles unit
+    // suffixes like "12px", "3.5em", "50%" — and avoids treating the
+    // 'e' in "3.5em" as the start of an exponent (which would consume
+    // "3.5e" and then fail to parse).
+    let bytes = s.as_bytes();
+    let mut best: Option<f32> = None;
+    let mut i = 1;
+    while i <= bytes.len() {
+        // Only consider extending while the prefix could still be a
+        // valid number character; once we hit a unit char we stop.
+        let c = bytes[i - 1] as char;
+        let numeric =
+            c.is_ascii_digit() || c == '.' || c == '+' || c == '-' || c == 'e' || c == 'E';
+        if !numeric {
+            break;
+        }
+        if let Ok(v) = s[..i].parse::<f32>() {
+            best = Some(v);
+        }
+        i += 1;
     }
-    num.parse::<f32>()
-        .map_err(|_| Error::invalid("SVG: malformed number"))
+    best.ok_or_else(|| Error::invalid("SVG: malformed number"))
 }
 
 #[cfg(test)]

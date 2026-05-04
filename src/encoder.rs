@@ -280,6 +280,11 @@ fn write_pt(out: &mut String, cmd: &str, p: Point) {
 }
 
 fn trim_float(v: f32) -> String {
+    // Normalise both +0.0 and -0.0 to "0" — the sign is invisible in
+    // SVG output and a bare "0" is one byte shorter.
+    if v == 0.0 {
+        return "0".to_string();
+    }
     // Print with up to 6 significant decimals, trim trailing zeros.
     let s = format!("{v:.6}");
     let trimmed = s.trim_end_matches('0').trim_end_matches('.');
