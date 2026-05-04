@@ -3,9 +3,9 @@
 //! [`oxideav-png`]. The probe accepts either an XML-prologue with the
 //! `svg` root tag or an `.svg` / `.svgz` file extension.
 //!
-//! Note: `.svgz` is gzip-compressed SVG. Round 1 doesn't decompress —
-//! we register the extension so callers can identify the format, but
-//! demuxing rejects gzip content (no `miniz_oxide` dep yet).
+//! Round 3: `.svgz` (gzip-compressed SVG, RFC 1952 magic `1f 8b`) is
+//! transparently inflated by the demuxer; the inflated XML is handed
+//! to the codec just like a plain `.svg`.
 
 use std::io::{Read, SeekFrom, Write};
 
@@ -16,13 +16,19 @@ use oxideav_core::{
 };
 
 use crate::decoder::CODEC_ID_STR;
+use crate::parser::{deflate_gzip, inflate_gzip, is_gzip};
 
 pub fn register(reg: &mut ContainerRegistry) {
     reg.register_demuxer("svg", open_demuxer);
     reg.register_muxer("svg", open_muxer);
+    // `svgz` shares the demuxer (which sniffs the gzip magic) and a
+    // sister muxer that gzip-compresses the produced bytes.
+    reg.register_demuxer("svgz", open_demuxer);
+    reg.register_muxer("svgz", open_muxer_svgz);
     reg.register_extension("svg", "svg");
-    reg.register_extension("svgz", "svg");
+    reg.register_extension("svgz", "svgz");
     reg.register_probe("svg", probe);
+    reg.register_probe("svgz", probe_svgz);
 }
 
 fn probe(data: &ProbeData) -> ProbeScore {
@@ -35,6 +41,20 @@ fn probe(data: &ProbeData) -> ProbeScore {
     if contains_token_ci(head, b"<svg") {
         MAX_PROBE_SCORE
     } else if matches!(data.ext, Some("svg") | Some("svgz")) {
+        PROBE_SCORE_EXTENSION
+    } else {
+        0
+    }
+}
+
+/// Round-3 probe for `.svgz` (gzip-compressed SVG). The gzip magic
+/// (`1f 8b`) is unambiguous; we can't peek inside the compressed
+/// stream from a `ProbeData` slice (inflating the whole thing per
+/// probe would be wasteful), so the magic + extension is enough.
+fn probe_svgz(data: &ProbeData) -> ProbeScore {
+    if data.buf.len() >= 2 && data.buf[0] == 0x1f && data.buf[1] == 0x8b {
+        MAX_PROBE_SCORE
+    } else if matches!(data.ext, Some("svgz")) {
         PROBE_SCORE_EXTENSION
     } else {
         0
@@ -57,10 +77,12 @@ pub fn open_demuxer(
     input.seek(SeekFrom::Start(0))?;
     let mut buf = Vec::new();
     input.read_to_end(&mut buf)?;
-    if buf.starts_with(&[0x1f, 0x8b]) {
-        return Err(Error::unsupported(
-            "SVG demuxer: gzip-compressed .svgz not supported in round 1",
-        ));
+    // Round 3: transparently inflate `.svgz` (gzip RFC 1952). The
+    // codec only sees raw XML bytes — `parse_svg` also does this sniff
+    // when called directly, so callers using either entry point get
+    // gzip handling for free.
+    if is_gzip(&buf) {
+        buf = inflate_gzip(&buf)?;
     }
     let head_len = buf.len().min(4096);
     if !contains_token_ci(&buf[..head_len], b"<svg") {
@@ -114,22 +136,52 @@ pub fn open_muxer(output: Box<dyn WriteSeek>, streams: &[StreamInfo]) -> Result<
     if streams[0].params.media_type != MediaType::Video {
         return Err(Error::invalid("SVG muxer: stream must be video"));
     }
-    Ok(Box::new(SvgMuxer { output }))
+    Ok(Box::new(SvgMuxer {
+        output,
+        gzip: false,
+    }))
+}
+
+/// Round-3: `.svgz` muxer — same packet shape as the plain muxer but
+/// the bytes are gzip-compressed before hitting disk.
+pub fn open_muxer_svgz(
+    output: Box<dyn WriteSeek>,
+    streams: &[StreamInfo],
+) -> Result<Box<dyn Muxer>> {
+    if streams.len() != 1 {
+        return Err(Error::invalid("SVGZ muxer: expected exactly one stream"));
+    }
+    if streams[0].params.media_type != MediaType::Video {
+        return Err(Error::invalid("SVGZ muxer: stream must be video"));
+    }
+    Ok(Box::new(SvgMuxer { output, gzip: true }))
 }
 
 struct SvgMuxer {
     output: Box<dyn WriteSeek>,
+    /// When `true`, packet bytes are gzip-compressed before being
+    /// written (`.svgz` output).
+    gzip: bool,
 }
 
 impl Muxer for SvgMuxer {
     fn format_name(&self) -> &str {
-        "svg"
+        if self.gzip {
+            "svgz"
+        } else {
+            "svg"
+        }
     }
     fn write_header(&mut self) -> Result<()> {
         Ok(())
     }
     fn write_packet(&mut self, packet: &Packet) -> Result<()> {
-        self.output.write_all(&packet.data)?;
+        if self.gzip {
+            let compressed = deflate_gzip(&packet.data)?;
+            self.output.write_all(&compressed)?;
+        } else {
+            self.output.write_all(&packet.data)?;
+        }
         Ok(())
     }
     fn write_trailer(&mut self) -> Result<()> {

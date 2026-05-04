@@ -8,7 +8,7 @@
 //! `gradient table` keyed by `id`, then resolved when a paint
 //! attribute references one via `url(#id)`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use oxideav_core::{
     DashPattern, Error, FillRule, GradientStop, Group, LineCap, LineJoin, LinearGradient, MaskKind,
@@ -183,10 +183,16 @@ pub type GradientTable = HashMap<String, Paint>;
 /// and the pre-walked round-2 defs tables (filter / mask / clipPath /
 /// symbol). Threaded through every `parse_element_to_node` call so
 /// nested elements can resolve `url(#id)` references in any of them.
+///
+/// `use_stack` (round 3) holds the chain of currently-instantiating
+/// `<use>` ids. A `<use href="#x">` whose id is already on the stack
+/// would create an infinite loop (`use → symbol → use of same id`)
+/// and is dropped instead.
 #[derive(Debug)]
 pub struct ParseContext {
     pub gradients: GradientTable,
     pub defs: DefsTables,
+    pub use_stack: HashSet<String>,
 }
 
 impl Default for ParseContext {
@@ -200,6 +206,7 @@ impl ParseContext {
         Self {
             gradients: GradientTable::new(),
             defs: DefsTables::new(),
+            use_stack: HashSet::new(),
         }
     }
 }
@@ -517,6 +524,12 @@ pub fn parse_element_to_node(
     parent_state: &PaintState,
     ctx: &mut ParseContext,
 ) -> Result<Option<Node>> {
+    // Round 3: snapshot any `<animate>` / `<set>` children at `t=0`
+    // and apply those values to the parent element's attribute set
+    // before we look at the attrs. Stable static rendering of an
+    // otherwise-animated SVG (matches first-paint browser output).
+    let with_anim = apply_animations_at_t0(el);
+    let el = with_anim.as_ref().unwrap_or(el);
     let local = tag_local(&el.name);
     let node_opt = match local.as_str() {
         "g" => {
@@ -564,12 +577,19 @@ pub fn parse_element_to_node(
         // `decoder::register_all_defs` already captured them, so just
         // return None here.
         "filter" | "mask" | "clippath" | "symbol" => None,
-        // Round-2: <foreignObject> and <animate> are documented as
-        // graceful skips for round 2 (full support deferred to round
-        // 3+). They're emitted as empty groups so a downstream walker
-        // sees the element existed without crashing.
+        // Round-2: <foreignObject> remains a graceful skip — the
+        // contents are typically HTML / xhtml which is out of scope.
         "foreignobject" => Some(Node::Group(Group::default())),
+        // Round-3: animation tags don't render directly; their `t=0`
+        // value has already been folded into the parent element's
+        // attrs by `apply_animations_to_parent_attrs` (see
+        // `parse_g_children` / `parse_shape_children`). Drop them
+        // here so they don't appear in the scene graph.
         "animate" | "animatetransform" | "animatemotion" | "set" => None,
+        // Round-3: `<use href="#id">` resolves the referenced element
+        // and instantiates it as a child node, applying the use's
+        // x / y / transform / width / height. See `parse_use_element`.
+        "use" => parse_use_element(el, parent_state, ctx)?,
         "rect" | "circle" | "ellipse" | "line" | "polyline" | "polygon" | "path" => {
             let state = parent_state.merged_with(el)?;
             let path_opt = match local.as_str() {
@@ -871,6 +891,174 @@ fn register_def(el: &Element, gradients: &mut GradientTable) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Round 3: <use href="#id"> resolver
+// ---------------------------------------------------------------------------
+
+/// Parse a `<use href="#id">` (or legacy `xlink:href`). The referenced
+/// element is looked up in the documentwide id table, parsed
+/// recursively, and wrapped in a `Group` carrying the use's
+/// `transform` / `x` / `y` translation. `<symbol>` references skip the
+/// `<symbol>` element itself and inline its children (per SVG 1.1
+/// §5.5: `<use>` of a symbol does *not* re-instantiate the symbol's
+/// own attrs, only its content). Cycles are detected via
+/// `ctx.use_stack` and silently dropped.
+pub fn parse_use_element(
+    el: &Element,
+    parent_state: &PaintState,
+    ctx: &mut ParseContext,
+) -> Result<Option<Node>> {
+    let href = match attr(el, "href").or_else(|| attr(el, "xlink:href")) {
+        Some(v) => v.trim(),
+        None => return Ok(None),
+    };
+    let id = match href.strip_prefix('#') {
+        Some(s) => s,
+        // External references (`<use href="other.svg#id">`) are not
+        // supported — silently drop.
+        None => return Ok(None),
+    };
+    if ctx.use_stack.contains(id) {
+        // Cycle — `use → … → use of same id`. Drop instead of
+        // recursing infinitely.
+        return Ok(None);
+    }
+    let source = match ctx.defs.elements.get(id) {
+        Some(e) => e.clone(),
+        None => return Ok(None),
+    };
+
+    // x / y on `<use>` are an additive translate per §5.6.
+    let x = parse_number(attr(el, "x"), 0.0)?;
+    let y = parse_number(attr(el, "y"), 0.0)?;
+    let use_transform = match attr(el, "transform") {
+        Some(v) => parse_transform(v)?,
+        None => Transform2D::identity(),
+    };
+    // Compose: (use transform) ∘ translate(x, y) — so the translate
+    // is applied first to the source, then the explicit transform.
+    let translate = Transform2D::translate(x, y);
+    let total = use_transform.compose(&translate);
+
+    let state = parent_state.merged_with(el)?;
+
+    ctx.use_stack.insert(id.to_string());
+    // For `<symbol>` references, instantiate the symbol's children
+    // directly (skip the `<symbol>` wrapper — symbols are by-spec
+    // invisible until referenced via <use>). For any other element,
+    // re-parse the source itself.
+    let source_local = tag_local(&source.name);
+    let mut children: Vec<Node> = Vec::new();
+    if source_local == "symbol" {
+        for child in &source.children {
+            if let XmlNode::Element(c) = child {
+                if let Some(node) = parse_element_to_node(c, &state, ctx)? {
+                    children.push(node);
+                }
+            }
+        }
+    } else if let Some(node) = parse_element_to_node(&source, &state, ctx)? {
+        children.push(node);
+    }
+    ctx.use_stack.remove(id);
+
+    if children.is_empty() {
+        return Ok(None);
+    }
+
+    // Always wrap in a Group so the use's transform / opacity apply
+    // to every instantiated child, even when there's just one.
+    Ok(Some(Node::Group(Group {
+        transform: total,
+        opacity: state.opacity,
+        clip: None,
+        children,
+        cache_key: None,
+    })))
+}
+
+// ---------------------------------------------------------------------------
+// Round 3: <animate> / <set> snapshot at t=0
+// ---------------------------------------------------------------------------
+
+/// Walk `el`'s children for `<animate>` / `<set>` / `<animateTransform>`
+/// tags, evaluate each at `t=0`, and return a clone of `el` with the
+/// snapshot value spliced into its attrs (taking precedence over any
+/// existing attribute of the same name). Returns `None` when there
+/// are no animation children, so the caller can keep using the
+/// original element by reference for the common case.
+///
+/// Snapshot rule per SVG 1.1 §19.2.6 / SMIL animation evaluation at
+/// `t=0`:
+///   1. if `from="..."` is present, use it;
+///   2. else if `values="..."` is present, use the first
+///      semicolon-separated entry;
+///   3. else if `to="..."` is present, use it (degenerate "static
+///      change" — many animations omit `from`).
+fn apply_animations_at_t0(el: &Element) -> Option<Element> {
+    let mut overrides: Vec<(String, String)> = Vec::new();
+    for child in &el.children {
+        if let XmlNode::Element(c) = child {
+            let local = tag_local(&c.name);
+            if !matches!(
+                local.as_str(),
+                "animate" | "set" | "animatetransform" | "animatemotion"
+            ) {
+                continue;
+            }
+            let attr_name = match attr(c, "attributeName") {
+                Some(v) => v.trim().to_string(),
+                None => continue,
+            };
+            if attr_name.is_empty() {
+                continue;
+            }
+            let snapshot = animation_snapshot_value(c);
+            if let Some(v) = snapshot {
+                overrides.push((attr_name, v));
+            }
+        }
+    }
+    if overrides.is_empty() {
+        return None;
+    }
+    let mut clone = el.clone();
+    for (name, value) in overrides {
+        // Override or insert. Preserve original case from animation —
+        // matches CSS attribute normalisation.
+        let mut replaced = false;
+        for (k, v) in clone.attrs.iter_mut() {
+            if tag_local(k).eq_ignore_ascii_case(&name) {
+                *v = value.clone();
+                replaced = true;
+                break;
+            }
+        }
+        if !replaced {
+            clone.attrs.push((name, value));
+        }
+    }
+    Some(clone)
+}
+
+/// Return the animation's value at `t=0` per the snapshot rule (see
+/// `apply_animations_at_t0` doc).
+fn animation_snapshot_value(el: &Element) -> Option<String> {
+    if let Some(v) = attr(el, "from") {
+        return Some(v.trim().to_string());
+    }
+    if let Some(v) = attr(el, "values") {
+        let first = v.split(';').next()?.trim();
+        if !first.is_empty() {
+            return Some(first.to_string());
+        }
+    }
+    if let Some(v) = attr(el, "to") {
+        return Some(v.trim().to_string());
+    }
+    None
 }
 
 /// Parse a number literal — strips optional unit suffix (`px`, `pt`,

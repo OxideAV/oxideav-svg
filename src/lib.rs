@@ -54,12 +54,28 @@
 //!   `<symbol>` (captured for round-3 `<use>` resolver but not yet
 //!   rendered).
 //!
-//! # Deferred to round 3+
+//! # Round 3 additions
 //!
-//! * `<use>` cross-references.
+//! * `<use href="#id">` cross-references — resolves the referenced
+//!   element (any shape, group, or `<symbol>`) from a documentwide
+//!   id table built during the pre-walk; `x` / `y` / `transform` /
+//!   `width` / `height` on the `<use>` are honoured. Cycles
+//!   (`use → symbol → use of same id`) are detected and the offending
+//!   instantiation is dropped instead of recursing infinitely.
+//! * `.svgz` (gzip-compressed SVG, RFC 1952) — both [`parse_svg`] and
+//!   the demuxer transparently sniff the gzip magic (`1f 8b`) and
+//!   inflate; symmetric [`write_svgz`] + a `.svgz` muxer handle the
+//!   output side.
+//! * `<animate>` / `<set>` snapshot at `t=0` — the animation's `from`
+//!   value (or first `values` entry, or `to` when neither is given)
+//!   is applied as the static value of the targeted attribute on the
+//!   parent element. Matches what most browsers paint on first frame.
+//!
+//! # Deferred to round 4+
+//!
 //! * `<script>`.
-//! * `.svgz` (gzip-compressed SVG) — registered as an extension but
-//!   demuxing rejects it.
+//! * Animation timing beyond `t=0` (`begin`, `dur`, keyframe
+//!   interpolation, `repeatCount`).
 
 pub mod color;
 pub mod container;
@@ -74,7 +90,7 @@ pub mod text;
 pub mod transform;
 
 pub use decoder::{make_decoder, parse_svg, CODEC_ID_STR};
-pub use encoder::{make_encoder, write_svg};
+pub use encoder::{make_encoder, write_svg, write_svgz};
 
 use oxideav_core::{CodecCapabilities, CodecId, CodecInfo, CodecRegistry, ContainerRegistry};
 

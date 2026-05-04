@@ -11,15 +11,27 @@ use crate::element::{
     parse_symbol_def, PaintState, ParseContext,
 };
 use crate::parser::{
-    attr, decode_utf8_lossy_stripping_bom, parse_xml, tag_local, Element, Node as XmlNode,
+    attr, decode_utf8_lossy_stripping_bom, inflate_gzip, is_gzip, parse_xml, tag_local, Element,
+    Node as XmlNode,
 };
 
 /// Codec id string for SVG vector frames.
 pub const CODEC_ID_STR: &str = "svg";
 
 /// Parse a complete SVG document into a [`VectorFrame`].
+///
+/// Round 3: transparently inflates `.svgz` (gzip-compressed) input —
+/// the magic-bytes sniff (`1f 8b`) means callers can hand us either
+/// flavour without having to pre-decompress.
 pub fn parse_svg(bytes: &[u8]) -> Result<VectorFrame> {
-    let text = decode_utf8_lossy_stripping_bom(bytes);
+    let inflated;
+    let raw: &[u8] = if is_gzip(bytes) {
+        inflated = inflate_gzip(bytes)?;
+        &inflated
+    } else {
+        bytes
+    };
+    let text = decode_utf8_lossy_stripping_bom(raw);
     let nodes = parse_xml(&text)?;
     let svg =
         find_svg_root(&nodes).ok_or_else(|| Error::invalid("SVG: missing <svg> root element"))?;
@@ -86,6 +98,12 @@ fn parse_svg_root(svg: &Element) -> Result<VectorFrame> {
 }
 
 fn register_all_defs(el: &Element, ctx: &mut ParseContext) -> Result<()> {
+    // Round 3: capture *every* id-bearing element verbatim so
+    // `<use href="#id">` can re-instantiate it later. Includes
+    // shapes, groups, the special def kinds — anything addressable.
+    if let Some(id) = attr(el, "id") {
+        ctx.defs.elements.insert(id.to_string(), el.clone());
+    }
     match tag_local(&el.name).as_str() {
         "lineargradient" => {
             if let Some((id, p)) = crate::element::parse_linear_gradient(el)? {

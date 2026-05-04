@@ -57,12 +57,30 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   `<symbol>` (captured for the round-3 `<use>` resolver but not yet
   rendered).
 
-## Deferred to round 3+
+## Round 3 additions
 
-- `<use>` cross-references beyond a captured `<symbol>` table.
+- `<use href="#id">` cross-references. The pre-walk captures every
+  `id`-bearing element into a documentwide table; `<use>` instantiates
+  the referenced shape / group / `<symbol>` as a child node, applying
+  the `<use>`'s `x` / `y` (additive translate) and `transform`. Both
+  SVG-2 `href` and SVG-1.1 `xlink:href` are accepted. Cycles
+  (`use → symbol → use of same id`) are detected and dropped instead
+  of recursing infinitely.
+- `.svgz` (gzip-compressed SVG, RFC 1952). `parse_svg` and the `svg`
+  demuxer transparently sniff the gzip magic (`1f 8b`); the symmetric
+  `write_svgz()` helper and a sister `svgz` muxer produce gzipped
+  output. Pure-Rust `flate2` backend (`rust_backend`), no C deps.
+- `<animate>` / `<set>` / `<animateTransform>` snapshot at `t=0`. The
+  animation's `from` value (or first `values` entry, or `to` when
+  neither is given) is folded into the parent element's attribute set
+  before parsing — produces the same first-paint static rendering
+  most browsers show, instead of silently dropping animated content.
+
+## Deferred to round 4+
+
 - `<script>`.
-- `.svgz` (gzip-compressed SVG) — registered as an extension but
-  demuxing rejects it.
+- Animation timing beyond `t=0` (`begin`, `dur`, keyframe
+  interpolation, `repeatCount`).
 
 ## Usage
 

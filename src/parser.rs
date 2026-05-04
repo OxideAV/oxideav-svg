@@ -295,6 +295,42 @@ pub fn decode_utf8_lossy_stripping_bom(bytes: &[u8]) -> String {
     String::from_utf8_lossy(trimmed).into_owned()
 }
 
+/// `true` when `bytes` starts with the RFC 1952 gzip magic (`1f 8b`),
+/// indicating an `.svgz` (gzip-compressed SVG) payload that needs to
+/// be inflated before XML parsing.
+pub fn is_gzip(bytes: &[u8]) -> bool {
+    bytes.len() >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b
+}
+
+/// Inflate a gzip-compressed SVG payload (`.svgz`) into the raw XML
+/// bytes the rest of the parser expects. Returns an error when the
+/// input is not a valid gzip stream.
+pub fn inflate_gzip(bytes: &[u8]) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let mut decoder = flate2::read::GzDecoder::new(bytes);
+    let mut out = Vec::with_capacity(bytes.len() * 4);
+    decoder
+        .read_to_end(&mut out)
+        .map_err(|e| Error::invalid(format!("SVG: gzip inflate failed: {e}")))?;
+    Ok(out)
+}
+
+/// Deflate (gzip) the SVG bytes for `.svgz` output. Uses the default
+/// compression level which mirrors what the gzip(1) utility produces.
+pub fn deflate_gzip(bytes: &[u8]) -> Result<Vec<u8>> {
+    use std::io::Write;
+    let mut encoder = flate2::write::GzEncoder::new(
+        Vec::with_capacity(bytes.len() / 2),
+        flate2::Compression::default(),
+    );
+    encoder
+        .write_all(bytes)
+        .map_err(|e| Error::invalid(format!("SVG: gzip deflate failed: {e}")))?;
+    encoder
+        .finish()
+        .map_err(|e| Error::invalid(format!("SVG: gzip finish failed: {e}")))
+}
+
 /// Decode the XML predefined entities + numeric character references.
 /// Anything we don't recognise is left verbatim — keeps the encoder's
 /// round-trip honest when the input contains an unusual entity.

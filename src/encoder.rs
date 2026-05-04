@@ -17,6 +17,13 @@ use oxideav_core::{
 use crate::decoder::CODEC_ID_STR;
 use crate::parser::escape_attr;
 
+/// Round 3: serialise a [`VectorFrame`] into a gzip-compressed
+/// `.svgz` byte buffer. Equivalent to `gzip(write_svg(frame))`.
+pub fn write_svgz(frame: &VectorFrame) -> Result<Vec<u8>> {
+    let xml = write_svg(frame);
+    crate::parser::deflate_gzip(&xml)
+}
+
 /// Serialise a [`VectorFrame`] into a UTF-8 SVG byte buffer.
 pub fn write_svg(frame: &VectorFrame) -> Vec<u8> {
     let mut out = String::new();

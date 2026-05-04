@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Round 3** — `<use href="#id">` cross-references. Resolves the
+  referenced element from a documentwide id table built during the
+  pre-walk; honours `x` / `y` / `transform` on the `<use>` and
+  recognises both SVG-2 `href` and SVG-1.1 `xlink:href`. `<symbol>`
+  references inline the symbol's children. Cycles
+  (`use → symbol → use of same id`) are detected and dropped.
+- **Round 3** — `.svgz` (gzip-compressed SVG, RFC 1952) inflate +
+  deflate. `parse_svg` and the `svg` demuxer transparently sniff the
+  gzip magic (`1f 8b`); `write_svgz()` and a sister `svgz` muxer
+  produce gzipped output. Pure-Rust backend (`flate2 rust_backend`),
+  no C deps.
+- **Round 3** — `<animate>` / `<set>` / `<animateTransform>` snapshot
+  at `t=0`. The animation's `from` (or first `values` entry, or `to`)
+  is folded into the parent element's attribute set, matching what
+  most browsers paint on first frame instead of silently dropping
+  animated content.
+
 ## [0.1.1](https://github.com/OxideAV/oxideav-svg/compare/v0.1.0...v0.1.1) - 2026-05-04
 
 ### Fixed

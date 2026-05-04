@@ -70,12 +70,21 @@ pub struct SymbolDef {
 
 /// Aggregated tables built during the pre-walk, consumed by the main
 /// element parser when it resolves `url(#id)` references.
+///
+/// `elements` is a round-3 addition keyed by `id="..."`: any element
+/// in the document that carries an id is captured verbatim so
+/// `<use href="#id">` can re-instantiate it (works with rect / circle
+/// / path / g / symbol / …, not just the predefined def categories).
 #[derive(Clone, Debug, Default)]
 pub struct DefsTables {
     pub filters: HashMap<String, FilterDef>,
     pub masks: HashMap<String, MaskDef>,
     pub clip_paths: HashMap<String, ClipPathDef>,
     pub symbols: HashMap<String, SymbolDef>,
+    /// Round 3: every `id`-bearing element in the source XML, captured
+    /// for `<use href="#id">` resolution. Includes shapes, groups,
+    /// symbols, defs children, etc. — anything addressable by id.
+    pub elements: HashMap<String, Element>,
 }
 
 impl DefsTables {

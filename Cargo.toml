@@ -29,3 +29,12 @@ oxideav-core = "0.1.15"
 # land in 0.1.1; gated behind the `text` feature so the SVG crate stays
 # usable when callers don't need text shaping.
 oxideav-scribe = { version = "0.1.1", optional = true }
+# Round 3: `.svgz` (gzip-compressed SVG) support. Pure-Rust backend
+# (miniz_oxide) so we don't pull in any C dependencies — same backend
+# `oxideav-pdf` and `oxideav-png` already use transitively.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+
+[dev-dependencies]
+# Needed in `round3_svgz` to gzip a fixture by hand and assert the
+# parser inflates it. Same backend the prod dep uses.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
