@@ -7,10 +7,10 @@ license = "MIT"
 repository = "https://github.com/OxideAV/oxideav-svg"
 homepage = "https://github.com/OxideAV/oxideav-svg"
 authors = ["Mark Karpeles"]
-description = "Pure-Rust SVG (read + write) for the oxideav framework — round 1 covers shapes, paths, gradients, transforms; text + filters deferred"
+description = "Pure-Rust SVG (read + write) for the oxideav framework — round 2 adds <filter> graceful pass-through with a defs/url(#id) resolver"
 readme = "README.md"
 keywords = ["multimedia", "image", "svg", "vector", "pure-rust"]
 categories = ["multimedia::encoding", "multimedia::images"]
 
 [dependencies]
-oxideav-core = "0.1"
+oxideav-core = "0.1.15"

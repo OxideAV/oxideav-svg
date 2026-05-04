@@ -6,7 +6,9 @@ use oxideav_core::{
     ViewBox,
 };
 
-use crate::element::{parse_element_to_node, parse_number, GradientTable, PaintState};
+use crate::element::{
+    parse_element_to_node, parse_filter_def, parse_number, PaintState, ParseContext,
+};
 use crate::parser::{
     attr, decode_utf8_lossy_stripping_bom, parse_xml, tag_local, Element, Node as XmlNode,
 };
@@ -53,19 +55,19 @@ fn parse_svg_root(svg: &Element) -> Result<VectorFrame> {
     )?;
 
     let parent_state = PaintState::default();
-    let mut gradients: GradientTable = GradientTable::new();
+    let mut ctx = ParseContext::new();
 
-    // First pass: register every <defs> child + every gradient seen
-    // anywhere in the tree, so forward references inside the doc work
-    // regardless of declaration order.
-    register_all_defs(svg, &mut gradients)?;
+    // First pass: register every <defs> child + every gradient /
+    // filter def seen anywhere in the tree, so forward references
+    // inside the doc work regardless of declaration order.
+    register_all_defs(svg, &mut ctx)?;
 
     // Second pass: walk the tree and build the scene graph. Gradients
-    // are now resolvable.
+    // and round-2 defs are now resolvable.
     let mut root = Group::default();
     for child in &svg.children {
         if let XmlNode::Element(c) = child {
-            if let Some(node) = parse_element_to_node(c, &parent_state, &mut gradients)? {
+            if let Some(node) = parse_element_to_node(c, &parent_state, &mut ctx)? {
                 root.children.push(node);
             }
         }
@@ -81,23 +83,28 @@ fn parse_svg_root(svg: &Element) -> Result<VectorFrame> {
     })
 }
 
-fn register_all_defs(el: &Element, gradients: &mut GradientTable) -> Result<()> {
+fn register_all_defs(el: &Element, ctx: &mut ParseContext) -> Result<()> {
     match tag_local(&el.name).as_str() {
         "lineargradient" => {
             if let Some((id, p)) = crate::element::parse_linear_gradient(el)? {
-                gradients.insert(id, p);
+                ctx.gradients.insert(id, p);
             }
         }
         "radialgradient" => {
             if let Some((id, p)) = crate::element::parse_radial_gradient(el)? {
-                gradients.insert(id, p);
+                ctx.gradients.insert(id, p);
+            }
+        }
+        "filter" => {
+            if let Some((id, def)) = parse_filter_def(el) {
+                ctx.defs.filters.insert(id, def);
             }
         }
         _ => {}
     }
     for child in &el.children {
         if let XmlNode::Element(c) = child {
-            register_all_defs(c, gradients)?;
+            register_all_defs(c, ctx)?;
         }
     }
     Ok(())

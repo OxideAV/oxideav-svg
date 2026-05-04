@@ -17,6 +17,7 @@ use oxideav_core::{
 };
 
 use crate::color::{parse_opacity, parse_paint, PaintValue};
+use crate::defs::{parse_url_ref, DefsTables, FilterDef};
 use crate::parser::{attr, tag_local, Element, Node as XmlNode};
 use crate::path_data::parse_path_data;
 use crate::transform::parse_transform;
@@ -177,6 +178,32 @@ fn resolve_paint(value: &PaintValue, opacity: f32, gradients: &GradientTable) ->
 /// Look-up table of `id` → resolved [`Paint`] (gradient). Built up by
 /// the decoder while it walks `<defs>` / inline gradient elements.
 pub type GradientTable = HashMap<String, Paint>;
+
+/// Mutable parse-time context: gradient table (resolved on the fly)
+/// and the round-2 defs tables (filter — and, in subsequent commits,
+/// mask / clipPath / symbol). Threaded through every
+/// `parse_element_to_node` call so nested elements can resolve
+/// `url(#id)` references.
+#[derive(Debug)]
+pub struct ParseContext {
+    pub gradients: GradientTable,
+    pub defs: DefsTables,
+}
+
+impl Default for ParseContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ParseContext {
+    pub fn new() -> Self {
+        Self {
+            gradients: GradientTable::new(),
+            defs: DefsTables::new(),
+        }
+    }
+}
 
 /// Parse `<linearGradient id="...">` into a [`Paint`] entry. Returns
 /// `Some((id, paint))` on success, `None` if the element lacks an `id`
@@ -489,10 +516,10 @@ pub fn parse_path(el: &Element) -> Result<Option<Path>> {
 pub fn parse_element_to_node(
     el: &Element,
     parent_state: &PaintState,
-    gradients: &mut GradientTable,
+    ctx: &mut ParseContext,
 ) -> Result<Option<Node>> {
     let local = tag_local(&el.name);
-    match local.as_str() {
+    let node_opt = match local.as_str() {
         "g" => {
             let state = parent_state.merged_with(el)?;
             let transform = match attr(el, "transform") {
@@ -508,26 +535,35 @@ pub fn parse_element_to_node(
             };
             for child in &el.children {
                 if let XmlNode::Element(c) = child {
-                    if let Some(node) = parse_element_to_node(c, &state, gradients)? {
+                    if let Some(node) = parse_element_to_node(c, &state, ctx)? {
                         group.children.push(node);
                     }
                 }
             }
-            Ok(Some(Node::Group(group)))
+            Some(Node::Group(group))
         }
         "defs" => {
-            // Walk children — round 1 only cares about gradient defs.
+            // Walk children — gradient defs (round 1) plus filter
+            // defs (round 2). The pre-walk in
+            // `decoder::register_all_defs` already populated round-2
+            // tables; this pass picks up gradients which depend on
+            // inheritance and are cheap to re-resolve.
             for child in &el.children {
                 if let XmlNode::Element(c) = child {
-                    register_def(c, gradients)?;
+                    register_def(c, &mut ctx.gradients)?;
                 }
             }
-            Ok(None)
+            None
         }
         "lineargradient" | "radialgradient" => {
-            register_def(el, gradients)?;
-            Ok(None)
+            register_def(el, &mut ctx.gradients)?;
+            None
         }
+        // Round-2: filter definitions don't produce visible output by
+        // themselves — they're consumed via url(#id) references on
+        // other elements. The pre-walk in `register_all_defs` already
+        // captured them, so just return None here.
+        "filter" => None,
         "rect" | "circle" | "ellipse" | "line" | "polyline" | "polygon" | "path" => {
             let state = parent_state.merged_with(el)?;
             let path_opt = match local.as_str() {
@@ -551,8 +587,8 @@ pub fn parse_element_to_node(
             // We follow the spec literally; users who don't want a
             // fill set fill="none".
             let transform = attr(el, "transform").map(parse_transform).transpose()?;
-            let fill = state.solid_fill(gradients);
-            let stroke = state.solid_stroke(gradients);
+            let fill = state.solid_fill(&ctx.gradients);
+            let stroke = state.solid_stroke(&ctx.gradients);
             let path_node = PathNode {
                 path,
                 fill,
@@ -564,24 +600,65 @@ pub fn parse_element_to_node(
             // round-trip preserves them.
             let needs_wrap =
                 transform.is_some() || (state.opacity - parent_state.opacity).abs() > f32::EPSILON;
-            if needs_wrap {
-                let group = Group {
+            let inner = if needs_wrap {
+                Node::Group(Group {
                     transform: transform.unwrap_or_else(Transform2D::identity),
                     opacity: state.opacity,
                     clip: None,
                     children: vec![Node::Path(path_node)],
                     cache_key: None,
-                };
-                Ok(Some(Node::Group(group)))
+                })
             } else {
-                Ok(Some(Node::Path(path_node)))
-            }
+                Node::Path(path_node)
+            };
+            Some(inner)
         }
-        // Round-1 deferral list — silently skip text, filter, mask,
+        // Round-1 deferral list — silently skip text, mask,
         // foreignObject, animate, etc. so the rest of the document
         // still loads.
-        _ => Ok(None),
+        _ => None,
+    };
+    let node = match node_opt {
+        Some(n) => n,
+        None => return Ok(None),
+    };
+    Ok(Some(apply_referenced_defs(el, node, &ctx.defs)))
+}
+
+/// Apply `filter="url(#id)"` from `el` to `node`, looking the id up
+/// in `defs`. Missing refs are silently dropped (the rest of the
+/// document still renders). Round-2 only handles filter; mask and
+/// clip-path land in subsequent commits.
+fn apply_referenced_defs(el: &Element, mut node: Node, defs: &DefsTables) -> Node {
+    // Filter is graceful pass-through in round 2 — wrap content in a
+    // single-child Group so the structural intent ("these children are
+    // filtered") survives the round-trip even though the actual
+    // rasterisation is deferred to oxideav-raster.
+    if let Some(id) = attr(el, "filter").and_then(parse_url_ref) {
+        if defs.filters.contains_key(id) {
+            // TODO(round-3 / oxideav-raster #368): rasterise the
+            // referenced filter graph (Gaussian blur, color matrix,
+            // …). Round 2 just preserves the children so a
+            // parse → encode round-trip succeeds.
+            node = Node::Group(Group {
+                children: vec![node],
+                ..Group::default()
+            });
+        }
     }
+    node
+}
+
+/// Parse `<filter id="...">` into a [`FilterDef`]. Returns `None` if
+/// the element has no `id` (then it can't be referenced).
+pub fn parse_filter_def(el: &Element) -> Option<(String, FilterDef)> {
+    let id = attr(el, "id")?.to_string();
+    Some((
+        id,
+        FilterDef {
+            element: el.clone(),
+        },
+    ))
 }
 
 fn register_def(el: &Element, gradients: &mut GradientTable) -> Result<()> {

@@ -25,11 +25,20 @@
 //!   `#RRGGBB`, `#RRGGBBAA`, `rgb()` / `rgba()`, `none`,
 //!   `url(#id)`, `currentColor` (resolved to opaque black in round 1).
 //!
-//! # Deferred to round 2+
+//! # Round 2 additions
+//!
+//! * `<filter>` graceful pass-through. `<filter id="...">` definitions
+//!   are captured into a side table; `filter="url(#id)"` on elements
+//!   is recognised and wraps content in an extra `Group` so the
+//!   structural intent ("these children are filtered") survives a
+//!   parse → encode round-trip. The actual filter graph (Gaussian
+//!   blur, color matrix, …) is rendered by `oxideav-raster` in a
+//!   later round.
+//!
+//! # Still deferred
 //!
 //! * `<text>` — needs font handling. Tracked under the round-5 scribe
 //!   vector-first work (#352).
-//! * `<filter>` / `<feGaussianBlur>` etc.
 //! * `<mask>` / `<clipPath>` beyond simple shape clip.
 //! * `<use>` / `<symbol>` cross-references.
 //! * `<foreignObject>`.
@@ -41,6 +50,7 @@
 pub mod color;
 pub mod container;
 pub mod decoder;
+pub mod defs;
 pub mod element;
 pub mod encoder;
 pub mod parser;
