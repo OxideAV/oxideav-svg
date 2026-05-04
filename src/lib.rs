@@ -34,15 +34,23 @@
 //!   parse → encode round-trip. The actual filter graph (Gaussian
 //!   blur, color matrix, …) is rendered by `oxideav-raster` in a
 //!   later round.
+//! * `<mask>` and `<clipPath>` — multi-element masks map to
+//!   [`oxideav_core::Node::SoftMask`] (luminance or alpha per
+//!   `mask-type`); multi-shape `<clipPath>` collapses children (with
+//!   their per-element `transform=`) into a single concatenated clip
+//!   [`oxideav_core::Path`] applied to the wrapping group's `clip`
+//!   field. The encoder rewrites both back into `<defs>` blocks with
+//!   auto-generated ids on round-trip.
+//! * Graceful skip for `<foreignObject>` (empty `Group`),
+//!   `<animate>` / `<animateTransform>` / `<set>` (silently dropped),
+//!   `<symbol>` (captured for round-3 `<use>` resolver but not yet
+//!   rendered).
 //!
-//! # Still deferred
+//! # Deferred to round 3+
 //!
 //! * `<text>` — needs font handling. Tracked under the round-5 scribe
 //!   vector-first work (#352).
-//! * `<mask>` / `<clipPath>` beyond simple shape clip.
-//! * `<use>` / `<symbol>` cross-references.
-//! * `<foreignObject>`.
-//! * `<animate>` / `<animateTransform>` / `<set>`.
+//! * `<use>` cross-references.
 //! * `<script>`.
 //! * `.svgz` (gzip-compressed SVG) — registered as an extension but
 //!   demuxing rejects it.

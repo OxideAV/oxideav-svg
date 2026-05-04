@@ -7,10 +7,12 @@ license = "MIT"
 repository = "https://github.com/OxideAV/oxideav-svg"
 homepage = "https://github.com/OxideAV/oxideav-svg"
 authors = ["Mark Karpeles"]
-description = "Pure-Rust SVG (read + write) for the oxideav framework — round 2 adds <filter> graceful pass-through with a defs/url(#id) resolver"
+description = "Pure-Rust SVG (read + write) for the oxideav framework — round 2 adds <filter>/<mask>/<clipPath> graceful pass-through with multi-shape clip and SoftMask compositing"
 readme = "README.md"
 keywords = ["multimedia", "image", "svg", "vector", "pure-rust"]
 categories = ["multimedia::encoding", "multimedia::images"]
 
 [dependencies]
+# `Node::SoftMask` + `MaskKind` (used by round-2 `<mask>` / `<clipPath>`
+# mapping) require oxideav-core 0.1.15+.
 oxideav-core = "0.1.15"

@@ -1,17 +1,30 @@
 //! `<defs>`-resolved tables for round-2 cross-references.
 //!
-//! Round 1 only tracked gradients; round 2 adds a filter table
-//! (and, in subsequent commits, mask / clipPath / symbol) that is
-//! populated by a tree walk before the main parse pass so forward
-//! references work.
+//! Round 1 only tracked gradients; round 2 adds three new tables —
+//! filter, mask, clipPath, symbol — that are populated by a tree walk
+//! before the main parse pass so forward references work.
 //!
-//! Filters (`<filter>` / `filter="url(#id)"`) are stored as captured
-//! XML element subtrees. Round 2 doesn't render filters (deferred to
-//! oxideav-raster round 3 / #368), but the table lets the encoder
-//! re-emit the original definition for lossless round-trip and for
-//! downstream consumers that *can* render them.
+//! - **Filters** (`<filter>` / `filter="url(#id)"`) are stored as
+//!   captured XML element subtrees. Round 2 doesn't render filters
+//!   (deferred to oxideav-raster round 3 / #368), but the table lets
+//!   the encoder re-emit the original definition for lossless
+//!   round-trip and for downstream consumers that *can* render them.
+//!
+//! - **Masks** (`<mask>` / `mask="url(#id)"`) and **clipPaths**
+//!   (`<clipPath>` / `clip-path="url(#id)"`) parse their child shapes
+//!   into a [`oxideav_core::Group`] (mask) or a [`oxideav_core::Path`]
+//!   (clipPath — multiple shapes are concatenated into one path so the
+//!   even-odd / non-zero fill rule of the union approximates the SVG
+//!   clip).
+//!
+//! - **Symbols** (`<symbol>` / future `<use>`) are captured as
+//!   deferred-render groups. Round 2 doesn't yet implement `<use>` so
+//!   the symbols table is wired into the parser but never consumed —
+//!   this just preserves the captured definition for round 3.
 
 use std::collections::HashMap;
+
+use oxideav_core::{Group, Path};
 
 use crate::parser::Element;
 
@@ -24,11 +37,45 @@ pub struct FilterDef {
     pub element: Element,
 }
 
+/// Captured `<mask id="...">`. The mask subtree is pre-parsed into a
+/// `Group` so the resolver can wrap content in
+/// [`oxideav_core::Node::SoftMask`] without re-walking the XML.
+#[derive(Clone, Debug)]
+pub struct MaskDef {
+    /// `mask-type="luminance"` (default) or `"alpha"`.
+    pub mask_kind: oxideav_core::MaskKind,
+    pub content: Group,
+}
+
+/// Captured `<clipPath id="...">`. Round 2 collapses every child shape
+/// into a single concatenated [`Path`] — the fill-rule union of the
+/// shapes approximates the SVG semantics (which is "the union of every
+/// child's filled interior").
+#[derive(Clone, Debug)]
+pub struct ClipPathDef {
+    pub path: Path,
+}
+
+/// Captured `<symbol id="...">`. Like `<defs>`, symbols are deferred
+/// definitions — they only render when referenced via `<use>`. Stored
+/// as a Group so the resolver can clone the subtree at the use site.
+///
+/// Round 2 doesn't yet implement `<use>` (deferred to round 3); this
+/// table is wired into the parser anyway so the captured definitions
+/// don't get lost.
+#[derive(Clone, Debug)]
+pub struct SymbolDef {
+    pub content: Group,
+}
+
 /// Aggregated tables built during the pre-walk, consumed by the main
 /// element parser when it resolves `url(#id)` references.
 #[derive(Clone, Debug, Default)]
 pub struct DefsTables {
     pub filters: HashMap<String, FilterDef>,
+    pub masks: HashMap<String, MaskDef>,
+    pub clip_paths: HashMap<String, ClipPathDef>,
+    pub symbols: HashMap<String, SymbolDef>,
 }
 
 impl DefsTables {

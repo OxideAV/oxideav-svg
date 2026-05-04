@@ -27,17 +27,33 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
 `stroke-opacity`, `fill-rule`, `transform` (`matrix` / `translate` /
 `rotate` / `scale` / `skewX` / `skewY`).
 
-## Deferred to round 2+
+## Round 2 additions
 
-- `<text>` — needs font handling and tight `oxideav-scribe` coupling
-  (tracked under [#352](https://github.com/OxideAV/oxideav/issues/352),
-  blocked on the round-5 scribe vector-first API).
-- `<filter>`, `<feGaussianBlur>` etc.
-- `<mask>`, `<clipPath>` beyond simple shape clip.
-- `<use>`, `<symbol>`, `<defs>` cross-references beyond gradients.
-- `<foreignObject>`.
-- `<animate>`, `<animateTransform>`, `<set>`.
+- `<filter>` graceful pass-through. `<filter id="...">` definitions
+  are captured into a side table; `filter="url(#id)"` on elements
+  wraps content in an extra `Group` so the structural intent survives
+  a parse → encode round-trip. The actual filter graph (Gaussian
+  blur, color matrix, …) is rendered by `oxideav-raster` in a later
+  round.
+- `<mask>` and `<clipPath>` — multi-element masks map to
+  `oxideav_core::Node::SoftMask` honouring `mask-type="luminance|
+  alpha"`; multi-shape `<clipPath>` collapses children (with their
+  per-element `transform=`) into a single concatenated clip
+  `oxideav_core::Path` applied to the wrapping group's `clip` field.
+  The encoder rewrites both back into `<defs>` blocks with
+  auto-generated ids on round-trip.
+- Graceful skip for `<foreignObject>` (parsed as empty `Group`),
+  `<animate>` / `<animateTransform>` / `<set>` (silently dropped),
+  `<symbol>` (captured for the round-3 `<use>` resolver but not yet
+  rendered).
+
+## Deferred to round 3+
+
+- `<text>` — needs `oxideav-scribe` font handling.
+- `<use>` cross-references beyond a captured `<symbol>` table.
 - `<script>`.
+- `.svgz` (gzip-compressed SVG) — registered as an extension but
+  demuxing rejects it.
 
 ## Usage
 

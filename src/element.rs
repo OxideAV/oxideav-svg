@@ -11,13 +11,13 @@
 use std::collections::HashMap;
 
 use oxideav_core::{
-    DashPattern, Error, FillRule, GradientStop, Group, LineCap, LineJoin, LinearGradient, Node,
-    Paint, Path, PathCommand, PathNode, Point, RadialGradient, Result, Rgba, SpreadMethod, Stroke,
-    Transform2D,
+    DashPattern, Error, FillRule, GradientStop, Group, LineCap, LineJoin, LinearGradient, MaskKind,
+    Node, Paint, Path, PathCommand, PathNode, Point, RadialGradient, Result, Rgba, SpreadMethod,
+    Stroke, Transform2D,
 };
 
 use crate::color::{parse_opacity, parse_paint, PaintValue};
-use crate::defs::{parse_url_ref, DefsTables, FilterDef};
+use crate::defs::{parse_url_ref, ClipPathDef, DefsTables, FilterDef, MaskDef, SymbolDef};
 use crate::parser::{attr, tag_local, Element, Node as XmlNode};
 use crate::path_data::parse_path_data;
 use crate::transform::parse_transform;
@@ -180,10 +180,9 @@ fn resolve_paint(value: &PaintValue, opacity: f32, gradients: &GradientTable) ->
 pub type GradientTable = HashMap<String, Paint>;
 
 /// Mutable parse-time context: gradient table (resolved on the fly)
-/// and the round-2 defs tables (filter — and, in subsequent commits,
-/// mask / clipPath / symbol). Threaded through every
-/// `parse_element_to_node` call so nested elements can resolve
-/// `url(#id)` references.
+/// and the pre-walked round-2 defs tables (filter / mask / clipPath /
+/// symbol). Threaded through every `parse_element_to_node` call so
+/// nested elements can resolve `url(#id)` references in any of them.
 #[derive(Debug)]
 pub struct ParseContext {
     pub gradients: GradientTable,
@@ -543,11 +542,11 @@ pub fn parse_element_to_node(
             Some(Node::Group(group))
         }
         "defs" => {
-            // Walk children — gradient defs (round 1) plus filter
-            // defs (round 2). The pre-walk in
-            // `decoder::register_all_defs` already populated round-2
-            // tables; this pass picks up gradients which depend on
-            // inheritance and are cheap to re-resolve.
+            // Walk children — gradient defs (round 1) plus filter /
+            // mask / clipPath / symbol defs (round 2). Pre-walk in
+            // `decoder::register_all_defs` already populated the
+            // round-2 tables; this pass picks up gradients (which
+            // depend on inheritance and are cheap to re-resolve).
             for child in &el.children {
                 if let XmlNode::Element(c) = child {
                     register_def(c, &mut ctx.gradients)?;
@@ -559,11 +558,18 @@ pub fn parse_element_to_node(
             register_def(el, &mut ctx.gradients)?;
             None
         }
-        // Round-2: filter definitions don't produce visible output by
-        // themselves — they're consumed via url(#id) references on
-        // other elements. The pre-walk in `register_all_defs` already
-        // captured them, so just return None here.
-        "filter" => None,
+        // Round-2: filter / mask / clipPath / symbol definitions don't
+        // produce visible output by themselves — they're consumed via
+        // url(#id) references on other elements. The pre-walk in
+        // `decoder::register_all_defs` already captured them, so just
+        // return None here.
+        "filter" | "mask" | "clippath" | "symbol" => None,
+        // Round-2: <foreignObject> and <animate> are documented as
+        // graceful skips for round 2 (full support deferred to round
+        // 3+). They're emitted as empty groups so a downstream walker
+        // sees the element existed without crashing.
+        "foreignobject" => Some(Node::Group(Group::default())),
+        "animate" | "animatetransform" | "animatemotion" | "set" => None,
         "rect" | "circle" | "ellipse" | "line" | "polyline" | "polygon" | "path" => {
             let state = parent_state.merged_with(el)?;
             let path_opt = match local.as_str() {
@@ -613,11 +619,15 @@ pub fn parse_element_to_node(
             };
             Some(inner)
         }
-        // Round-1 deferral list — silently skip text, mask,
-        // foreignObject, animate, etc. so the rest of the document
-        // still loads.
+        // Round-2 deferral list — silently skip <text>, <use>,
+        // <script>, etc. so the rest of the document still loads.
+        // <text> support is wired in a follow-up commit (gated behind
+        // the optional `text` cargo feature).
         _ => None,
     };
+    // Round-2: apply mask / clip-path / filter wrappers from this
+    // element's attributes to whatever node we just produced. The
+    // wrapping order is filter(mask(clip(node))) — outer-most last.
     let node = match node_opt {
         Some(n) => n,
         None => return Ok(None),
@@ -625,11 +635,24 @@ pub fn parse_element_to_node(
     Ok(Some(apply_referenced_defs(el, node, &ctx.defs)))
 }
 
-/// Apply `filter="url(#id)"` from `el` to `node`, looking the id up
-/// in `defs`. Missing refs are silently dropped (the rest of the
-/// document still renders). Round-2 only handles filter; mask and
-/// clip-path land in subsequent commits.
+/// Apply `clip-path="url(#id)"` / `mask="url(#id)"` / `filter="url(#id)"`
+/// from `el` to `node`, looking the ids up in `defs`. Missing refs are
+/// silently dropped (the rest of the document still renders).
 fn apply_referenced_defs(el: &Element, mut node: Node, defs: &DefsTables) -> Node {
+    if let Some(id) = attr(el, "clip-path").and_then(parse_url_ref) {
+        if let Some(cp) = defs.clip_paths.get(id) {
+            node = wrap_with_clip(node, cp.path.clone());
+        }
+    }
+    if let Some(id) = attr(el, "mask").and_then(parse_url_ref) {
+        if let Some(m) = defs.masks.get(id) {
+            node = Node::SoftMask {
+                mask: Box::new(Node::Group(m.content.clone())),
+                mask_kind: m.mask_kind,
+                content: Box::new(node),
+            };
+        }
+    }
     // Filter is graceful pass-through in round 2 — wrap content in a
     // single-child Group so the structural intent ("these children are
     // filtered") survives the round-trip even though the actual
@@ -649,6 +672,28 @@ fn apply_referenced_defs(el: &Element, mut node: Node, defs: &DefsTables) -> Nod
     node
 }
 
+/// Wrap `node` so the rasterizer applies `clip` to its children.
+/// Existing groups gain the clip directly (avoiding an extra layer);
+/// other node kinds get a fresh single-child group.
+fn wrap_with_clip(node: Node, clip: Path) -> Node {
+    match node {
+        Node::Group(mut g) if g.clip.is_none() => {
+            g.clip = Some(clip);
+            Node::Group(g)
+        }
+        other => Node::Group(Group {
+            clip: Some(clip),
+            children: vec![other],
+            ..Group::default()
+        }),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Round-2 def parsers — invoked by the decoder's pre-walk so forward
+// references resolve regardless of source order.
+// ---------------------------------------------------------------------------
+
 /// Parse `<filter id="...">` into a [`FilterDef`]. Returns `None` if
 /// the element has no `id` (then it can't be referenced).
 pub fn parse_filter_def(el: &Element) -> Option<(String, FilterDef)> {
@@ -659,6 +704,150 @@ pub fn parse_filter_def(el: &Element) -> Option<(String, FilterDef)> {
             element: el.clone(),
         },
     ))
+}
+
+/// Parse `<mask id="..." mask-type="luminance|alpha">` into a
+/// [`MaskDef`]. The mask subtree is parsed into a [`Group`] using the
+/// provided gradient context (so gradient-filled masks work).
+pub fn parse_mask_def(el: &Element, ctx: &mut ParseContext) -> Result<Option<(String, MaskDef)>> {
+    let id = match attr(el, "id") {
+        Some(v) => v.to_string(),
+        None => return Ok(None),
+    };
+    let mask_kind = match attr(el, "mask-type").map(str::trim) {
+        Some("alpha") => MaskKind::Alpha,
+        _ => MaskKind::Luminance,
+    };
+    let parent_state = PaintState::default();
+    let mut group = Group::default();
+    for child in &el.children {
+        if let XmlNode::Element(c) = child {
+            if let Some(node) = parse_element_to_node(c, &parent_state, ctx)? {
+                group.children.push(node);
+            }
+        }
+    }
+    Ok(Some((
+        id,
+        MaskDef {
+            mask_kind,
+            content: group,
+        },
+    )))
+}
+
+/// Parse `<clipPath id="...">` into a [`ClipPathDef`]. Multiple child
+/// shapes are concatenated into one path — successive shapes start
+/// with a fresh `MoveTo` so the union under the non-zero / even-odd
+/// fill rule reproduces the SVG semantic of "the union of every
+/// child's filled interior". `<use>` references inside `<clipPath>`
+/// are deferred (round 3).
+pub fn parse_clip_path_def(
+    el: &Element,
+    ctx: &mut ParseContext,
+) -> Result<Option<(String, ClipPathDef)>> {
+    let id = match attr(el, "id") {
+        Some(v) => v.to_string(),
+        None => return Ok(None),
+    };
+    let mut path = Path::new();
+    for child in &el.children {
+        if let XmlNode::Element(c) = child {
+            // Re-use the shape parsers — they already handle rect /
+            // circle / ellipse / polyline / polygon / line / path.
+            let local = tag_local(&c.name);
+            let sub = match local.as_str() {
+                "rect" => parse_rect(c)?,
+                "circle" => parse_circle(c)?,
+                "ellipse" => parse_ellipse(c)?,
+                "line" => Some(parse_line(c)?),
+                "polyline" => parse_polyline(c, false)?,
+                "polygon" => parse_polyline(c, true)?,
+                "path" => parse_path(c)?,
+                _ => None,
+            };
+            if let Some(p) = sub {
+                // Apply per-element transform if present.
+                let transformed = match attr(c, "transform") {
+                    Some(v) => transform_path(p, &parse_transform(v)?),
+                    None => p,
+                };
+                path.commands.extend(transformed.commands);
+            }
+        }
+    }
+    if path.commands.is_empty() {
+        return Ok(None);
+    }
+    let _ = ctx;
+    Ok(Some((id, ClipPathDef { path })))
+}
+
+/// Parse `<symbol id="...">` into a [`SymbolDef`]. Captured here for
+/// the round-3 `<use>` resolver; round 2 doesn't yet render symbols.
+pub fn parse_symbol_def(
+    el: &Element,
+    ctx: &mut ParseContext,
+) -> Result<Option<(String, SymbolDef)>> {
+    let id = match attr(el, "id") {
+        Some(v) => v.to_string(),
+        None => return Ok(None),
+    };
+    let parent_state = PaintState::default();
+    let mut group = Group::default();
+    for child in &el.children {
+        if let XmlNode::Element(c) = child {
+            if let Some(node) = parse_element_to_node(c, &parent_state, ctx)? {
+                group.children.push(node);
+            }
+        }
+    }
+    Ok(Some((id, SymbolDef { content: group })))
+}
+
+/// Apply a 2D affine to every coordinate in `path`. Used by
+/// `<clipPath>` resolution where each child shape may carry its own
+/// `transform=` attribute.
+fn transform_path(path: Path, t: &Transform2D) -> Path {
+    let map = |p: Point| t.apply(p);
+    let cmds = path
+        .commands
+        .into_iter()
+        .map(|c| match c {
+            PathCommand::MoveTo(p) => PathCommand::MoveTo(map(p)),
+            PathCommand::LineTo(p) => PathCommand::LineTo(map(p)),
+            PathCommand::QuadCurveTo { control, end } => PathCommand::QuadCurveTo {
+                control: map(control),
+                end: map(end),
+            },
+            PathCommand::CubicCurveTo { c1, c2, end } => PathCommand::CubicCurveTo {
+                c1: map(c1),
+                c2: map(c2),
+                end: map(end),
+            },
+            // ArcTo end point is a coordinate; the radii / rotation
+            // would also need adjustment under a non-uniform scale —
+            // that's out of scope for round 2's clipPath transform.
+            PathCommand::ArcTo {
+                rx,
+                ry,
+                x_axis_rot,
+                large_arc,
+                sweep,
+                end,
+            } => PathCommand::ArcTo {
+                rx,
+                ry,
+                x_axis_rot,
+                large_arc,
+                sweep,
+                end: map(end),
+            },
+            PathCommand::Close => PathCommand::Close,
+            other => other,
+        })
+        .collect();
+    Path { commands: cmds }
 }
 
 fn register_def(el: &Element, gradients: &mut GradientTable) -> Result<()> {

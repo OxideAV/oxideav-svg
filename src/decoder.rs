@@ -7,7 +7,8 @@ use oxideav_core::{
 };
 
 use crate::element::{
-    parse_element_to_node, parse_filter_def, parse_number, PaintState, ParseContext,
+    parse_clip_path_def, parse_element_to_node, parse_filter_def, parse_mask_def, parse_number,
+    parse_symbol_def, PaintState, ParseContext,
 };
 use crate::parser::{
     attr, decode_utf8_lossy_stripping_bom, parse_xml, tag_local, Element, Node as XmlNode,
@@ -58,8 +59,9 @@ fn parse_svg_root(svg: &Element) -> Result<VectorFrame> {
     let mut ctx = ParseContext::new();
 
     // First pass: register every <defs> child + every gradient /
-    // filter def seen anywhere in the tree, so forward references
-    // inside the doc work regardless of declaration order.
+    // filter / mask / clipPath / symbol seen anywhere in the tree, so
+    // forward references inside the doc work regardless of declaration
+    // order.
     register_all_defs(svg, &mut ctx)?;
 
     // Second pass: walk the tree and build the scene graph. Gradients
@@ -98,6 +100,21 @@ fn register_all_defs(el: &Element, ctx: &mut ParseContext) -> Result<()> {
         "filter" => {
             if let Some((id, def)) = parse_filter_def(el) {
                 ctx.defs.filters.insert(id, def);
+            }
+        }
+        "mask" => {
+            if let Some((id, def)) = parse_mask_def(el, ctx)? {
+                ctx.defs.masks.insert(id, def);
+            }
+        }
+        "clippath" => {
+            if let Some((id, def)) = parse_clip_path_def(el, ctx)? {
+                ctx.defs.clip_paths.insert(id, def);
+            }
+        }
+        "symbol" => {
+            if let Some((id, def)) = parse_symbol_def(el, ctx)? {
+                ctx.defs.symbols.insert(id, def);
             }
         }
         _ => {}

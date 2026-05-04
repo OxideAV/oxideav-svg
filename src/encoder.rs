@@ -9,9 +9,9 @@
 use std::collections::HashMap;
 
 use oxideav_core::{
-    DashPattern, Encoder, Error, FillRule, Frame, Group, LineCap, LineJoin, LinearGradient, Node,
-    Packet, Paint, PathCommand, PathNode, Point, RadialGradient, Result, Rgba, SpreadMethod,
-    TimeBase, Transform2D, VectorFrame,
+    DashPattern, Encoder, Error, FillRule, Frame, Group, LineCap, LineJoin, LinearGradient,
+    MaskKind, Node, Packet, Paint, Path, PathCommand, PathNode, Point, RadialGradient, Result,
+    Rgba, SpreadMethod, TimeBase, Transform2D, VectorFrame,
 };
 
 use crate::decoder::CODEC_ID_STR;
@@ -35,20 +35,33 @@ pub fn write_svg(frame: &VectorFrame) -> Vec<u8> {
     }
     out.push_str(">\n");
 
-    // Collect every gradient referenced inside the tree so we can emit
-    // a `<defs>` block once at the top.
+    // Collect every gradient referenced inside the tree (for round 1
+    // output) plus every mask / clipPath the round-2 walker emitted —
+    // each gets a `<defs>`-level entry with an auto-generated id so
+    // the corresponding child can reference it by `mask=` /
+    // `clip-path=` attribute.
     let mut gradients: GradientCollector = GradientCollector::default();
-    collect_paints_in_group(&frame.root, &mut gradients);
+    let mut clips: ClipPathCollector = ClipPathCollector::default();
+    let mut masks: MaskCollector = MaskCollector::default();
+    walk_collect_defs(&frame.root, &mut gradients, &mut clips, &mut masks);
 
-    if !gradients.entries.is_empty() {
+    let has_defs =
+        !gradients.entries.is_empty() || !clips.entries.is_empty() || !masks.entries.is_empty();
+    if has_defs {
         out.push_str("  <defs>\n");
         for (id, paint) in &gradients.entries {
             write_gradient(&mut out, id, paint);
         }
+        for (id, path) in &clips.entries {
+            write_clip_path(&mut out, id, path);
+        }
+        for (id, kind, content) in &masks.entries {
+            write_mask(&mut out, id, *kind, content, &gradients);
+        }
         out.push_str("  </defs>\n");
     }
 
-    write_group_children(&mut out, &frame.root, 1, &gradients);
+    write_group_children(&mut out, &frame.root, 1, &gradients, &clips, &masks);
 
     out.push_str("</svg>\n");
     out.into_bytes()
@@ -59,13 +72,22 @@ fn write_group_children(
     group: &Group,
     depth: usize,
     gradients: &GradientCollector,
+    clips: &ClipPathCollector,
+    masks: &MaskCollector,
 ) {
     for child in &group.children {
-        write_node(out, child, depth, gradients);
+        write_node(out, child, depth, gradients, clips, masks);
     }
 }
 
-fn write_node(out: &mut String, node: &Node, depth: usize, gradients: &GradientCollector) {
+fn write_node(
+    out: &mut String,
+    node: &Node,
+    depth: usize,
+    gradients: &GradientCollector,
+    clips: &ClipPathCollector,
+    masks: &MaskCollector,
+) {
     let indent = "  ".repeat(depth);
     match node {
         Node::Group(g) => {
@@ -80,8 +102,13 @@ fn write_node(out: &mut String, node: &Node, depth: usize, gradients: &GradientC
             if (g.opacity - 1.0).abs() > f32::EPSILON {
                 out.push_str(&format!(" opacity=\"{}\"", trim_float(g.opacity)));
             }
+            if let Some(clip) = &g.clip {
+                if let Some(id) = clips.lookup(clip) {
+                    out.push_str(&format!(" clip-path=\"url(#{})\"", escape_attr(id)));
+                }
+            }
             out.push_str(">\n");
-            write_group_children(out, g, depth + 1, gradients);
+            write_group_children(out, g, depth + 1, gradients, clips, masks);
             out.push_str(&indent);
             out.push_str("</g>\n");
         }
@@ -93,12 +120,34 @@ fn write_node(out: &mut String, node: &Node, depth: usize, gradients: &GradientC
             write_paint_attrs(out, p, gradients);
             out.push_str("/>\n");
         }
+        Node::SoftMask {
+            mask,
+            mask_kind,
+            content,
+        } => {
+            // Wrap content in a `<g mask="url(#id)">` and emit; the
+            // mask itself was already collected into the defs block.
+            let mask_node = (**mask).clone();
+            let id = masks
+                .lookup(*mask_kind, &mask_node)
+                .map(String::from)
+                .unwrap_or_default();
+            out.push_str(&indent);
+            if id.is_empty() {
+                out.push_str("<g>\n");
+            } else {
+                out.push_str(&format!("<g mask=\"url(#{})\">\n", escape_attr(&id)));
+            }
+            write_node(out, content, depth + 1, gradients, clips, masks);
+            out.push_str(&indent);
+            out.push_str("</g>\n");
+        }
         Node::Image(_) => {
             // Round 1: serialising embedded raster images would
             // require base64 + a `<image>` href — defer.
         }
-        // `Node` is `#[non_exhaustive]` upstream; future variants
-        // (text, masks, filters) are silently dropped in round 1.
+        // `Node` is `#[non_exhaustive]` upstream; future variants are
+        // silently dropped.
         _ => {}
     }
 }
@@ -376,24 +425,227 @@ fn radial_fingerprint(g: &RadialGradient) -> String {
     s
 }
 
-fn collect_paints_in_group(group: &Group, gradients: &mut GradientCollector) {
+fn walk_collect_defs(
+    group: &Group,
+    gradients: &mut GradientCollector,
+    clips: &mut ClipPathCollector,
+    masks: &mut MaskCollector,
+) {
+    if let Some(clip) = &group.clip {
+        clips.ensure(clip);
+    }
     for child in &group.children {
-        match child {
-            Node::Path(p) => {
-                if let Some(paint) = &p.fill {
-                    gradients.ensure(paint);
-                }
-                if let Some(s) = &p.stroke {
-                    gradients.ensure(&s.paint);
-                }
+        walk_collect_defs_node(child, gradients, clips, masks);
+    }
+}
+
+fn walk_collect_defs_node(
+    node: &Node,
+    gradients: &mut GradientCollector,
+    clips: &mut ClipPathCollector,
+    masks: &mut MaskCollector,
+) {
+    match node {
+        Node::Path(p) => {
+            if let Some(paint) = &p.fill {
+                gradients.ensure(paint);
             }
-            Node::Group(g) => collect_paints_in_group(g, gradients),
-            Node::Image(_) => {}
-            // `Node` is `#[non_exhaustive]` upstream; ignore unknown
-            // variants when collecting referenced paints.
-            _ => {}
+            if let Some(s) = &p.stroke {
+                gradients.ensure(&s.paint);
+            }
+        }
+        Node::Group(g) => walk_collect_defs(g, gradients, clips, masks),
+        Node::SoftMask {
+            mask,
+            mask_kind,
+            content,
+        } => {
+            let mask_node = (**mask).clone();
+            // Recurse into the mask + content subtrees so any nested
+            // gradients / clips / masks also get registered.
+            walk_collect_defs_node(mask, gradients, clips, masks);
+            walk_collect_defs_node(content, gradients, clips, masks);
+            masks.ensure(*mask_kind, mask_node);
+        }
+        Node::Image(_) => {}
+        // `Node` is `#[non_exhaustive]` upstream; ignore unknown
+        // variants when collecting referenced paints.
+        _ => {}
+    }
+}
+
+/// Collects every distinct clip [`Path`] referenced by a Group's
+/// `clip` field so the encoder can emit a single `<clipPath>` def per
+/// unique clip.
+#[derive(Default)]
+struct ClipPathCollector {
+    entries: Vec<(String, Path)>,
+    by_fp: HashMap<String, String>,
+}
+
+impl ClipPathCollector {
+    fn ensure(&mut self, path: &Path) {
+        let fp = path_fingerprint(path);
+        if self.by_fp.contains_key(&fp) {
+            return;
+        }
+        let id = format!("clip{}", self.entries.len() + 1);
+        self.entries.push((id.clone(), path.clone()));
+        self.by_fp.insert(fp, id);
+    }
+
+    fn lookup(&self, path: &Path) -> Option<&str> {
+        self.by_fp.get(&path_fingerprint(path)).map(String::as_str)
+    }
+}
+
+/// Collects every distinct soft-mask subtree referenced inside the
+/// scene graph, keyed by `(MaskKind, structural fingerprint)`.
+#[derive(Default)]
+struct MaskCollector {
+    entries: Vec<(String, MaskKind, Node)>,
+    by_fp: HashMap<String, String>,
+}
+
+impl MaskCollector {
+    fn ensure(&mut self, kind: MaskKind, node: Node) {
+        let fp = format!("{:?}:{}", kind, node_fingerprint(&node));
+        if self.by_fp.contains_key(&fp) {
+            return;
+        }
+        let id = format!("mask{}", self.entries.len() + 1);
+        self.by_fp.insert(fp, id.clone());
+        self.entries.push((id, kind, node));
+    }
+
+    fn lookup(&self, kind: MaskKind, node: &Node) -> Option<&str> {
+        let fp = format!("{:?}:{}", kind, node_fingerprint(node));
+        self.by_fp.get(&fp).map(String::as_str)
+    }
+}
+
+fn path_fingerprint(p: &Path) -> String {
+    let mut s = String::with_capacity(p.commands.len() * 12);
+    for cmd in &p.commands {
+        match cmd {
+            PathCommand::MoveTo(p) => {
+                s.push_str(&format!("M{},{};", trim_float(p.x), trim_float(p.y)))
+            }
+            PathCommand::LineTo(p) => {
+                s.push_str(&format!("L{},{};", trim_float(p.x), trim_float(p.y)))
+            }
+            PathCommand::QuadCurveTo { control, end } => s.push_str(&format!(
+                "Q{},{},{},{};",
+                trim_float(control.x),
+                trim_float(control.y),
+                trim_float(end.x),
+                trim_float(end.y)
+            )),
+            PathCommand::CubicCurveTo { c1, c2, end } => s.push_str(&format!(
+                "C{},{},{},{},{},{};",
+                trim_float(c1.x),
+                trim_float(c1.y),
+                trim_float(c2.x),
+                trim_float(c2.y),
+                trim_float(end.x),
+                trim_float(end.y)
+            )),
+            PathCommand::ArcTo {
+                rx,
+                ry,
+                x_axis_rot,
+                large_arc,
+                sweep,
+                end,
+            } => s.push_str(&format!(
+                "A{},{},{},{},{},{},{};",
+                trim_float(*rx),
+                trim_float(*ry),
+                trim_float(*x_axis_rot),
+                if *large_arc { 1 } else { 0 },
+                if *sweep { 1 } else { 0 },
+                trim_float(end.x),
+                trim_float(end.y)
+            )),
+            PathCommand::Close => s.push_str("Z;"),
+            _ => s.push('?'),
         }
     }
+    s
+}
+
+fn node_fingerprint(n: &Node) -> String {
+    match n {
+        Node::Path(p) => format!("P({})", path_fingerprint(&p.path)),
+        Node::Group(g) => {
+            let mut s = String::from("G(");
+            s.push_str(&format!(
+                "t={:?}o={:?};",
+                (
+                    g.transform.a,
+                    g.transform.b,
+                    g.transform.c,
+                    g.transform.d,
+                    g.transform.e,
+                    g.transform.f
+                ),
+                g.opacity
+            ));
+            for c in &g.children {
+                s.push_str(&node_fingerprint(c));
+                s.push(',');
+            }
+            s.push(')');
+            s
+        }
+        Node::SoftMask {
+            mask,
+            mask_kind,
+            content,
+        } => format!(
+            "SM({:?};{};{})",
+            mask_kind,
+            node_fingerprint(mask),
+            node_fingerprint(content)
+        ),
+        Node::Image(_) => "I".to_string(),
+        _ => "?".to_string(),
+    }
+}
+
+fn write_clip_path(out: &mut String, id: &str, path: &Path) {
+    out.push_str(&format!(
+        "    <clipPath id=\"{}\">\n      <path d=\"",
+        escape_attr(id)
+    ));
+    write_path_d(out, &path.commands);
+    out.push_str("\"/>\n    </clipPath>\n");
+}
+
+fn write_mask(
+    out: &mut String,
+    id: &str,
+    kind: MaskKind,
+    content: &Node,
+    gradients: &GradientCollector,
+) {
+    let kind_attr = match kind {
+        MaskKind::Luminance => "",
+        MaskKind::Alpha => " mask-type=\"alpha\"",
+    };
+    out.push_str(&format!(
+        "    <mask id=\"{}\"{}>\n",
+        escape_attr(id),
+        kind_attr
+    ));
+    // Mask content is emitted under the defs section. We pass empty
+    // clip / mask collectors here because nested clip-paths / masks
+    // inside a mask are an edge case (deferred): downstream rasterizer
+    // doesn't support them either.
+    let empty_clips = ClipPathCollector::default();
+    let empty_masks = MaskCollector::default();
+    write_node(out, content, 3, gradients, &empty_clips, &empty_masks);
+    out.push_str("    </mask>\n");
 }
 
 fn write_gradient(out: &mut String, id: &str, paint: &Paint) {
