@@ -25,6 +25,10 @@ text = ["dep:oxideav-scribe"]
 # `Node::SoftMask` + `MaskKind` (used by round-2 `<mask>` / `<clipPath>`
 # mapping) require oxideav-core 0.1.15+.
 oxideav-core = "0.1.15"
+# Distributed-slice auto-registration into `oxideav_core::REGISTRARS`
+# via the `oxideav_core::register!` macro. Tiny crate, no transitive
+# deps; works on every target including wasm.
+linkme = "0.3"
 # Round-7 vector-text APIs (`Face::glyph_node` + `Shaper::shape_to_paths`)
 # land in 0.1.1; gated behind the `text` feature so the SVG crate stays
 # usable when callers don't need text shaping.
