@@ -92,7 +92,9 @@ pub mod transform;
 pub use decoder::{make_decoder, parse_svg, CODEC_ID_STR};
 pub use encoder::{make_encoder, write_svg, write_svgz};
 
-use oxideav_core::{CodecCapabilities, CodecId, CodecInfo, CodecRegistry, ContainerRegistry};
+use oxideav_core::{
+    CodecCapabilities, CodecId, CodecInfo, CodecRegistry, ContainerRegistry, RuntimeContext,
+};
 
 /// Register the SVG codec (decoder + encoder) on `reg`.
 pub fn register_codecs(reg: &mut CodecRegistry) {
@@ -116,12 +118,12 @@ pub fn register_containers(reg: &mut ContainerRegistry) {
     container::register(reg);
 }
 
-/// Combined registration: codecs + containers. Same shape as every
-/// other single-image sibling crate (`oxideav-bmp` / `oxideav-png` /
-/// `oxideav-webp` / …).
-pub fn register(codecs: &mut CodecRegistry, containers: &mut ContainerRegistry) {
-    register_codecs(codecs);
-    register_containers(containers);
+/// Unified registration entry point — installs the SVG codec into the
+/// codec sub-registry and the SVG container into the container
+/// sub-registry of the supplied [`RuntimeContext`].
+pub fn register(ctx: &mut RuntimeContext) {
+    register_codecs(&mut ctx.codecs);
+    register_containers(&mut ctx.containers);
 }
 
 #[cfg(test)]
@@ -130,9 +132,28 @@ mod tests {
 
     #[test]
     fn register_does_not_panic() {
-        let mut codecs = CodecRegistry::new();
-        let mut containers = ContainerRegistry::new();
-        register(&mut codecs, &mut containers);
+        let mut ctx = RuntimeContext::new();
+        register(&mut ctx);
+    }
+
+    #[test]
+    fn register_via_runtime_context_installs_both_sides() {
+        let mut ctx = RuntimeContext::new();
+        register(&mut ctx);
+        let id = CodecId::new(CODEC_ID_STR);
+        assert!(
+            ctx.codecs.has_decoder(&id),
+            "SVG decoder factory not installed via RuntimeContext"
+        );
+        assert!(
+            ctx.codecs.has_encoder(&id),
+            "SVG encoder factory not installed via RuntimeContext"
+        );
+        assert_eq!(
+            ctx.containers.container_for_extension("svg"),
+            Some("svg"),
+            "SVG container extension not installed via RuntimeContext"
+        );
     }
 
     #[test]
