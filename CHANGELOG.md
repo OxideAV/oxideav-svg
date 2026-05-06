@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Round 4** — SMIL animation snapshot at arbitrary `t`. New
+  `parse_svg_at(bytes, t_seconds)` evaluates every `<animate>` /
+  `<set>` / `<animateTransform>` using the full SMIL timing model:
+  `begin`, `dur` (with `s` / `ms` / `min` / `h` / `H:M:S` clock-value
+  units), `repeatCount` (numeric or `indefinite`), `keyTimes` /
+  `values` segmented interpolation, `from` / `to` / `by` shorthand,
+  `calcMode="discrete|linear"`. Colours interpolate componentwise;
+  numbers lerp; everything else is discrete. `<animateTransform>`
+  works for `type="translate|rotate|scale"`. `parse_svg(bytes)`
+  retains the round-3 t=0 behaviour.
+- **Round 4** — minimal CSS cascade. `<style>` blocks (with comments,
+  `@`-rule skipping, and CDATA bodies) plus inline `style="..."`
+  attributes resolve via tag / class / id selectors with CSS2.1
+  specificity ordering. Cascade applies to `fill`, `stroke`,
+  `stroke-width`, `opacity`, `fill-rule`, etc.; properties not
+  modelled by the paint state are silently ignored. Implemented in
+  the new `oxideav_svg::css` module.
+- **Round 4** — encoder preservation of `<style>` / `<filter>` /
+  `<animate>` / `<foreignObject>` via the `PreservedExtras`
+  side-channel. New `parse_svg_with_extras(bytes)` returns the scene
+  graph plus a captured-XML buffer; the symmetric
+  `write_svg_with_extras(frame, extras)` re-emits those fragments so
+  a parse → write round-trip no longer drops dynamic / filter / CSS
+  definitions. Bare `parse_svg` / `write_svg` keep the round-3
+  behaviour.
+
 ## [0.1.2](https://github.com/OxideAV/oxideav-svg/compare/v0.1.1...v0.1.2) - 2026-05-04
 
 ### Added

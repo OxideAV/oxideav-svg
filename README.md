@@ -76,11 +76,48 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   before parsing — produces the same first-paint static rendering
   most browsers show, instead of silently dropping animated content.
 
-## Deferred to round 4+
+## Round 4 additions
+
+- **SMIL animation snapshot at arbitrary `t`** —
+  `parse_svg_at(bytes, t_seconds)` evaluates every `<animate>` /
+  `<set>` / `<animateTransform>` using the full SMIL timing model:
+  `begin`, `dur` (with `s` / `ms` / `min` / `h` / `H:M:S` clock-value
+  units), `repeatCount` (numeric or `indefinite`), `keyTimes` +
+  `values` segmented interpolation, `from` / `to` / `by` shorthand,
+  `calcMode="discrete|linear"`. Colours interpolate componentwise;
+  numbers lerp; everything else is discrete. `<animateTransform>`
+  serialises to a `transform="..."` attribute for
+  `type="translate|rotate|scale"`. The legacy `parse_svg(bytes)`
+  retains the round-3 `t=0` first-paint behaviour.
+- **Minimal CSS cascade** — `<style>` blocks (with `/* */`
+  comments, `@`-rule skipping, CDATA bodies) plus inline
+  `style="..."` attributes resolve via tag / class / id selectors with
+  CSS2.1 specificity ordering. Cascade applies to `fill`, `stroke`,
+  `stroke-width`, `opacity`, `fill-rule`, etc.; unknown properties
+  (e.g. `font-family`) are silently ignored rather than failing the
+  document. Lives in the new `oxideav_svg::css` module.
+- **Encoder preservation** of `<style>` / `<filter>` / `<animate>` /
+  `<foreignObject>` via a `PreservedExtras` side-channel. New
+  `parse_svg_with_extras(bytes)` returns `(VectorFrame,
+  PreservedExtras)`; the symmetric `write_svg_with_extras(frame,
+  extras)` re-emits the captured fragments alongside the rasterised
+  scene so a `parse → write` round-trip preserves the dynamic /
+  filter / CSS definitions. Bare `parse_svg` / `write_svg` retain
+  round-3 behaviour.
+
+## Deferred to round 5+
 
 - `<script>`.
-- Animation timing beyond `t=0` (`begin`, `dur`, keyframe
-  interpolation, `repeatCount`).
+- Filter primitive rasterisation (feGaussianBlur, feColorMatrix,
+  …). The `<filter>` definition survives round-trip via
+  `PreservedExtras`; actual rasterisation lives in `oxideav-raster`.
+- Animation `calcMode="paced|spline"` (currently degrade to
+  `linear`).
+- CSS combinators (descendant, child, sibling) and pseudo-classes;
+  `@import` of external stylesheets.
+- Animation re-attachment to specific scene-graph emit sites in the
+  encoder (currently appended at the trailing edge of the document
+  with a parent-id comment).
 
 ## Usage
 

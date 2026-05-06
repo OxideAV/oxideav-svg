@@ -15,7 +15,8 @@ use oxideav_core::{
 };
 
 use crate::decoder::CODEC_ID_STR;
-use crate::parser::escape_attr;
+use crate::parser::{escape_attr, Element, Node as XmlNode};
+use crate::preserved::PreservedExtras;
 
 /// Round 3: serialise a [`VectorFrame`] into a gzip-compressed
 /// `.svgz` byte buffer. Equivalent to `gzip(write_svg(frame))`.
@@ -25,7 +26,18 @@ pub fn write_svgz(frame: &VectorFrame) -> Result<Vec<u8>> {
 }
 
 /// Serialise a [`VectorFrame`] into a UTF-8 SVG byte buffer.
+///
+/// Equivalent to `write_svg_with_extras(frame, &PreservedExtras::default())`.
 pub fn write_svg(frame: &VectorFrame) -> Vec<u8> {
+    write_svg_with_extras(frame, &PreservedExtras::default())
+}
+
+/// Round 4 — serialise a [`VectorFrame`] *and* re-emit every preserved
+/// `<style>` / `<filter>` / `<animate>` / `<foreignObject>` fragment
+/// supplied in `extras`. Pair with
+/// [`crate::decoder::parse_svg_with_extras`] for a structural
+/// round-trip that doesn't lose CSS / filter / animation definitions.
+pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> Vec<u8> {
     let mut out = String::new();
     out.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     out.push_str("<svg xmlns=\"http://www.w3.org/2000/svg\"");
@@ -52,10 +64,24 @@ pub fn write_svg(frame: &VectorFrame) -> Vec<u8> {
     let mut masks: MaskCollector = MaskCollector::default();
     walk_collect_defs(&frame.root, &mut gradients, &mut clips, &mut masks);
 
-    let has_defs =
-        !gradients.entries.is_empty() || !clips.entries.is_empty() || !masks.entries.is_empty();
+    let has_defs = !gradients.entries.is_empty()
+        || !clips.entries.is_empty()
+        || !masks.entries.is_empty()
+        || !extras.styles.is_empty()
+        || !extras.filters.is_empty();
     if has_defs {
         out.push_str("  <defs>\n");
+        for body in &extras.styles {
+            // Wrap in CDATA so any `>` / `&` inside the CSS body
+            // doesn't trip the parser. Rare for plain selectors, but
+            // common in `content: "..."` declarations.
+            out.push_str("    <style><![CDATA[");
+            out.push_str(body.trim());
+            out.push_str("]]></style>\n");
+        }
+        for filter in &extras.filters {
+            write_raw_element(&mut out, filter, 2);
+        }
         for (id, paint) in &gradients.entries {
             write_gradient(&mut out, id, paint);
         }
@@ -70,8 +96,74 @@ pub fn write_svg(frame: &VectorFrame) -> Vec<u8> {
 
     write_group_children(&mut out, &frame.root, 1, &gradients, &clips, &masks);
 
+    // Round-4 extras that don't belong in <defs>: <foreignObject> and
+    // animations get emitted at the trailing edge of the document so
+    // the static scene stays visually identical.
+    for fo in &extras.foreign_objects {
+        write_raw_element(&mut out, fo, 1);
+    }
+    for anim in &extras.animations {
+        // Wrap each animation in a comment carrying its parent id —
+        // round 4 does not yet re-attach to the precise emit site.
+        if let Some(id) = &anim.parent_id {
+            out.push_str(&format!("  <!-- animation parent: #{} -->\n", id));
+        }
+        write_raw_element(&mut out, &anim.element, 1);
+    }
+
     out.push_str("</svg>\n");
     out.into_bytes()
+}
+
+/// Serialise an [`Element`] verbatim. Used to re-emit preserved-XML
+/// fragments. `depth` is the indent level (in `"  "` units).
+fn write_raw_element(out: &mut String, el: &Element, depth: usize) {
+    let indent = "  ".repeat(depth);
+    out.push_str(&indent);
+    out.push('<');
+    out.push_str(&el.name);
+    for (k, v) in &el.attrs {
+        out.push(' ');
+        out.push_str(k);
+        out.push_str("=\"");
+        out.push_str(&escape_attr(v));
+        out.push('"');
+    }
+    if el.children.is_empty() {
+        out.push_str("/>\n");
+        return;
+    }
+    out.push_str(">\n");
+    for child in &el.children {
+        match child {
+            XmlNode::Element(c) => write_raw_element(out, c, depth + 1),
+            XmlNode::Text(t) => {
+                let trimmed = t.trim();
+                if !trimmed.is_empty() {
+                    out.push_str(&"  ".repeat(depth + 1));
+                    out.push_str(&escape_text(trimmed));
+                    out.push('\n');
+                }
+            }
+        }
+    }
+    out.push_str(&indent);
+    out.push_str("</");
+    out.push_str(&el.name);
+    out.push_str(">\n");
+}
+
+fn escape_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '&' => out.push_str("&amp;"),
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 fn write_group_children(

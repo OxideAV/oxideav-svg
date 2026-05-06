@@ -17,6 +17,7 @@ use oxideav_core::{
 };
 
 use crate::color::{parse_opacity, parse_paint, PaintValue};
+use crate::css::{declarations_for, Stylesheet};
 use crate::defs::{parse_url_ref, ClipPathDef, DefsTables, FilterDef, MaskDef, SymbolDef};
 use crate::parser::{attr, tag_local, Element, Node as XmlNode};
 use crate::path_data::parse_path_data;
@@ -66,80 +67,101 @@ impl PaintState {
     /// Override fields from `el`'s presentation attributes. Anything
     /// the element doesn't set inherits unchanged from `self`.
     pub fn merged_with(&self, el: &Element) -> Result<Self> {
+        // No CSS context — use plain attrs only.
+        self.merged_with_css(el, &Stylesheet::new())
+    }
+
+    /// Round 4 — variant that also consults a CSS [`Stylesheet`] for
+    /// matched-by-specificity declarations + the inline `style="..."`
+    /// attribute. Cascade order (last wins): inherited → presentation
+    /// attrs → matched CSS rules → `style="..."`.
+    pub fn merged_with_css(&self, el: &Element, sheet: &Stylesheet) -> Result<Self> {
         let mut s = self.clone();
-        if let Some(v) = attr(el, "fill") {
-            s.fill = parse_paint(v)?;
+        // 1) presentation attributes from `el`.
+        for (name, _) in &el.attrs {
+            self.apply_one(&mut s, name, attr(el, name).unwrap_or(""))?;
         }
-        if let Some(v) = attr(el, "fill-opacity") {
-            s.fill_opacity = parse_opacity(v)?;
-        }
-        if let Some(v) = attr(el, "stroke") {
-            s.stroke = parse_paint(v)?;
-        }
-        if let Some(v) = attr(el, "stroke-opacity") {
-            s.stroke_opacity = parse_opacity(v)?;
-        }
-        if let Some(v) = attr(el, "stroke-width") {
-            s.stroke_width = v
-                .trim()
-                .parse::<f32>()
-                .map_err(|_| Error::invalid("SVG: malformed stroke-width"))?;
-        }
-        if let Some(v) = attr(el, "stroke-linecap") {
-            s.stroke_linecap = match v.trim() {
-                "butt" => LineCap::Butt,
-                "round" => LineCap::Round,
-                "square" => LineCap::Square,
-                _ => return Err(Error::invalid("SVG: bad stroke-linecap")),
-            };
-        }
-        if let Some(v) = attr(el, "stroke-linejoin") {
-            s.stroke_linejoin = match v.trim() {
-                "miter" => LineJoin::Miter,
-                "round" => LineJoin::Round,
-                "bevel" => LineJoin::Bevel,
-                _ => return Err(Error::invalid("SVG: bad stroke-linejoin")),
-            };
-        }
-        if let Some(v) = attr(el, "stroke-miterlimit") {
-            s.stroke_miterlimit = v
-                .trim()
-                .parse::<f32>()
-                .map_err(|_| Error::invalid("SVG: malformed stroke-miterlimit"))?;
-        }
-        if let Some(v) = attr(el, "stroke-dasharray") {
-            let trimmed = v.trim();
-            if trimmed.eq_ignore_ascii_case("none") {
-                s.stroke_dasharray = None;
-            } else {
-                let arr: Result<Vec<f32>> = trimmed
-                    .split(|c: char| c == ',' || c.is_whitespace())
-                    .filter(|p| !p.is_empty())
-                    .map(|n| {
-                        n.parse::<f32>()
-                            .map_err(|_| Error::invalid("SVG: malformed stroke-dasharray"))
-                    })
-                    .collect();
-                s.stroke_dasharray = Some(arr?);
-            }
-        }
-        if let Some(v) = attr(el, "stroke-dashoffset") {
-            s.stroke_dashoffset = v
-                .trim()
-                .parse::<f32>()
-                .map_err(|_| Error::invalid("SVG: malformed stroke-dashoffset"))?;
-        }
-        if let Some(v) = attr(el, "opacity") {
-            s.opacity = parse_opacity(v)?;
-        }
-        if let Some(v) = attr(el, "fill-rule") {
-            s.fill_rule = match v.trim() {
-                "nonzero" => FillRule::NonZero,
-                "evenodd" => FillRule::EvenOdd,
-                _ => return Err(Error::invalid("SVG: bad fill-rule")),
-            };
+        // 2) matched CSS rules + inline style — last write wins.
+        for (name, value) in declarations_for(el, sheet) {
+            self.apply_one(&mut s, &name, &value)?;
         }
         Ok(s)
+    }
+
+    /// Apply one (name, value) presentation property to `s`. Unknown
+    /// names are ignored (so `style=""` content like `font-family` doesn't
+    /// blow up — it's just silently filed under "not modelled yet").
+    fn apply_one(&self, s: &mut PaintState, name: &str, value: &str) -> Result<()> {
+        let lower = name.to_ascii_lowercase();
+        match lower.as_str() {
+            "fill" => s.fill = parse_paint(value)?,
+            "fill-opacity" => s.fill_opacity = parse_opacity(value)?,
+            "stroke" => s.stroke = parse_paint(value)?,
+            "stroke-opacity" => s.stroke_opacity = parse_opacity(value)?,
+            "stroke-width" => {
+                s.stroke_width = value
+                    .trim()
+                    .parse::<f32>()
+                    .map_err(|_| Error::invalid("SVG: malformed stroke-width"))?;
+            }
+            "stroke-linecap" => {
+                s.stroke_linecap = match value.trim() {
+                    "butt" => LineCap::Butt,
+                    "round" => LineCap::Round,
+                    "square" => LineCap::Square,
+                    _ => return Err(Error::invalid("SVG: bad stroke-linecap")),
+                };
+            }
+            "stroke-linejoin" => {
+                s.stroke_linejoin = match value.trim() {
+                    "miter" => LineJoin::Miter,
+                    "round" => LineJoin::Round,
+                    "bevel" => LineJoin::Bevel,
+                    _ => return Err(Error::invalid("SVG: bad stroke-linejoin")),
+                };
+            }
+            "stroke-miterlimit" => {
+                s.stroke_miterlimit = value
+                    .trim()
+                    .parse::<f32>()
+                    .map_err(|_| Error::invalid("SVG: malformed stroke-miterlimit"))?;
+            }
+            "stroke-dasharray" => {
+                let trimmed = value.trim();
+                if trimmed.eq_ignore_ascii_case("none") {
+                    s.stroke_dasharray = None;
+                } else {
+                    let arr: Result<Vec<f32>> = trimmed
+                        .split(|c: char| c == ',' || c.is_whitespace())
+                        .filter(|p| !p.is_empty())
+                        .map(|n| {
+                            n.parse::<f32>()
+                                .map_err(|_| Error::invalid("SVG: malformed stroke-dasharray"))
+                        })
+                        .collect();
+                    s.stroke_dasharray = Some(arr?);
+                }
+            }
+            "stroke-dashoffset" => {
+                s.stroke_dashoffset = value
+                    .trim()
+                    .parse::<f32>()
+                    .map_err(|_| Error::invalid("SVG: malformed stroke-dashoffset"))?;
+            }
+            "opacity" => s.opacity = parse_opacity(value)?,
+            "fill-rule" => {
+                s.fill_rule = match value.trim() {
+                    "nonzero" => FillRule::NonZero,
+                    "evenodd" => FillRule::EvenOdd,
+                    _ => return Err(Error::invalid("SVG: bad fill-rule")),
+                };
+            }
+            // Round-4 CSS may carry properties we don't yet model
+            // (font-family, transform, …). Ignore them rather than
+            // failing the document.
+            _ => {}
+        }
+        Ok(())
     }
 
     fn solid_fill(&self, gradients: &GradientTable) -> Option<Paint> {
@@ -193,6 +215,14 @@ pub struct ParseContext {
     pub gradients: GradientTable,
     pub defs: DefsTables,
     pub use_stack: HashSet<String>,
+    /// Round 4: CSS rules collected from every `<style>` block in the
+    /// document. Threaded through `merged_with_css` so each element
+    /// pulls matched declarations during property resolution.
+    pub stylesheet: Stylesheet,
+    /// Round 4: time (in seconds) at which to evaluate `<animate>` /
+    /// `<set>` / `<animateTransform>`. `0.0` reproduces the round-3
+    /// first-paint snapshot. Set via [`ParseContext::with_time`].
+    pub animation_t: f32,
 }
 
 impl Default for ParseContext {
@@ -207,7 +237,15 @@ impl ParseContext {
             gradients: GradientTable::new(),
             defs: DefsTables::new(),
             use_stack: HashSet::new(),
+            stylesheet: Stylesheet::new(),
+            animation_t: 0.0,
         }
+    }
+
+    /// Set the animation evaluation time (in seconds). Builder-style.
+    pub fn with_time(mut self, t_seconds: f32) -> Self {
+        self.animation_t = t_seconds;
+        self
     }
 }
 
@@ -524,16 +562,18 @@ pub fn parse_element_to_node(
     parent_state: &PaintState,
     ctx: &mut ParseContext,
 ) -> Result<Option<Node>> {
-    // Round 3: snapshot any `<animate>` / `<set>` children at `t=0`
-    // and apply those values to the parent element's attribute set
-    // before we look at the attrs. Stable static rendering of an
-    // otherwise-animated SVG (matches first-paint browser output).
-    let with_anim = apply_animations_at_t0(el);
+    // Round 4: snapshot any `<animate>` / `<set>` /
+    // `<animateTransform>` children at `ctx.animation_t` and fold them
+    // into the parent element's attribute set before we look at the
+    // attrs. Round 3 hard-coded `t=0`; round 4 picks the time from the
+    // ParseContext so `parse_svg_at(bytes, t)` produces a stable
+    // snapshot at any point on the timeline.
+    let with_anim = apply_animation_overrides(el, ctx.animation_t);
     let el = with_anim.as_ref().unwrap_or(el);
     let local = tag_local(&el.name);
     let node_opt = match local.as_str() {
         "g" => {
-            let state = parent_state.merged_with(el)?;
+            let state = parent_state.merged_with_css(el, &ctx.stylesheet)?;
             let transform = match attr(el, "transform") {
                 Some(v) => parse_transform(v)?,
                 None => Transform2D::identity(),
@@ -577,6 +617,9 @@ pub fn parse_element_to_node(
         // `decoder::register_all_defs` already captured them, so just
         // return None here.
         "filter" | "mask" | "clippath" | "symbol" => None,
+        // Round-4: <style> is consumed by `css::collect_stylesheet`
+        // during the pre-walk; it produces no scene-graph output.
+        "style" => None,
         // Round-2: <foreignObject> remains a graceful skip — the
         // contents are typically HTML / xhtml which is out of scope.
         "foreignobject" => Some(Node::Group(Group::default())),
@@ -591,7 +634,7 @@ pub fn parse_element_to_node(
         // x / y / transform / width / height. See `parse_use_element`.
         "use" => parse_use_element(el, parent_state, ctx)?,
         "rect" | "circle" | "ellipse" | "line" | "polyline" | "polygon" | "path" => {
-            let state = parent_state.merged_with(el)?;
+            let state = parent_state.merged_with_css(el, &ctx.stylesheet)?;
             let path_opt = match local.as_str() {
                 "rect" => parse_rect(el)?,
                 "circle" => parse_circle(el)?,
@@ -641,7 +684,7 @@ pub fn parse_element_to_node(
         }
         #[cfg(feature = "text")]
         "text" => {
-            let state = parent_state.merged_with(el)?;
+            let state = parent_state.merged_with_css(el, &ctx.stylesheet)?;
             crate::text::parse_text_element(el, &state, ctx)?
         }
         // <text> when text feature is disabled — silently skip.
@@ -980,54 +1023,24 @@ pub fn parse_use_element(
 }
 
 // ---------------------------------------------------------------------------
-// Round 3: <animate> / <set> snapshot at t=0
+// Round 4: animation snapshot at arbitrary `t` (replaces the round-3
+// hard-coded `t=0` shortcut). Delegates to `crate::animation` for the
+// SMIL timing model.
 // ---------------------------------------------------------------------------
 
 /// Walk `el`'s children for `<animate>` / `<set>` / `<animateTransform>`
-/// tags, evaluate each at `t=0`, and return a clone of `el` with the
-/// snapshot value spliced into its attrs (taking precedence over any
-/// existing attribute of the same name). Returns `None` when there
+/// tags, evaluate each at `t_seconds`, and return a clone of `el` with
+/// the snapshot values spliced into its attrs (taking precedence over
+/// any existing attribute of the same name). Returns `None` when there
 /// are no animation children, so the caller can keep using the
 /// original element by reference for the common case.
-///
-/// Snapshot rule per SVG 1.1 §19.2.6 / SMIL animation evaluation at
-/// `t=0`:
-///   1. if `from="..."` is present, use it;
-///   2. else if `values="..."` is present, use the first
-///      semicolon-separated entry;
-///   3. else if `to="..."` is present, use it (degenerate "static
-///      change" — many animations omit `from`).
-fn apply_animations_at_t0(el: &Element) -> Option<Element> {
-    let mut overrides: Vec<(String, String)> = Vec::new();
-    for child in &el.children {
-        if let XmlNode::Element(c) = child {
-            let local = tag_local(&c.name);
-            if !matches!(
-                local.as_str(),
-                "animate" | "set" | "animatetransform" | "animatemotion"
-            ) {
-                continue;
-            }
-            let attr_name = match attr(c, "attributeName") {
-                Some(v) => v.trim().to_string(),
-                None => continue,
-            };
-            if attr_name.is_empty() {
-                continue;
-            }
-            let snapshot = animation_snapshot_value(c);
-            if let Some(v) = snapshot {
-                overrides.push((attr_name, v));
-            }
-        }
-    }
+fn apply_animation_overrides(el: &Element, t_seconds: f32) -> Option<Element> {
+    let overrides = crate::animation::snapshot_children(el, t_seconds);
     if overrides.is_empty() {
         return None;
     }
     let mut clone = el.clone();
     for (name, value) in overrides {
-        // Override or insert. Preserve original case from animation —
-        // matches CSS attribute normalisation.
         let mut replaced = false;
         for (k, v) in clone.attrs.iter_mut() {
             if tag_local(k).eq_ignore_ascii_case(&name) {
@@ -1041,24 +1054,6 @@ fn apply_animations_at_t0(el: &Element) -> Option<Element> {
         }
     }
     Some(clone)
-}
-
-/// Return the animation's value at `t=0` per the snapshot rule (see
-/// `apply_animations_at_t0` doc).
-fn animation_snapshot_value(el: &Element) -> Option<String> {
-    if let Some(v) = attr(el, "from") {
-        return Some(v.trim().to_string());
-    }
-    if let Some(v) = attr(el, "values") {
-        let first = v.split(';').next()?.trim();
-        if !first.is_empty() {
-            return Some(first.to_string());
-        }
-    }
-    if let Some(v) = attr(el, "to") {
-        return Some(v.trim().to_string());
-    }
-    None
 }
 
 /// Parse a number literal — strips optional unit suffix (`px`, `pt`,

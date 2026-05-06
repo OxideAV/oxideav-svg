@@ -14,6 +14,7 @@ use crate::parser::{
     attr, decode_utf8_lossy_stripping_bom, inflate_gzip, is_gzip, parse_xml, tag_local, Element,
     Node as XmlNode,
 };
+use crate::preserved::{AnimationFragment, PreservedExtras};
 
 /// Codec id string for SVG vector frames.
 pub const CODEC_ID_STR: &str = "svg";
@@ -23,7 +24,20 @@ pub const CODEC_ID_STR: &str = "svg";
 /// Round 3: transparently inflates `.svgz` (gzip-compressed) input —
 /// the magic-bytes sniff (`1f 8b`) means callers can hand us either
 /// flavour without having to pre-decompress.
+///
+/// Equivalent to `parse_svg_at(bytes, 0.0)` — animations snapshot at
+/// `t=0` to reproduce first-paint behaviour.
 pub fn parse_svg(bytes: &[u8]) -> Result<VectorFrame> {
+    parse_svg_at(bytes, 0.0)
+}
+
+/// Round 4 — parse a complete SVG document at a specific timeline
+/// point `t_seconds`. Every `<animate>` / `<set>` / `<animateTransform>`
+/// is evaluated at the requested time using the full SMIL timing model
+/// (begin / dur / repeatCount / keyTimes / values / from-to-by) and
+/// folded into its parent's attribute set before the scene graph is
+/// built. `t_seconds = 0.0` matches `parse_svg`.
+pub fn parse_svg_at(bytes: &[u8], t_seconds: f32) -> Result<VectorFrame> {
     let inflated;
     let raw: &[u8] = if is_gzip(bytes) {
         inflated = inflate_gzip(bytes)?;
@@ -35,7 +49,73 @@ pub fn parse_svg(bytes: &[u8]) -> Result<VectorFrame> {
     let nodes = parse_xml(&text)?;
     let svg =
         find_svg_root(&nodes).ok_or_else(|| Error::invalid("SVG: missing <svg> root element"))?;
-    parse_svg_root(svg)
+    parse_svg_root(svg, t_seconds)
+}
+
+/// Round 4 — parse and *also* return a [`PreservedExtras`] side-channel
+/// holding `<style>`, `<filter>`, `<animate>`, and `<foreignObject>`
+/// element trees the scene-graph representation can't fully express.
+///
+/// Pair with [`crate::encoder::write_svg_with_extras`] for a structural
+/// round-trip that doesn't drop the dynamic / filter / CSS pieces.
+pub fn parse_svg_with_extras(bytes: &[u8]) -> Result<(VectorFrame, PreservedExtras)> {
+    let inflated;
+    let raw: &[u8] = if is_gzip(bytes) {
+        inflated = inflate_gzip(bytes)?;
+        &inflated
+    } else {
+        bytes
+    };
+    let text = decode_utf8_lossy_stripping_bom(raw);
+    let nodes = parse_xml(&text)?;
+    let svg =
+        find_svg_root(&nodes).ok_or_else(|| Error::invalid("SVG: missing <svg> root element"))?;
+    let mut extras = PreservedExtras::new();
+    collect_extras(svg, &mut extras, None);
+    let frame = parse_svg_root(svg, 0.0)?;
+    Ok((frame, extras))
+}
+
+/// Walk the source XML once to populate `extras` with every preservable
+/// element. `current_id` carries the nearest ancestor's id so animation
+/// fragments know which emit-site they belong to.
+fn collect_extras(el: &Element, extras: &mut PreservedExtras, current_id: Option<&str>) {
+    let local = tag_local(&el.name);
+    let id = attr(el, "id").map(str::to_string);
+    let next_id = id.as_deref().or(current_id);
+    match local.as_str() {
+        "style" => {
+            // Body of the <style> element is its concatenated text
+            // children.
+            let mut body = String::new();
+            for child in &el.children {
+                if let XmlNode::Text(t) = child {
+                    body.push_str(t);
+                }
+            }
+            if !body.trim().is_empty() {
+                extras.styles.push(body);
+            }
+        }
+        "filter" => {
+            extras.filters.push(el.clone());
+        }
+        "foreignobject" => {
+            extras.foreign_objects.push(el.clone());
+        }
+        "animate" | "set" | "animatetransform" | "animatemotion" => {
+            extras.animations.push(AnimationFragment {
+                parent_id: current_id.map(str::to_string),
+                element: el.clone(),
+            });
+        }
+        _ => {}
+    }
+    for child in &el.children {
+        if let XmlNode::Element(c) = child {
+            collect_extras(c, extras, next_id);
+        }
+    }
 }
 
 fn find_svg_root(nodes: &[XmlNode]) -> Option<&Element> {
@@ -49,7 +129,7 @@ fn find_svg_root(nodes: &[XmlNode]) -> Option<&Element> {
     None
 }
 
-fn parse_svg_root(svg: &Element) -> Result<VectorFrame> {
+fn parse_svg_root(svg: &Element, t_seconds: f32) -> Result<VectorFrame> {
     let view_box = match attr(svg, "viewBox") {
         Some(v) => Some(parse_view_box(v)?),
         None => None,
@@ -68,7 +148,12 @@ fn parse_svg_root(svg: &Element) -> Result<VectorFrame> {
     )?;
 
     let parent_state = PaintState::default();
-    let mut ctx = ParseContext::new();
+    let mut ctx = ParseContext::new().with_time(t_seconds);
+
+    // Round-4 step 0: collect every `<style>` block's body into the
+    // ParseContext stylesheet. Done before the def + element walks so
+    // class/id selectors resolve regardless of source order.
+    crate::css::collect_stylesheet(svg, &mut ctx.stylesheet);
 
     // First pass: register every <defs> child + every gradient /
     // filter / mask / clipPath / symbol seen anywhere in the tree, so

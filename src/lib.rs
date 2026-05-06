@@ -77,20 +77,24 @@
 //! * Animation timing beyond `t=0` (`begin`, `dur`, keyframe
 //!   interpolation, `repeatCount`).
 
+pub mod animation;
 pub mod color;
 pub mod container;
+pub mod css;
 pub mod decoder;
 pub mod defs;
 pub mod element;
 pub mod encoder;
 pub mod parser;
 pub mod path_data;
+pub mod preserved;
 #[cfg(feature = "text")]
 pub mod text;
 pub mod transform;
 
-pub use decoder::{make_decoder, parse_svg, CODEC_ID_STR};
-pub use encoder::{make_encoder, write_svg, write_svgz};
+pub use decoder::{make_decoder, parse_svg, parse_svg_at, parse_svg_with_extras, CODEC_ID_STR};
+pub use encoder::{make_encoder, write_svg, write_svg_with_extras, write_svgz};
+pub use preserved::PreservedExtras;
 
 use oxideav_core::{
     CodecCapabilities, CodecId, CodecInfo, CodecRegistry, ContainerRegistry, RuntimeContext,
