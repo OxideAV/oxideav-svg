@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 9** — three more long-tail filter primitives. Round 8
+  covered four (`feColorMatrix` / `feMerge` / `feComponentTransfer` /
+  `feDropShadow`); round 9 extends typed parsing to:
+  - **`<feConvolveMatrix>`** — `crate::filter::FilterPrimitive::ConvolveMatrix
+    { input, order_x, order_y, kernel_matrix, divisor, bias,
+    target_x, target_y, edge_mode, preserve_alpha }`. Per W3C Filter
+    Effects §15: `divisor` defaults to the sum of `kernelMatrix` (or
+    1 if that sum is zero); `targetX` / `targetY` default to
+    `floor(order/2)`; `edgeMode` defaults to `duplicate` via the new
+    `ConvolveEdgeMode` enum (`Duplicate` / `Wrap` / `None`);
+    `preserveAlpha` defaults to `false`.
+  - **`<feTurbulence>`** — Perlin-noise primitive. New
+    `crate::filter::TurbulenceKind` enum (`Turbulence` /
+    `FractalNoise`, default `Turbulence`). `base_frequency_x` and
+    `base_frequency_y` mirror when only one number is supplied (per
+    §16.3); `num_octaves` defaults to 1; `seed` defaults to 0;
+    `stitch_tiles` flips on `stitchTiles="stitch"` (default off, per
+    §16).
+  - **`<feDisplacementMap>`** — new `crate::filter::ChannelSelector`
+    enum (`R` / `G` / `B` / `A`, default `A` per Filter Effects §17).
+    `in2` defaults to `SourceGraphic`; `scale` defaults to 0.
+  - The typed-graph allowlist is now thirteen primitives;
+    `<feDiffuseLighting>` / `<feSpecularLighting>` / `<feImage>` /
+    `<feTile>` still flow through the verbatim-XML round-trip path.
+  - 13 new integration tests in `tests/round9_filter.rs` plus 12 new
+    unit tests in `crate::filter::tests` (default-divisor = kernel
+    sum, zero-sum kernel falls back to 1, non-square `order="5 3"`,
+    fractal noise + stitch, channel-selector defaults, …).
+
 - **Round 8** — long-tail filter primitives. Round 7 covered six
   primitives (`feGaussianBlur` / `feOffset` / `feFlood` /
   `feComposite` / `feBlend` / `feMorphology`); round 8 extends typed

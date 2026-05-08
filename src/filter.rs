@@ -159,6 +159,51 @@ pub enum FilterPrimitive {
         flood_color: FloodColor,
         flood_opacity: f32,
     },
+    /// `<feConvolveMatrix>` — applies a 2-D linear convolution kernel to
+    /// the input. Per W3C Filter Effects §15.
+    ///
+    /// `kernel_matrix` is row-major with `order_x * order_y` entries.
+    /// The convolution is `out[x,y] = (1/divisor) * Σ kernel[i,j] *
+    /// in[x+targetX-i, y+targetY-j] + bias` per spec §15.5 (with the
+    /// flip relative to texture coordinates that the spec mandates).
+    ConvolveMatrix {
+        input: FilterInput,
+        order_x: u32,
+        order_y: u32,
+        kernel_matrix: Vec<f32>,
+        divisor: f32,
+        bias: f32,
+        target_x: i32,
+        target_y: i32,
+        edge_mode: ConvolveEdgeMode,
+        preserve_alpha: bool,
+    },
+    /// `<feTurbulence>` — Perlin-noise / fractal-noise primitive.
+    /// Per W3C Filter Effects §16.
+    ///
+    /// `base_frequency` is `(fx, fy)`; if the source attribute supplied
+    /// only one number then `fy = fx` per spec §16.3.
+    Turbulence {
+        base_frequency_x: f32,
+        base_frequency_y: f32,
+        num_octaves: u32,
+        seed: i32,
+        stitch_tiles: bool,
+        kind: TurbulenceKind,
+    },
+    /// `<feDisplacementMap>` — uses a channel of `in2` to displace the
+    /// pixels of `in`. Per W3C Filter Effects §17.
+    ///
+    /// The displacement vector at each output pixel is
+    /// `(scale * (channel_x(in2) - 0.5), scale * (channel_y(in2) - 0.5))`
+    /// per spec §17.5.
+    DisplacementMap {
+        input: FilterInput,
+        input2: FilterInput,
+        scale: f32,
+        x_channel_selector: ChannelSelector,
+        y_channel_selector: ChannelSelector,
+    },
 }
 
 /// `edgeMode` on `<feGaussianBlur>` (Filter Effects §16). Determines how
@@ -183,6 +228,78 @@ impl EdgeMode {
             "wrap" => Self::Wrap,
             "none" => Self::None,
             "duplicate" => Self::Duplicate,
+            _ => Self::default(),
+        }
+    }
+}
+
+/// `edgeMode` on `<feConvolveMatrix>` (Filter Effects §15) — same
+/// three modes as `<feGaussianBlur>` but the spec defines a different
+/// default (`duplicate` for blur, `duplicate` for convolve too — but
+/// it's a separate enum because future spec drafts could diverge).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ConvolveEdgeMode {
+    /// Default per Filter Effects §15: `duplicate`.
+    #[default]
+    Duplicate,
+    /// Toroidal sampling.
+    Wrap,
+    /// Sample beyond-edge pixels as transparent black.
+    None,
+}
+
+impl ConvolveEdgeMode {
+    fn from_str(s: &str) -> Self {
+        match s.trim() {
+            "wrap" => Self::Wrap,
+            "none" => Self::None,
+            "duplicate" => Self::Duplicate,
+            _ => Self::default(),
+        }
+    }
+}
+
+/// `<feTurbulence type>` per Filter Effects §16. `Turbulence` uses
+/// `|noise|`; `FractalNoise` uses `(noise + 1) / 2`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TurbulenceKind {
+    /// Default per spec — `turbulence`.
+    #[default]
+    Turbulence,
+    /// `fractalNoise` — smooth fractal noise.
+    FractalNoise,
+}
+
+impl TurbulenceKind {
+    fn from_str(s: &str) -> Self {
+        match s.trim() {
+            "fractalNoise" => Self::FractalNoise,
+            // `turbulence` and any unknown value default to Turbulence.
+            _ => Self::Turbulence,
+        }
+    }
+}
+
+/// `xChannelSelector` / `yChannelSelector` on `<feDisplacementMap>`
+/// per Filter Effects §17 — picks which channel of `in2` drives the
+/// X / Y displacement.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ChannelSelector {
+    R,
+    G,
+    B,
+    /// Default per spec §17 — `A`.
+    #[default]
+    A,
+}
+
+impl ChannelSelector {
+    fn from_str(s: &str) -> Self {
+        match s.trim() {
+            "R" => Self::R,
+            "G" => Self::G,
+            "B" => Self::B,
+            "A" => Self::A,
             _ => Self::default(),
         }
     }
@@ -395,6 +512,9 @@ pub fn parse_filter_graph(el: &Element) -> FilterGraph {
             "femerge" => parse_merge(c, &prev_result),
             "fecomponenttransfer" => parse_component_transfer(c, &prev_result),
             "fedropshadow" => parse_drop_shadow(c, &prev_result),
+            "feconvolvematrix" => parse_convolve_matrix(c, &prev_result),
+            "feturbulence" => parse_turbulence(c),
+            "fedisplacementmap" => parse_displacement_map(c, &prev_result),
             _ => continue,
         };
         let prim_region = PrimitiveRegion {
@@ -649,6 +769,106 @@ fn parse_drop_shadow(el: &Element, prev: &Option<String>) -> FilterPrimitive {
         std_deviation_y: sy_resolved,
         flood_color,
         flood_opacity,
+    }
+}
+
+/// Parse `<feConvolveMatrix>` per Filter Effects §15. The kernel
+/// matrix is `order_x * order_y` row-major numbers; `divisor` defaults
+/// to the sum of the kernel (or 1 if that sum is zero); `bias` defaults
+/// to 0; `targetX` / `targetY` default to `floor(order/2)`; `edgeMode`
+/// defaults to `duplicate`; `preserveAlpha` defaults to `false`.
+fn parse_convolve_matrix(el: &Element, prev: &Option<String>) -> FilterPrimitive {
+    let (order_x_f, order_y_f) = parse_two_numbers(attr(el, "order"));
+    // Per spec §15.2 default order is 3 (per-axis). We treat absent /
+    // non-positive as 3.
+    let order_x = if order_x_f >= 1.0 {
+        order_x_f as u32
+    } else {
+        3
+    };
+    let order_y = match order_y_f {
+        Some(v) if v >= 1.0 => v as u32,
+        Some(_) => 3,
+        None => order_x,
+    };
+    let kernel_matrix = parse_number_list(attr(el, "kernelMatrix"));
+    // Spec §15.2 — `divisor` default is the sum of the matrix, or 1 if
+    // the sum is zero. Bias default is 0.
+    let kernel_sum: f32 = kernel_matrix.iter().sum();
+    let divisor_default = if kernel_sum == 0.0 { 1.0 } else { kernel_sum };
+    let divisor = parse_number(attr(el, "divisor"), divisor_default).unwrap_or(divisor_default);
+    let bias = parse_number(attr(el, "bias"), 0.0).unwrap_or(0.0);
+    // Per spec §15.2 — targetX / targetY default to `floor(orderX/2)`
+    // / `floor(orderY/2)`.
+    let target_x = parse_number(attr(el, "targetX"), (order_x / 2) as f32)
+        .map(|v| v as i32)
+        .unwrap_or((order_x / 2) as i32);
+    let target_y = parse_number(attr(el, "targetY"), (order_y / 2) as f32)
+        .map(|v| v as i32)
+        .unwrap_or((order_y / 2) as i32);
+    let edge_mode = attr(el, "edgeMode")
+        .map(ConvolveEdgeMode::from_str)
+        .unwrap_or_default();
+    let preserve_alpha = attr(el, "preserveAlpha")
+        .map(|s| matches!(s.trim(), "true"))
+        .unwrap_or(false);
+    FilterPrimitive::ConvolveMatrix {
+        input: input_or_default(el, prev),
+        order_x,
+        order_y,
+        kernel_matrix,
+        divisor,
+        bias,
+        target_x,
+        target_y,
+        edge_mode,
+        preserve_alpha,
+    }
+}
+
+/// Parse `<feTurbulence>` per Filter Effects §16. `baseFrequency`
+/// default is 0 per spec; `numOctaves` defaults to 1; `seed` defaults
+/// to 0; `stitchTiles="stitch"` flips a bool; `type` defaults to
+/// `turbulence`.
+fn parse_turbulence(el: &Element) -> FilterPrimitive {
+    let (fx, fy) = parse_two_numbers(attr(el, "baseFrequency"));
+    let base_frequency_x = fx;
+    let base_frequency_y = fy.unwrap_or(fx);
+    let num_octaves = parse_number(attr(el, "numOctaves"), 1.0)
+        .unwrap_or(1.0)
+        .max(1.0) as u32;
+    let seed = parse_number(attr(el, "seed"), 0.0).unwrap_or(0.0) as i32;
+    // `stitchTiles="stitch"` enables; `noStitch` (default) disables.
+    let stitch_tiles = matches!(attr(el, "stitchTiles").map(str::trim), Some("stitch"));
+    let kind = attr(el, "type")
+        .map(TurbulenceKind::from_str)
+        .unwrap_or_default();
+    FilterPrimitive::Turbulence {
+        base_frequency_x,
+        base_frequency_y,
+        num_octaves,
+        seed,
+        stitch_tiles,
+        kind,
+    }
+}
+
+/// Parse `<feDisplacementMap>` per Filter Effects §17. `scale`
+/// defaults to 0; `xChannelSelector` / `yChannelSelector` both default
+/// to `A` per spec.
+fn parse_displacement_map(el: &Element, prev: &Option<String>) -> FilterPrimitive {
+    FilterPrimitive::DisplacementMap {
+        input: input_or_default(el, prev),
+        input2: attr(el, "in2")
+            .map(FilterInput::from_str)
+            .unwrap_or(FilterInput::SourceGraphic),
+        scale: parse_number(attr(el, "scale"), 0.0).unwrap_or(0.0),
+        x_channel_selector: attr(el, "xChannelSelector")
+            .map(ChannelSelector::from_str)
+            .unwrap_or_default(),
+        y_channel_selector: attr(el, "yChannelSelector")
+            .map(ChannelSelector::from_str)
+            .unwrap_or_default(),
     }
 }
 
@@ -1347,6 +1567,302 @@ mod tests {
         };
         assert_eq!(*std_deviation_x, 3.0);
         assert_eq!(*std_deviation_y, 5.0);
+    }
+
+    #[test]
+    fn parses_convolve_matrix_3x3() {
+        let f = first_filter(
+            r##"<svg xmlns="http://www.w3.org/2000/svg">
+              <filter id="f">
+                <feConvolveMatrix order="3" kernelMatrix="0 -1 0  -1 5 -1  0 -1 0" divisor="1" bias="0"/>
+              </filter>
+            </svg>"##,
+        );
+        let g = parse_filter_graph(&f);
+        match &g.primitives[0].primitive {
+            FilterPrimitive::ConvolveMatrix {
+                order_x,
+                order_y,
+                kernel_matrix,
+                divisor,
+                bias,
+                target_x,
+                target_y,
+                edge_mode,
+                preserve_alpha,
+                ..
+            } => {
+                assert_eq!(*order_x, 3);
+                assert_eq!(*order_y, 3);
+                assert_eq!(kernel_matrix.len(), 9);
+                assert_eq!(kernel_matrix[4], 5.0);
+                assert_eq!(*divisor, 1.0);
+                assert_eq!(*bias, 0.0);
+                // Default targetX / targetY = floor(3/2) = 1.
+                assert_eq!(*target_x, 1);
+                assert_eq!(*target_y, 1);
+                assert_eq!(*edge_mode, ConvolveEdgeMode::Duplicate);
+                assert!(!*preserve_alpha);
+            }
+            _ => panic!("not convolve-matrix"),
+        }
+    }
+
+    #[test]
+    fn convolve_matrix_default_divisor_is_kernel_sum() {
+        // kernel sums to 9, divisor absent -> default to sum.
+        let f = first_filter(
+            r##"<svg xmlns="http://www.w3.org/2000/svg">
+              <filter id="f">
+                <feConvolveMatrix order="3" kernelMatrix="1 1 1  1 1 1  1 1 1"/>
+              </filter>
+            </svg>"##,
+        );
+        let g = parse_filter_graph(&f);
+        match &g.primitives[0].primitive {
+            FilterPrimitive::ConvolveMatrix { divisor, .. } => assert_eq!(*divisor, 9.0),
+            _ => panic!("not convolve-matrix"),
+        }
+    }
+
+    #[test]
+    fn convolve_matrix_zero_sum_kernel_falls_back_to_one() {
+        // kernel sums to 0, divisor absent -> default to 1 per §15.2.
+        let f = first_filter(
+            r##"<svg xmlns="http://www.w3.org/2000/svg">
+              <filter id="f">
+                <feConvolveMatrix order="3" kernelMatrix="-1 -1 -1  -1 8 -1  -1 -1 -1"/>
+              </filter>
+            </svg>"##,
+        );
+        let g = parse_filter_graph(&f);
+        match &g.primitives[0].primitive {
+            FilterPrimitive::ConvolveMatrix { divisor, .. } => assert_eq!(*divisor, 1.0),
+            _ => panic!("not convolve-matrix"),
+        }
+    }
+
+    #[test]
+    fn convolve_matrix_edge_mode_and_preserve_alpha() {
+        let f = first_filter(
+            r##"<svg xmlns="http://www.w3.org/2000/svg">
+              <filter id="f">
+                <feConvolveMatrix order="3" kernelMatrix="0 0 0  0 1 0  0 0 0" edgeMode="wrap" preserveAlpha="true"/>
+              </filter>
+            </svg>"##,
+        );
+        let g = parse_filter_graph(&f);
+        match &g.primitives[0].primitive {
+            FilterPrimitive::ConvolveMatrix {
+                edge_mode,
+                preserve_alpha,
+                ..
+            } => {
+                assert_eq!(*edge_mode, ConvolveEdgeMode::Wrap);
+                assert!(*preserve_alpha);
+            }
+            _ => panic!("not convolve-matrix"),
+        }
+    }
+
+    #[test]
+    fn convolve_matrix_non_square_order_5x3() {
+        let f = first_filter(
+            r##"<svg xmlns="http://www.w3.org/2000/svg">
+              <filter id="f">
+                <feConvolveMatrix order="5 3" kernelMatrix="0 0 0 0 0  0 0 1 0 0  0 0 0 0 0"/>
+              </filter>
+            </svg>"##,
+        );
+        let g = parse_filter_graph(&f);
+        match &g.primitives[0].primitive {
+            FilterPrimitive::ConvolveMatrix {
+                order_x,
+                order_y,
+                kernel_matrix,
+                target_x,
+                target_y,
+                ..
+            } => {
+                assert_eq!(*order_x, 5);
+                assert_eq!(*order_y, 3);
+                assert_eq!(kernel_matrix.len(), 15);
+                // Default target = floor(order/2).
+                assert_eq!(*target_x, 2);
+                assert_eq!(*target_y, 1);
+            }
+            _ => panic!("not convolve-matrix"),
+        }
+    }
+
+    #[test]
+    fn parses_turbulence_default_type_is_turbulence() {
+        let f = first_filter(
+            r##"<svg xmlns="http://www.w3.org/2000/svg">
+              <filter id="f">
+                <feTurbulence baseFrequency="0.05" numOctaves="2" seed="3"/>
+              </filter>
+            </svg>"##,
+        );
+        let g = parse_filter_graph(&f);
+        match &g.primitives[0].primitive {
+            FilterPrimitive::Turbulence {
+                base_frequency_x,
+                base_frequency_y,
+                num_octaves,
+                seed,
+                stitch_tiles,
+                kind,
+            } => {
+                assert!((*base_frequency_x - 0.05).abs() < 1e-6);
+                assert!((*base_frequency_y - 0.05).abs() < 1e-6);
+                assert_eq!(*num_octaves, 2);
+                assert_eq!(*seed, 3);
+                assert!(!*stitch_tiles);
+                assert_eq!(*kind, TurbulenceKind::Turbulence);
+            }
+            _ => panic!("not turbulence"),
+        }
+    }
+
+    #[test]
+    fn turbulence_two_axis_base_frequency() {
+        let f = first_filter(
+            r##"<svg xmlns="http://www.w3.org/2000/svg">
+              <filter id="f">
+                <feTurbulence baseFrequency="0.05 0.1"/>
+              </filter>
+            </svg>"##,
+        );
+        let g = parse_filter_graph(&f);
+        match &g.primitives[0].primitive {
+            FilterPrimitive::Turbulence {
+                base_frequency_x,
+                base_frequency_y,
+                ..
+            } => {
+                assert!((*base_frequency_x - 0.05).abs() < 1e-6);
+                assert!((*base_frequency_y - 0.1).abs() < 1e-6);
+            }
+            _ => panic!("not turbulence"),
+        }
+    }
+
+    #[test]
+    fn turbulence_fractal_noise_with_stitch() {
+        let f = first_filter(
+            r##"<svg xmlns="http://www.w3.org/2000/svg">
+              <filter id="f">
+                <feTurbulence type="fractalNoise" baseFrequency="0.1" stitchTiles="stitch"/>
+              </filter>
+            </svg>"##,
+        );
+        let g = parse_filter_graph(&f);
+        match &g.primitives[0].primitive {
+            FilterPrimitive::Turbulence {
+                kind, stitch_tiles, ..
+            } => {
+                assert_eq!(*kind, TurbulenceKind::FractalNoise);
+                assert!(*stitch_tiles);
+            }
+            _ => panic!("not turbulence"),
+        }
+    }
+
+    #[test]
+    fn turbulence_unknown_type_defaults_to_turbulence() {
+        let f = first_filter(
+            r##"<svg xmlns="http://www.w3.org/2000/svg">
+              <filter id="f">
+                <feTurbulence type="bogusNoise" baseFrequency="0.1"/>
+              </filter>
+            </svg>"##,
+        );
+        let g = parse_filter_graph(&f);
+        match &g.primitives[0].primitive {
+            FilterPrimitive::Turbulence { kind, .. } => {
+                assert_eq!(*kind, TurbulenceKind::Turbulence);
+            }
+            _ => panic!("not turbulence"),
+        }
+    }
+
+    #[test]
+    fn parses_displacement_map_explicit_channels() {
+        let f = first_filter(
+            r##"<svg xmlns="http://www.w3.org/2000/svg">
+              <filter id="f">
+                <feTurbulence baseFrequency="0.05" result="noise"/>
+                <feDisplacementMap in="SourceGraphic" in2="noise" scale="20" xChannelSelector="R" yChannelSelector="G"/>
+              </filter>
+            </svg>"##,
+        );
+        let g = parse_filter_graph(&f);
+        assert_eq!(g.primitives.len(), 2);
+        match &g.primitives[1].primitive {
+            FilterPrimitive::DisplacementMap {
+                input,
+                input2,
+                scale,
+                x_channel_selector,
+                y_channel_selector,
+            } => {
+                assert_eq!(*input, FilterInput::SourceGraphic);
+                assert_eq!(*input2, FilterInput::Reference("noise".into()));
+                assert_eq!(*scale, 20.0);
+                assert_eq!(*x_channel_selector, ChannelSelector::R);
+                assert_eq!(*y_channel_selector, ChannelSelector::G);
+            }
+            _ => panic!("not displacement-map"),
+        }
+    }
+
+    #[test]
+    fn displacement_map_default_channel_selectors_are_alpha() {
+        let f = first_filter(
+            r##"<svg xmlns="http://www.w3.org/2000/svg">
+              <filter id="f">
+                <feDisplacementMap scale="5"/>
+              </filter>
+            </svg>"##,
+        );
+        let g = parse_filter_graph(&f);
+        match &g.primitives[0].primitive {
+            FilterPrimitive::DisplacementMap {
+                x_channel_selector,
+                y_channel_selector,
+                scale,
+                ..
+            } => {
+                assert_eq!(*x_channel_selector, ChannelSelector::A);
+                assert_eq!(*y_channel_selector, ChannelSelector::A);
+                assert_eq!(*scale, 5.0);
+            }
+            _ => panic!("not displacement-map"),
+        }
+    }
+
+    #[test]
+    fn displacement_map_unknown_channel_falls_back_to_alpha() {
+        let f = first_filter(
+            r##"<svg xmlns="http://www.w3.org/2000/svg">
+              <filter id="f">
+                <feDisplacementMap scale="5" xChannelSelector="Q" yChannelSelector="Z"/>
+              </filter>
+            </svg>"##,
+        );
+        let g = parse_filter_graph(&f);
+        match &g.primitives[0].primitive {
+            FilterPrimitive::DisplacementMap {
+                x_channel_selector,
+                y_channel_selector,
+                ..
+            } => {
+                assert_eq!(*x_channel_selector, ChannelSelector::A);
+                assert_eq!(*y_channel_selector, ChannelSelector::A);
+            }
+            _ => panic!("not displacement-map"),
+        }
     }
 
     #[test]

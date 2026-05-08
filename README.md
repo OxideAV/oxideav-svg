@@ -153,6 +153,25 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
+## Round 9 additions
+
+- **More long-tail filter primitives** — typed-graph allowlist
+  extended from 10 to 13 primitives:
+  - **`<feConvolveMatrix>`** — `order` (1 or 2 numbers), row-major
+    `kernelMatrix` (`order_x * order_y` floats), `divisor` (defaults
+    to kernel sum, or 1 if the sum is 0 per W3C Filter Effects §15.2),
+    `bias`, `targetX` / `targetY` (default `floor(order/2)`),
+    `edgeMode="duplicate|wrap|none"` (`ConvolveEdgeMode` enum;
+    default `Duplicate`), `preserveAlpha="true|false"`.
+  - **`<feTurbulence>`** — Perlin-noise primitive per Filter Effects
+    §16. `baseFrequency` (1 or 2 numbers), `numOctaves` (default 1),
+    `seed` (default 0), `stitchTiles="stitch"` flag (default off),
+    `type="turbulence|fractalNoise"` (`TurbulenceKind` enum;
+    default `Turbulence`).
+  - **`<feDisplacementMap>`** — `scale`, `xChannelSelector` /
+    `yChannelSelector` (`ChannelSelector` enum, R / G / B / A;
+    default `A` per spec §17). `in2` defaults to `SourceGraphic`.
+
 ## Round 8 additions
 
 - **Long-tail filter primitives** — typed-graph allowlist extended
@@ -174,13 +193,12 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
     so the rasterizer can implement it directly. Defaults `dx=dy=2`,
     `stdDeviation=2 2`, `flood-color` opaque black, `flood-opacity=1`.
 
-## Deferred to round 9+
+## Deferred to round 10+
 
 - Actual filter-primitive rasterisation (the typed graph is
   pre-rasteriser plumbing; pixel evaluation is `oxideav-raster` work).
-- Remaining long-tail primitives: `<feConvolveMatrix>`,
-  `<feTurbulence>`, `<feDiffuseLighting>`, `<feSpecularLighting>`,
-  `<feDisplacementMap>`, `<feImage>`, `<feTile>`.
+- Remaining long-tail primitives: `<feDiffuseLighting>`,
+  `<feSpecularLighting>`, `<feImage>`, `<feTile>`.
 - `<script>`.
 - `<marker>` defs + `marker-start` / `marker-mid` / `marker-end`
   (needs a `Marker` construct in `oxideav-core`).

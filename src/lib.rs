@@ -144,16 +144,31 @@
 //!   primitive (including primitives still outside the typed
 //!   allowlist) via `PreservedExtras`.
 //!
-//! # Deferred to round 9+
+//! # Round 9 additions
+//!
+//! * **More long-tail filter primitives.** Three more primitives join
+//!   the typed-graph allowlist (now 13 of the W3C Filter Effects §11
+//!   set):
+//!   - **`<feConvolveMatrix>`** — `kernelMatrix` (row-major, length
+//!     `order_x * order_y`) plus `divisor` / `bias` / `targetX/Y`,
+//!     `edgeMode` (new [`crate::filter::ConvolveEdgeMode`]),
+//!     `preserveAlpha`. Per W3C Filter Effects §15.
+//!   - **`<feTurbulence>`** — `baseFrequency` (1 or 2 numbers),
+//!     `numOctaves`, `seed`, `stitchTiles`, and `type` mapped to
+//!     [`crate::filter::TurbulenceKind`]. Per §16.
+//!   - **`<feDisplacementMap>`** — `scale` and X / Y channel selectors
+//!     mapped to [`crate::filter::ChannelSelector`]. Per §17.
+//!
+//! # Deferred to round 10+
 //!
 //! * Actual filter-primitive rasterisation (the typed graph is
 //!   pre-rasteriser plumbing; pixel evaluation is oxideav-raster work).
-//! * `<feConvolveMatrix>`, `<feTurbulence>`, `<feDiffuseLighting>`,
-//!   `<feSpecularLighting>`, `<feDisplacementMap>`, `<feImage>`,
+//! * `<feDiffuseLighting>`, `<feSpecularLighting>`, `<feImage>`,
 //!   `<feTile>` — the still-uncommon long tail.
 //! * `<script>`.
 //! * `<marker>` defs + `marker-start` / `marker-mid` / `marker-end`.
-//! * Pseudo-elements (`::before`, `::after`).
+//! * Pseudo-elements (`::before`, `::after`); `@import` of external
+//!   stylesheets.
 //! * Stateful pseudo-classes (`:hover`, `:focus`, `:checked`).
 
 pub mod animation;

@@ -208,12 +208,13 @@ fn implicit_chain_uses_previous_result_when_in_is_omitted() {
 
 #[test]
 fn unknown_primitive_is_skipped_in_typed_graph() {
-    // Round-8 added feColorMatrix to the typed-graph allowlist, so
-    // we use a still-unknown primitive (feConvolveMatrix) here.
+    // Round-8 added feColorMatrix and round-9 added feConvolveMatrix /
+    // feTurbulence / feDisplacementMap to the typed-graph allowlist, so
+    // we use a still-unknown primitive (feDiffuseLighting) here.
     let src = br##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
         <defs><filter id="f">
           <feGaussianBlur stdDeviation="1"/>
-          <feConvolveMatrix order="3" kernelMatrix="0 0 0 0 1 0 0 0 0"/>
+          <feDiffuseLighting surfaceScale="1" diffuseConstant="1"/>
           <feOffset dx="1" dy="1"/>
         </filter></defs>
         <rect width="10" height="10" filter="url(#f)"/>
@@ -222,7 +223,7 @@ fn unknown_primitive_is_skipped_in_typed_graph() {
     assert_eq!(
         g.primitives.len(),
         2,
-        "feConvolveMatrix isn't yet typed; should be skipped"
+        "feDiffuseLighting isn't yet typed; should be skipped"
     );
 }
 
@@ -234,7 +235,7 @@ fn round_trip_preserves_unknown_primitives_via_extras() {
     let src = br##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
         <defs><filter id="f">
           <feGaussianBlur stdDeviation="2"/>
-          <feConvolveMatrix order="3" kernelMatrix="0 0 0 0 1 0 0 0 0"/>
+          <feDiffuseLighting surfaceScale="1" diffuseConstant="1"/>
         </filter></defs>
         <rect width="10" height="10" filter="url(#f)"/>
       </svg>"##;
@@ -243,7 +244,7 @@ fn round_trip_preserves_unknown_primitives_via_extras() {
     let s = std::str::from_utf8(&out).unwrap();
     assert!(s.contains("feGaussianBlur"));
     assert!(
-        s.contains("feConvolveMatrix"),
+        s.contains("feDiffuseLighting"),
         "verbatim XML must keep unknown primitives: {s}"
     );
 }
