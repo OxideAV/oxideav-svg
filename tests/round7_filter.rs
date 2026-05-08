@@ -208,10 +208,12 @@ fn implicit_chain_uses_previous_result_when_in_is_omitted() {
 
 #[test]
 fn unknown_primitive_is_skipped_in_typed_graph() {
+    // Round-8 added feColorMatrix to the typed-graph allowlist, so
+    // we use a still-unknown primitive (feConvolveMatrix) here.
     let src = br##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
         <defs><filter id="f">
           <feGaussianBlur stdDeviation="1"/>
-          <feColorMatrix type="hueRotate" values="90"/>
+          <feConvolveMatrix order="3" kernelMatrix="0 0 0 0 1 0 0 0 0"/>
           <feOffset dx="1" dy="1"/>
         </filter></defs>
         <rect width="10" height="10" filter="url(#f)"/>
@@ -220,7 +222,7 @@ fn unknown_primitive_is_skipped_in_typed_graph() {
     assert_eq!(
         g.primitives.len(),
         2,
-        "feColorMatrix isn't yet typed; should be skipped"
+        "feConvolveMatrix isn't yet typed; should be skipped"
     );
 }
 
@@ -232,7 +234,7 @@ fn round_trip_preserves_unknown_primitives_via_extras() {
     let src = br##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
         <defs><filter id="f">
           <feGaussianBlur stdDeviation="2"/>
-          <feColorMatrix type="hueRotate" values="90"/>
+          <feConvolveMatrix order="3" kernelMatrix="0 0 0 0 1 0 0 0 0"/>
         </filter></defs>
         <rect width="10" height="10" filter="url(#f)"/>
       </svg>"##;
@@ -241,7 +243,7 @@ fn round_trip_preserves_unknown_primitives_via_extras() {
     let s = std::str::from_utf8(&out).unwrap();
     assert!(s.contains("feGaussianBlur"));
     assert!(
-        s.contains("feColorMatrix"),
+        s.contains("feConvolveMatrix"),
         "verbatim XML must keep unknown primitives: {s}"
     );
 }

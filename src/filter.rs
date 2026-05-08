@@ -1,12 +1,15 @@
-//! Round 7 — typed parsing of `<filter>` primitive graphs.
+//! Typed parsing of `<filter>` primitive graphs.
 //!
 //! Round 2-4 captured `<filter>` element trees verbatim and round-tripped
 //! them through the encoder, but never inspected the primitives inside.
-//! Round 7 walks each primitive (`<feGaussianBlur>`, `<feOffset>`,
-//! `<feFlood>`, `<feComposite>`, `<feBlend>`, `<feMorphology>`) and
-//! parses its attributes into a typed [`FilterPrimitive`] value, so a
-//! downstream rasterizer (oxideav-raster) can consume the filter graph
-//! without re-parsing XML.
+//! Round 7 added typed parsing for the six most common primitives
+//! (`<feGaussianBlur>`, `<feOffset>`, `<feFlood>`, `<feComposite>`,
+//! `<feBlend>`, `<feMorphology>`); round 8 extends that to the long
+//! tail: `<feColorMatrix>`, `<feMerge>` (with `<feMergeNode>`
+//! children), `<feComponentTransfer>` (with `<feFuncR/G/B/A>`
+//! children) and `<feDropShadow>` (a composite primitive that the
+//! W3C Filter Effects spec defines as a syntactic sugar over
+//! GaussianBlur + Offset + Flood + Composite).
 //!
 //! The graph model mirrors the W3C Filter Effects spec
 //! (drafts.fxtf.org/filter-effects-1, referenced from SVG 2 §15):
@@ -113,6 +116,48 @@ pub enum FilterPrimitive {
         operator: MorphologyOperator,
         radius_x: f32,
         radius_y: f32,
+    },
+    /// `<feColorMatrix in type values>`. Per Filter Effects §13.
+    ///
+    /// All four type variants reduce to a flat 4×5 RGBA-bias matrix
+    /// — `saturate`, `hueRotate` and `luminanceToAlpha` are computed
+    /// at parse time from their respective scalar / fixed templates,
+    /// per W3C Filter Effects §13.2.4 / §13.2.5 / §13.2.6.
+    ColorMatrix {
+        input: FilterInput,
+        /// Row-major 4×5 RGBA-bias matrix M.
+        /// `out = clamp(M * (R, G, B, A, 1)^T)` per row.
+        matrix: [f32; 20],
+    },
+    /// `<feMerge>` — composites a list of inputs in z-order, oldest
+    /// first. Each entry corresponds to one `<feMergeNode in="..."/>`
+    /// child. Per Filter Effects §19.
+    Merge { inputs: Vec<FilterInput> },
+    /// `<feComponentTransfer>` — per-channel transfer function applied
+    /// to the input. Each channel inherits a default identity transfer
+    /// function when the corresponding `<feFuncR/G/B/A>` child is
+    /// missing, per Filter Effects §12.
+    ComponentTransfer {
+        input: FilterInput,
+        red: TransferFunction,
+        green: TransferFunction,
+        blue: TransferFunction,
+        alpha: TransferFunction,
+    },
+    /// `<feDropShadow dx dy stdDeviation flood-color flood-opacity>`.
+    /// Per Filter Effects §22 — equivalent to
+    /// `feGaussianBlur(SourceAlpha) → feOffset → feFlood-tinted →
+    /// feComposite(in, SourceGraphic, over)`. Stored as a single
+    /// primitive so the rasterizer can implement it directly without
+    /// synthesising 4 intermediate buffers.
+    DropShadow {
+        input: FilterInput,
+        dx: f32,
+        dy: f32,
+        std_deviation_x: f32,
+        std_deviation_y: f32,
+        flood_color: FloodColor,
+        flood_opacity: f32,
     },
 }
 
@@ -256,6 +301,32 @@ impl MorphologyOperator {
     }
 }
 
+/// Per-channel transfer function for `<feComponentTransfer>` —
+/// each `<feFuncR/G/B/A>` child supplies one of these. Per Filter
+/// Effects §12.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum TransferFunction {
+    /// `type="identity"` — pass-through. Default when no `<feFunc*>`
+    /// child is present (per spec §12 default behaviour).
+    #[default]
+    Identity,
+    /// `type="table"` — piecewise-linear lookup table. `values`
+    /// supplies n samples in [0,1]; intermediate channel values
+    /// linearly interpolate between adjacent samples.
+    Table { values: Vec<f32> },
+    /// `type="discrete"` — step function. `values` supplies n bins;
+    /// the output is `values[floor(c * n)]`.
+    Discrete { values: Vec<f32> },
+    /// `type="linear"` — `out = slope * c + intercept`.
+    Linear { slope: f32, intercept: f32 },
+    /// `type="gamma"` — `out = amplitude * pow(c, exponent) + offset`.
+    Gamma {
+        amplitude: f32,
+        exponent: f32,
+        offset: f32,
+    },
+}
+
 /// One node of a parsed filter graph — a [`FilterPrimitive`] plus the
 /// shared region / result attributes.
 #[derive(Clone, Debug, PartialEq)]
@@ -320,6 +391,10 @@ pub fn parse_filter_graph(el: &Element) -> FilterGraph {
             "fecomposite" => parse_composite(c, &prev_result),
             "feblend" => parse_blend(c, &prev_result),
             "femorphology" => parse_morphology(c, &prev_result),
+            "fecolormatrix" => parse_color_matrix(c, &prev_result),
+            "femerge" => parse_merge(c, &prev_result),
+            "fecomponenttransfer" => parse_component_transfer(c, &prev_result),
+            "fedropshadow" => parse_drop_shadow(c, &prev_result),
             _ => continue,
         };
         let prim_region = PrimitiveRegion {
@@ -429,6 +504,229 @@ fn parse_morphology(el: &Element, prev: &Option<String>) -> FilterPrimitive {
         radius_x: rx,
         radius_y: ry.unwrap_or(rx),
     }
+}
+
+fn parse_color_matrix(el: &Element, prev: &Option<String>) -> FilterPrimitive {
+    let kind = attr(el, "type").map(|s| s.trim().to_ascii_lowercase());
+    let values_attr = attr(el, "values");
+    // Per Filter Effects §13, `type` defaults to `matrix`.
+    let matrix = match kind.as_deref() {
+        Some("saturate") => {
+            // Per §13.2.4, s defaults to 1 (identity) when values is
+            // absent. Clamped to [0,1] per spec.
+            let s = values_attr
+                .and_then(|v| v.split_whitespace().next())
+                .and_then(|p| p.parse::<f32>().ok())
+                .unwrap_or(1.0)
+                .clamp(0.0, 1.0);
+            saturate_matrix(s)
+        }
+        Some("huerotate") => {
+            // Per §13.2.5, theta defaults to 0 (identity) and is in
+            // degrees.
+            let degrees = values_attr
+                .and_then(|v| v.split_whitespace().next())
+                .and_then(|p| p.parse::<f32>().ok())
+                .unwrap_or(0.0);
+            hue_rotate_matrix(degrees.to_radians())
+        }
+        Some("luminancetoalpha") => luminance_to_alpha_matrix(),
+        // `matrix` (default) — parse 20 floats. Missing / malformed
+        // values fall back to identity per spec §13.2.3.
+        _ => {
+            let floats = parse_number_list(values_attr);
+            if floats.len() == 20 {
+                let mut m = [0.0f32; 20];
+                m.copy_from_slice(&floats);
+                m
+            } else {
+                identity_matrix()
+            }
+        }
+    };
+    FilterPrimitive::ColorMatrix {
+        input: input_or_default(el, prev),
+        matrix,
+    }
+}
+
+fn parse_merge(el: &Element, prev: &Option<String>) -> FilterPrimitive {
+    let mut inputs = Vec::new();
+    for child in &el.children {
+        let XmlNode::Element(c) = child else { continue };
+        if !tag_local(&c.name).eq_ignore_ascii_case("feMergeNode") {
+            continue;
+        }
+        let in_attr = attr(c, "in").map(FilterInput::from_str);
+        // Per Filter Effects §19, feMergeNode without `in=` defaults
+        // to the "previous result" rule of §6.2 — same as any other
+        // primitive's first input slot.
+        let resolved = in_attr.unwrap_or_else(|| match prev {
+            Some(r) => FilterInput::Reference(r.clone()),
+            None => FilterInput::SourceGraphic,
+        });
+        inputs.push(resolved);
+    }
+    FilterPrimitive::Merge { inputs }
+}
+
+fn parse_component_transfer(el: &Element, prev: &Option<String>) -> FilterPrimitive {
+    let mut red = TransferFunction::Identity;
+    let mut green = TransferFunction::Identity;
+    let mut blue = TransferFunction::Identity;
+    let mut alpha = TransferFunction::Identity;
+    for child in &el.children {
+        let XmlNode::Element(c) = child else { continue };
+        let local = tag_local(&c.name).to_ascii_lowercase();
+        let f = match local.as_str() {
+            "fefuncr" | "fefuncg" | "fefuncb" | "fefunca" => parse_transfer_function(c),
+            _ => continue,
+        };
+        match local.as_str() {
+            "fefuncr" => red = f,
+            "fefuncg" => green = f,
+            "fefuncb" => blue = f,
+            "fefunca" => alpha = f,
+            _ => {}
+        }
+    }
+    FilterPrimitive::ComponentTransfer {
+        input: input_or_default(el, prev),
+        red,
+        green,
+        blue,
+        alpha,
+    }
+}
+
+fn parse_transfer_function(el: &Element) -> TransferFunction {
+    let kind = attr(el, "type")
+        .map(|s| s.trim().to_ascii_lowercase())
+        .unwrap_or_else(|| "identity".to_string());
+    match kind.as_str() {
+        "table" => TransferFunction::Table {
+            values: parse_number_list(attr(el, "tableValues")),
+        },
+        "discrete" => TransferFunction::Discrete {
+            values: parse_number_list(attr(el, "tableValues")),
+        },
+        "linear" => TransferFunction::Linear {
+            slope: parse_number(attr(el, "slope"), 1.0).unwrap_or(1.0),
+            intercept: parse_number(attr(el, "intercept"), 0.0).unwrap_or(0.0),
+        },
+        "gamma" => TransferFunction::Gamma {
+            amplitude: parse_number(attr(el, "amplitude"), 1.0).unwrap_or(1.0),
+            exponent: parse_number(attr(el, "exponent"), 1.0).unwrap_or(1.0),
+            offset: parse_number(attr(el, "offset"), 0.0).unwrap_or(0.0),
+        },
+        // `identity` (default) and any unknown type — pass through.
+        _ => TransferFunction::Identity,
+    }
+}
+
+fn parse_drop_shadow(el: &Element, prev: &Option<String>) -> FilterPrimitive {
+    // Per Filter Effects §22, `stdDeviation` defaults to "2 2", `dx`
+    // and `dy` default to 2.
+    let (sx, sy) = parse_two_numbers(attr(el, "stdDeviation"));
+    let (sx, sy_resolved) = if attr(el, "stdDeviation").is_some() {
+        (sx, sy.unwrap_or(sx))
+    } else {
+        (2.0, 2.0)
+    };
+    let dx = parse_number(attr(el, "dx"), 2.0).unwrap_or(2.0);
+    let dy = parse_number(attr(el, "dy"), 2.0).unwrap_or(2.0);
+    let flood_color = attr(el, "flood-color")
+        .map(parse_flood_color)
+        .unwrap_or_default();
+    let flood_opacity = parse_number(attr(el, "flood-opacity"), 1.0)
+        .unwrap_or(1.0)
+        .clamp(0.0, 1.0);
+    FilterPrimitive::DropShadow {
+        input: input_or_default(el, prev),
+        dx,
+        dy,
+        std_deviation_x: sx,
+        std_deviation_y: sy_resolved,
+        flood_color,
+        flood_opacity,
+    }
+}
+
+/// 4×5 identity matrix per Filter Effects §13.2.3.
+fn identity_matrix() -> [f32; 20] {
+    [
+        1.0, 0.0, 0.0, 0.0, 0.0, // R
+        0.0, 1.0, 0.0, 0.0, 0.0, // G
+        0.0, 0.0, 1.0, 0.0, 0.0, // B
+        0.0, 0.0, 0.0, 1.0, 0.0, // A
+    ]
+}
+
+/// `type="saturate"` template per Filter Effects §13.2.4. With s=1
+/// this is the identity; with s=0 it desaturates to luminance.
+/// Coefficients (0.213, 0.715, 0.072) match the spec verbatim.
+fn saturate_matrix(s: f32) -> [f32; 20] {
+    let r0 = 0.213 + 0.787 * s;
+    let r1 = 0.715 - 0.715 * s;
+    let r2 = 0.072 - 0.072 * s;
+    let g0 = 0.213 - 0.213 * s;
+    let g1 = 0.715 + 0.285 * s;
+    let g2 = 0.072 - 0.072 * s;
+    let b0 = 0.213 - 0.213 * s;
+    let b1 = 0.715 - 0.715 * s;
+    let b2 = 0.072 + 0.928 * s;
+    [
+        r0, r1, r2, 0.0, 0.0, // R'
+        g0, g1, g2, 0.0, 0.0, // G'
+        b0, b1, b2, 0.0, 0.0, // B'
+        0.0, 0.0, 0.0, 1.0, 0.0, // A'
+    ]
+}
+
+/// `type="hueRotate"` template per Filter Effects §13.2.5. `theta`
+/// is in radians (the spec gives the formula in radians once the
+/// `values` attribute is interpreted as degrees).
+fn hue_rotate_matrix(theta: f32) -> [f32; 20] {
+    let c = theta.cos();
+    let s = theta.sin();
+    // The 3x3 matrix below is the spec's equation (13.2.5) with the
+    // luminance / chroma decomposition baked in.
+    let r0 = 0.213 + c * 0.787 - s * 0.213;
+    let r1 = 0.715 - c * 0.715 - s * 0.715;
+    let r2 = 0.072 - c * 0.072 + s * 0.928;
+    let g0 = 0.213 - c * 0.213 + s * 0.143;
+    let g1 = 0.715 + c * 0.285 + s * 0.140;
+    let g2 = 0.072 - c * 0.072 - s * 0.283;
+    let b0 = 0.213 - c * 0.213 - s * 0.787;
+    let b1 = 0.715 - c * 0.715 + s * 0.715;
+    let b2 = 0.072 + c * 0.928 + s * 0.072;
+    [
+        r0, r1, r2, 0.0, 0.0, // R'
+        g0, g1, g2, 0.0, 0.0, // G'
+        b0, b1, b2, 0.0, 0.0, // B'
+        0.0, 0.0, 0.0, 1.0, 0.0, // A'
+    ]
+}
+
+/// `type="luminanceToAlpha"` template per Filter Effects §13.2.6.
+fn luminance_to_alpha_matrix() -> [f32; 20] {
+    [
+        0.0, 0.0, 0.0, 0.0, 0.0, // R'
+        0.0, 0.0, 0.0, 0.0, 0.0, // G'
+        0.0, 0.0, 0.0, 0.0, 0.0, // B'
+        0.2125, 0.7154, 0.0721, 0.0, 0.0, // A'
+    ]
+}
+
+/// Parse a whitespace- or comma-separated list of f32s. Missing /
+/// malformed entries are skipped. Returns an empty vec when the
+/// attribute is absent.
+fn parse_number_list(s: Option<&str>) -> Vec<f32> {
+    let Some(raw) = s else { return Vec::new() };
+    raw.split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|p| !p.is_empty())
+        .filter_map(|p| p.parse::<f32>().ok())
+        .collect()
 }
 
 /// Parse `"sx"` or `"sx sy"` (whitespace- or comma-separated) into a
@@ -694,6 +992,361 @@ mod tests {
             2,
             "unknown <feBogusPrimitive> should be skipped"
         );
+    }
+
+    #[test]
+    fn parses_color_matrix_explicit_4x5() {
+        let f = first_filter(
+            r##"<svg xmlns="http://www.w3.org/2000/svg">
+              <filter id="f"><feColorMatrix type="matrix" values="
+                  0 1 0 0 0
+                  1 0 0 0 0
+                  0 0 1 0 0
+                  0 0 0 1 0"/></filter>
+            </svg>"##,
+        );
+        let g = parse_filter_graph(&f);
+        match &g.primitives[0].primitive {
+            FilterPrimitive::ColorMatrix { matrix, .. } => {
+                // R takes G, G takes R, B/A pass through.
+                assert_eq!(matrix[0], 0.0);
+                assert_eq!(matrix[1], 1.0);
+                assert_eq!(matrix[5], 1.0);
+                assert_eq!(matrix[6], 0.0);
+                assert_eq!(matrix[12], 1.0);
+                assert_eq!(matrix[18], 1.0);
+            }
+            _ => panic!("not color-matrix"),
+        }
+    }
+
+    #[test]
+    fn color_matrix_saturate_zero_is_luminance_grayscale() {
+        let f = first_filter(
+            r##"<svg xmlns="http://www.w3.org/2000/svg">
+              <filter id="f"><feColorMatrix type="saturate" values="0"/></filter>
+            </svg>"##,
+        );
+        let g = parse_filter_graph(&f);
+        let FilterPrimitive::ColorMatrix { matrix, .. } = &g.primitives[0].primitive else {
+            panic!("not color-matrix");
+        };
+        // Per spec — every output channel weights to luminance
+        // coefficients (0.213, 0.715, 0.072) when s=0.
+        for row in 0..3 {
+            assert!((matrix[row * 5] - 0.213).abs() < 1e-3);
+            assert!((matrix[row * 5 + 1] - 0.715).abs() < 1e-3);
+            assert!((matrix[row * 5 + 2] - 0.072).abs() < 1e-3);
+        }
+    }
+
+    #[test]
+    fn color_matrix_huerotate_zero_is_identity() {
+        let f = first_filter(
+            r##"<svg xmlns="http://www.w3.org/2000/svg">
+              <filter id="f"><feColorMatrix type="hueRotate" values="0"/></filter>
+            </svg>"##,
+        );
+        let g = parse_filter_graph(&f);
+        let FilterPrimitive::ColorMatrix { matrix, .. } = &g.primitives[0].primitive else {
+            panic!("not color-matrix");
+        };
+        // hue-rotate by 0° must equal identity (within FP epsilon).
+        let id = identity_matrix();
+        for (i, (a, b)) in matrix.iter().zip(id.iter()).enumerate() {
+            assert!(
+                (a - b).abs() < 1e-3,
+                "row {} col {}: got {} want {}",
+                i / 5,
+                i % 5,
+                a,
+                b
+            );
+        }
+    }
+
+    #[test]
+    fn color_matrix_luminance_to_alpha_writes_only_alpha_row() {
+        let f = first_filter(
+            r##"<svg xmlns="http://www.w3.org/2000/svg">
+              <filter id="f"><feColorMatrix type="luminanceToAlpha"/></filter>
+            </svg>"##,
+        );
+        let g = parse_filter_graph(&f);
+        let FilterPrimitive::ColorMatrix { matrix, .. } = &g.primitives[0].primitive else {
+            panic!("not color-matrix");
+        };
+        // R, G, B rows are zero; A row weights luminance.
+        for v in matrix.iter().take(15) {
+            assert_eq!(*v, 0.0);
+        }
+        assert!((matrix[15] - 0.2125).abs() < 1e-4);
+        assert!((matrix[16] - 0.7154).abs() < 1e-4);
+        assert!((matrix[17] - 0.0721).abs() < 1e-4);
+    }
+
+    #[test]
+    fn color_matrix_default_type_is_matrix() {
+        let f = first_filter(
+            r##"<svg xmlns="http://www.w3.org/2000/svg">
+              <filter id="f"><feColorMatrix values="
+                  1 0 0 0 0
+                  0 1 0 0 0
+                  0 0 1 0 0
+                  0 0 0 1 0"/></filter>
+            </svg>"##,
+        );
+        let g = parse_filter_graph(&f);
+        let FilterPrimitive::ColorMatrix { matrix, .. } = &g.primitives[0].primitive else {
+            panic!("not color-matrix");
+        };
+        assert_eq!(matrix, &identity_matrix());
+    }
+
+    #[test]
+    fn color_matrix_malformed_values_falls_back_to_identity() {
+        let f = first_filter(
+            r##"<svg xmlns="http://www.w3.org/2000/svg">
+              <filter id="f"><feColorMatrix values="1 2 3"/></filter>
+            </svg>"##,
+        );
+        let g = parse_filter_graph(&f);
+        let FilterPrimitive::ColorMatrix { matrix, .. } = &g.primitives[0].primitive else {
+            panic!("not color-matrix");
+        };
+        assert_eq!(matrix, &identity_matrix());
+    }
+
+    #[test]
+    fn parses_merge_in_order() {
+        let f = first_filter(
+            r##"<svg xmlns="http://www.w3.org/2000/svg">
+              <filter id="f">
+                <feFlood result="bg" flood-color="#000000"/>
+                <feGaussianBlur in="SourceAlpha" stdDeviation="2" result="blur"/>
+                <feMerge>
+                  <feMergeNode in="bg"/>
+                  <feMergeNode in="blur"/>
+                  <feMergeNode in="SourceGraphic"/>
+                </feMerge>
+              </filter>
+            </svg>"##,
+        );
+        let g = parse_filter_graph(&f);
+        // bg, blur, merge (3 primitives)
+        assert_eq!(g.primitives.len(), 3);
+        let FilterPrimitive::Merge { inputs } = &g.primitives[2].primitive else {
+            panic!("not merge");
+        };
+        assert_eq!(inputs.len(), 3);
+        assert_eq!(inputs[0], FilterInput::Reference("bg".into()));
+        assert_eq!(inputs[1], FilterInput::Reference("blur".into()));
+        assert_eq!(inputs[2], FilterInput::SourceGraphic);
+    }
+
+    #[test]
+    fn merge_node_without_in_falls_back_to_previous_result() {
+        let f = first_filter(
+            r##"<svg xmlns="http://www.w3.org/2000/svg">
+              <filter id="f">
+                <feGaussianBlur stdDeviation="2" result="blurred"/>
+                <feMerge>
+                  <feMergeNode/>
+                  <feMergeNode in="SourceGraphic"/>
+                </feMerge>
+              </filter>
+            </svg>"##,
+        );
+        let g = parse_filter_graph(&f);
+        let FilterPrimitive::Merge { inputs } = &g.primitives[1].primitive else {
+            panic!("not merge");
+        };
+        assert_eq!(inputs[0], FilterInput::Reference("blurred".into()));
+        assert_eq!(inputs[1], FilterInput::SourceGraphic);
+    }
+
+    #[test]
+    fn parses_component_transfer_table() {
+        let f = first_filter(
+            r##"<svg xmlns="http://www.w3.org/2000/svg">
+              <filter id="f">
+                <feComponentTransfer>
+                  <feFuncR type="table" tableValues="0 0.5 1"/>
+                  <feFuncG type="discrete" tableValues="0.25 0.5 0.75"/>
+                  <feFuncB type="linear" slope="2" intercept="-0.5"/>
+                  <feFuncA type="gamma" amplitude="1" exponent="2.2" offset="0"/>
+                </feComponentTransfer>
+              </filter>
+            </svg>"##,
+        );
+        let g = parse_filter_graph(&f);
+        let FilterPrimitive::ComponentTransfer {
+            red,
+            green,
+            blue,
+            alpha,
+            ..
+        } = &g.primitives[0].primitive
+        else {
+            panic!("not component-transfer");
+        };
+        match red {
+            TransferFunction::Table { values } => assert_eq!(values, &vec![0.0, 0.5, 1.0]),
+            _ => panic!("red not table"),
+        }
+        match green {
+            TransferFunction::Discrete { values } => {
+                assert_eq!(values, &vec![0.25, 0.5, 0.75])
+            }
+            _ => panic!("green not discrete"),
+        }
+        match blue {
+            TransferFunction::Linear { slope, intercept } => {
+                assert_eq!(*slope, 2.0);
+                assert_eq!(*intercept, -0.5);
+            }
+            _ => panic!("blue not linear"),
+        }
+        match alpha {
+            TransferFunction::Gamma {
+                amplitude,
+                exponent,
+                offset,
+            } => {
+                assert_eq!(*amplitude, 1.0);
+                assert!((*exponent - 2.2).abs() < 1e-4);
+                assert_eq!(*offset, 0.0);
+            }
+            _ => panic!("alpha not gamma"),
+        }
+    }
+
+    #[test]
+    fn component_transfer_missing_channels_default_to_identity() {
+        let f = first_filter(
+            r##"<svg xmlns="http://www.w3.org/2000/svg">
+              <filter id="f">
+                <feComponentTransfer>
+                  <feFuncR type="linear" slope="2" intercept="0"/>
+                </feComponentTransfer>
+              </filter>
+            </svg>"##,
+        );
+        let g = parse_filter_graph(&f);
+        let FilterPrimitive::ComponentTransfer {
+            red,
+            green,
+            blue,
+            alpha,
+            ..
+        } = &g.primitives[0].primitive
+        else {
+            panic!("not component-transfer");
+        };
+        assert!(matches!(red, TransferFunction::Linear { .. }));
+        assert_eq!(*green, TransferFunction::Identity);
+        assert_eq!(*blue, TransferFunction::Identity);
+        assert_eq!(*alpha, TransferFunction::Identity);
+    }
+
+    #[test]
+    fn component_transfer_unknown_type_is_identity() {
+        let f = first_filter(
+            r##"<svg xmlns="http://www.w3.org/2000/svg">
+              <filter id="f">
+                <feComponentTransfer>
+                  <feFuncR type="bogus" tableValues="1"/>
+                </feComponentTransfer>
+              </filter>
+            </svg>"##,
+        );
+        let g = parse_filter_graph(&f);
+        let FilterPrimitive::ComponentTransfer { red, .. } = &g.primitives[0].primitive else {
+            panic!("not component-transfer");
+        };
+        assert_eq!(*red, TransferFunction::Identity);
+    }
+
+    #[test]
+    fn parses_drop_shadow() {
+        let f = first_filter(
+            r##"<svg xmlns="http://www.w3.org/2000/svg">
+              <filter id="f">
+                <feDropShadow dx="3" dy="4" stdDeviation="2" flood-color="#ff0000" flood-opacity="0.5"/>
+              </filter>
+            </svg>"##,
+        );
+        let g = parse_filter_graph(&f);
+        let FilterPrimitive::DropShadow {
+            dx,
+            dy,
+            std_deviation_x,
+            std_deviation_y,
+            flood_color,
+            flood_opacity,
+            ..
+        } = &g.primitives[0].primitive
+        else {
+            panic!("not drop-shadow");
+        };
+        assert_eq!(*dx, 3.0);
+        assert_eq!(*dy, 4.0);
+        assert_eq!(*std_deviation_x, 2.0);
+        assert_eq!(*std_deviation_y, 2.0);
+        assert_eq!(flood_color.r, 0xff);
+        assert!((*flood_opacity - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn drop_shadow_defaults_match_filter_effects_22() {
+        // No attrs → dx=dy=2, stdDeviation=2 2, flood-color black,
+        // flood-opacity 1 (per W3C Filter Effects §22 default values).
+        let f = first_filter(
+            r##"<svg xmlns="http://www.w3.org/2000/svg">
+              <filter id="f"><feDropShadow/></filter>
+            </svg>"##,
+        );
+        let g = parse_filter_graph(&f);
+        let FilterPrimitive::DropShadow {
+            dx,
+            dy,
+            std_deviation_x,
+            std_deviation_y,
+            flood_color,
+            flood_opacity,
+            ..
+        } = &g.primitives[0].primitive
+        else {
+            panic!("not drop-shadow");
+        };
+        assert_eq!(*dx, 2.0);
+        assert_eq!(*dy, 2.0);
+        assert_eq!(*std_deviation_x, 2.0);
+        assert_eq!(*std_deviation_y, 2.0);
+        assert_eq!(flood_color, &FloodColor::default());
+        assert_eq!(*flood_opacity, 1.0);
+    }
+
+    #[test]
+    fn drop_shadow_two_axis_std_deviation() {
+        let f = first_filter(
+            r##"<svg xmlns="http://www.w3.org/2000/svg">
+              <filter id="f">
+                <feDropShadow dx="1" dy="2" stdDeviation="3 5"/>
+              </filter>
+            </svg>"##,
+        );
+        let g = parse_filter_graph(&f);
+        let FilterPrimitive::DropShadow {
+            std_deviation_x,
+            std_deviation_y,
+            ..
+        } = &g.primitives[0].primitive
+        else {
+            panic!("not drop-shadow");
+        };
+        assert_eq!(*std_deviation_x, 3.0);
+        assert_eq!(*std_deviation_y, 5.0);
     }
 
     #[test]

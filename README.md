@@ -153,14 +153,34 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
-## Deferred to round 8+
+## Round 8 additions
 
-- Actual filter-primitive rasterisation (the round-7 graph is
+- **Long-tail filter primitives** — typed-graph allowlist extended
+  from 6 to 10 primitives:
+  - **`<feColorMatrix>`** — `type="matrix"` (4×5 row-major) plus
+    `"saturate"`, `"hueRotate"`, `"luminanceToAlpha"`. All variants
+    reduce at parse time to a flat 4×5 RGBA-bias matrix using the
+    coefficients given in W3C Filter Effects §13.2.4 / §13.2.5 /
+    §13.2.6 (luminance 0.213 / 0.715 / 0.072).
+  - **`<feMerge>`** — captures the source-order list of
+    `<feMergeNode in="..."/>` children. Missing `in=` falls back to
+    the previous primitive's `result` per §6.2 / §19.
+  - **`<feComponentTransfer>`** — per-channel
+    `crate::filter::TransferFunction` resolved from
+    `<feFuncR/G/B/A>` children with `type="identity|table|discrete|linear|gamma"`;
+    channels lacking a matching child default to `Identity`.
+  - **`<feDropShadow>`** — single composite primitive (the syntactic
+    sugar for `Gaussian blur + Offset + Flood + Composite` per §22),
+    so the rasterizer can implement it directly. Defaults `dx=dy=2`,
+    `stdDeviation=2 2`, `flood-color` opaque black, `flood-opacity=1`.
+
+## Deferred to round 9+
+
+- Actual filter-primitive rasterisation (the typed graph is
   pre-rasteriser plumbing; pixel evaluation is `oxideav-raster` work).
-- Long-tail filter primitives: `<feColorMatrix>`,
-  `<feConvolveMatrix>`, `<feTurbulence>`, `<feDiffuseLighting>`,
-  `<feSpecularLighting>`, `<feDisplacementMap>`, `<feImage>`,
-  `<feMerge>`, `<feComponentTransfer>`, `<feTile>`, `<feDropShadow>`.
+- Remaining long-tail primitives: `<feConvolveMatrix>`,
+  `<feTurbulence>`, `<feDiffuseLighting>`, `<feSpecularLighting>`,
+  `<feDisplacementMap>`, `<feImage>`, `<feTile>`.
 - `<script>`.
 - `<marker>` defs + `marker-start` / `marker-mid` / `marker-end`
   (needs a `Marker` construct in `oxideav-core`).

@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 8** — long-tail filter primitives. Round 7 covered six
+  primitives (`feGaussianBlur` / `feOffset` / `feFlood` /
+  `feComposite` / `feBlend` / `feMorphology`); round 8 extends typed
+  parsing to:
+  - **`<feColorMatrix>`** — `type="matrix"` (4×5 row-major) plus
+    `"saturate"`, `"hueRotate"`, `"luminanceToAlpha"`. Each non-matrix
+    variant reduces at parse time to its 4×5 equivalent using the
+    coefficients given in W3C Filter Effects §13.2.4 / §13.2.5 /
+    §13.2.6. Malformed / wrong-length `values=` falls back to the
+    identity matrix.
+  - **`<feMerge>`** — `Merge { inputs: Vec<FilterInput> }`,
+    populated from the source-order list of `<feMergeNode in="..."/>`
+    children. Missing `in=` falls back to the previous primitive's
+    `result` per §6.2 / §19.
+  - **`<feComponentTransfer>`** — captures the four
+    `<feFuncR/G/B/A>` children into a new
+    `filter::TransferFunction` enum with five variants
+    (`Identity` / `Table { values }` / `Discrete { values }` /
+    `Linear { slope, intercept }` / `Gamma { amplitude, exponent, offset }`).
+    Channels lacking a matching `<feFunc*>` child default to
+    `Identity` per §12.
+  - **`<feDropShadow>`** — single composite primitive (the syntactic
+    sugar for `Gaussian blur + Offset + Flood + Composite` per §22).
+    Defaults `dx=dy=2`, `stdDeviation=2 2`, `flood-color` opaque
+    black, `flood-opacity=1`.
+  - The typed-graph allowlist is now ten primitives; remaining
+    `<feConvolveMatrix>`, `<feTurbulence>`, lighting, displacement,
+    `<feImage>`, `<feTile>` still flow through the verbatim-XML
+    round-trip path.
+  - 14 new integration tests in `tests/round8_filter.rs` plus 14 new
+    unit tests in `crate::filter::tests` (color-matrix saturate-zero
+    grayscale, hue-rotate identity at 0°, drop-shadow defaults,
+    component-transfer routing, merge ordering, …).
+
 - **Round 7** — typed `<filter>` primitive graph parsing + SMIL
   animation `calcMode="paced"` and `calcMode="spline"`.
   - **`crate::filter` module** — walks each `<filter>` element and

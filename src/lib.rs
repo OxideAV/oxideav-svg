@@ -116,22 +116,45 @@
 //!   kept on the def for lossless round-trip emission. A downstream
 //!   rasterizer (oxideav-raster) is the consumer of the typed graph.
 //!
-//! # Deferred to round 8+
+//! # Round 8 additions
 //!
-//! * Actual filter-primitive rasterisation (the round-7 graph is
+//! * **Long-tail filter primitives.** Round 7 covered the six
+//!   most-common primitives; round 8 extends typed parsing to the
+//!   long tail flagged in W3C Filter Effects §11–§22:
+//!   - **`<feColorMatrix>`** — all four `type=` variants (`matrix` /
+//!     `saturate` / `hueRotate` / `luminanceToAlpha`) reduce at parse
+//!     time to a flat 4×5 RGBA-bias matrix using the spec's
+//!     coefficients (luminance 0.213 / 0.715 / 0.072 for `saturate`
+//!     and `hueRotate`, 0.2125 / 0.7154 / 0.0721 for
+//!     `luminanceToAlpha`).
+//!   - **`<feMerge>`** — captures each `<feMergeNode in="..."/>`
+//!     child's input in source order. Missing `in=` falls back to the
+//!     previous primitive's `result` (per §6.2).
+//!   - **`<feComponentTransfer>`** — per-channel
+//!     [`crate::filter::TransferFunction`] resolved from
+//!     `<feFuncR/G/B/A>` children with `type="identity|table|discrete|linear|gamma"`.
+//!     Channels with no matching child default to `Identity`.
+//!   - **`<feDropShadow>`** — stored as a single
+//!     [`crate::filter::FilterPrimitive::DropShadow`] variant (the
+//!     spec §22 sugar for blur+offset+flood+composite) so the
+//!     rasterizer can implement it directly. Defaults `dx=dy=2`,
+//!     `stdDeviation=2 2`, `flood-color` opaque black, `flood-opacity` 1.
+//!
+//!   The verbatim-XML round-trip path continues to preserve every
+//!   primitive (including primitives still outside the typed
+//!   allowlist) via `PreservedExtras`.
+//!
+//! # Deferred to round 9+
+//!
+//! * Actual filter-primitive rasterisation (the typed graph is
 //!   pre-rasteriser plumbing; pixel evaluation is oxideav-raster work).
-//! * `<feColorMatrix>`, `<feConvolveMatrix>`, `<feTurbulence>`,
-//!   `<feDiffuseLighting>`, `<feSpecularLighting>`, `<feDisplacementMap>`,
-//!   `<feImage>`, `<feMerge>`, `<feComponentTransfer>`, `<feTile>`,
-//!   `<feDropShadow>` — round 7 covers the six primitives most
-//!   commonly seen in real-world SVG icons; the long tail follows once
-//!   the rasterizer side lands.
+//! * `<feConvolveMatrix>`, `<feTurbulence>`, `<feDiffuseLighting>`,
+//!   `<feSpecularLighting>`, `<feDisplacementMap>`, `<feImage>`,
+//!   `<feTile>` — the still-uncommon long tail.
 //! * `<script>`.
 //! * `<marker>` defs + `marker-start` / `marker-mid` / `marker-end`.
 //! * Pseudo-elements (`::before`, `::after`).
 //! * Stateful pseudo-classes (`:hover`, `:focus`, `:checked`).
-//! * Animation `calcMode="paced"` / `calcMode="spline"` (currently both
-//!   degrade to `linear`).
 
 pub mod animation;
 pub mod color;
