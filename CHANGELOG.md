@@ -9,6 +9,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 5** — CSS 3 Selectors Level 3 subset (W3C
+  REC-css3-selectors). Extends the round-4 cascade with:
+  - **Attribute predicates**: `[attr]`, `[attr=val]`, `[attr~=val]`,
+    `[attr|=val]`, `[attr^=val]`, `[attr$=val]`, `[attr*=val]`. Quoted
+    values are unwrapped; namespace-prefixed names (`xlink:href`) are
+    honoured verbatim.
+  - **Combinators**: descendant (` `), child (`>`), adjacent sibling
+    (`+`), general sibling (`~`). Matched right-to-left through a
+    lifetime-tied `MatchContext` ancestor chain — no Vec allocations
+    per element.
+  - **Structural pseudo-classes**: `:first-child`, `:last-child`,
+    `:only-child`, `:nth-child(N)` (numeric, `odd`, `even`, `An+B`),
+    `:first-of-type`, `:last-of-type`, `:only-of-type`,
+    `:nth-of-type(N)`, `:not(simple)` (negation of one simple
+    selector per Selectors L3).
+  - Specificity extended per CSS3 §9: attribute and pseudo-class
+    predicates count as a class; `:not(X)` folds in `X`'s
+    specificity.
+  - Unsupported pseudo-classes (`:hover`, `:focus`, `:checked`, …)
+    are silently dropped at parse time so the rest of the rule still
+    applies — over-match is the friendlier failure mode for static
+    document scrapes.
+
+  *Alternatives considered* (Round 5 candidate list, picked option
+  2): SVG-2 path syntax extensions (#1) — narrow surface, low usage
+  in real exports; filter primitive rasterisation (#3) — needs
+  `oxideav-raster` filter graph (deferred); marker rendering (#4) —
+  modest scope but lower download-share than CSS3 selectors; text
+  rendering (#5) — already wired through scribe in round 2 for the
+  vector path. CSS3 selector subset is the highest-leverage unblock
+  for editor-emitted SVG (Inkscape/Illustrator/Figma frequently emit
+  `:nth-child` and attribute selectors in their `<style>` blocks).
+
+  Implemented in `oxideav_svg::css` (rewrite). New public types:
+  `MatchContext`, `SimpleSelector`, `CompoundSelector`, `Combinator`,
+  `AttrPredicate`, `AttrOp`, `Pseudo`. Existing `Selector` is now an
+  alias for `CompoundSelector`. New `PaintState::merged_with_mctx`
+  takes a chained context; `merged_with_css` keeps the round-4
+  signature by building an isolated context internally. New
+  `parse_element_to_node_ctx` is the round-5 entry point used by the
+  decoder; `parse_element_to_node` is the round-4 wrapper.
+
 - **Round 4** — SMIL animation snapshot at arbitrary `t`. New
   `parse_svg_at(bytes, t_seconds)` evaluates every `<animate>` /
   `<set>` / `<animateTransform>` using the full SMIL timing model:

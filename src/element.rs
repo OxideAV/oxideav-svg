@@ -17,7 +17,7 @@ use oxideav_core::{
 };
 
 use crate::color::{parse_opacity, parse_paint, PaintValue};
-use crate::css::{declarations_for, Stylesheet};
+use crate::css::{declarations_for, MatchContext, Stylesheet};
 use crate::defs::{parse_url_ref, ClipPathDef, DefsTables, FilterDef, MaskDef, SymbolDef};
 use crate::parser::{attr, tag_local, Element, Node as XmlNode};
 use crate::path_data::parse_path_data;
@@ -75,14 +75,30 @@ impl PaintState {
     /// matched-by-specificity declarations + the inline `style="..."`
     /// attribute. Cascade order (last wins): inherited → presentation
     /// attrs → matched CSS rules → `style="..."`.
+    ///
+    /// This wrapper builds an isolated [`MatchContext`] (no parent /
+    /// sibling info) for `el` — which matches the round-4 selector
+    /// surface. Round-5 callers that need combinator / structural
+    /// pseudo-class support should call [`Self::merged_with_mctx`]
+    /// directly with a chained context built during the tree walk.
     pub fn merged_with_css(&self, el: &Element, sheet: &Stylesheet) -> Result<Self> {
+        let mctx = MatchContext::root(el);
+        self.merged_with_mctx(&mctx, sheet)
+    }
+
+    /// Round 5 — same as [`Self::merged_with_css`] but takes a
+    /// fully-chained [`MatchContext`] so combinator selectors
+    /// (`a > b`, `a + b`, `a ~ b`, descendant) and structural pseudo-
+    /// classes (`:nth-child`, `:first-of-type`, …) can match.
+    pub fn merged_with_mctx(&self, mctx: &MatchContext<'_>, sheet: &Stylesheet) -> Result<Self> {
         let mut s = self.clone();
+        let el = mctx.el;
         // 1) presentation attributes from `el`.
         for (name, _) in &el.attrs {
             self.apply_one(&mut s, name, attr(el, name).unwrap_or(""))?;
         }
         // 2) matched CSS rules + inline style — last write wins.
-        for (name, value) in declarations_for(el, sheet) {
+        for (name, value) in declarations_for(mctx, sheet) {
             self.apply_one(&mut s, &name, &value)?;
         }
         Ok(s)
@@ -557,10 +573,64 @@ pub fn parse_path(el: &Element) -> Result<Option<Path>> {
 /// Parse a parsed `Element` into an `oxideav-core` `Node`. Returns
 /// `Ok(None)` when the element produces no visible output (e.g. a rect
 /// of width 0, an unknown element).
+///
+/// Builds an isolated [`MatchContext`] (no parent / sibling info)
+/// around `el` and delegates to [`parse_element_to_node_ctx`]. Useful
+/// for callers that don't carry tree position information (e.g. the
+/// `<use>` resolver, where the source element lives in `<defs>` and
+/// has no meaningful position).
 pub fn parse_element_to_node(
     el: &Element,
     parent_state: &PaintState,
     ctx: &mut ParseContext,
+) -> Result<Option<Node>> {
+    let mctx = MatchContext::root(el);
+    parse_element_to_node_ctx(el, parent_state, ctx, &mctx)
+}
+
+/// Per-element-child sibling info — count of element-only children +
+/// per-tag totals — pre-computed once per parent so each child's
+/// MatchContext has accurate `:nth-child` / `:nth-of-type` numbers.
+fn child_sibling_totals(parent_el: &Element) -> (usize, HashMap<String, usize>) {
+    let mut total = 0usize;
+    let mut tag_totals: HashMap<String, usize> = HashMap::new();
+    for c in &parent_el.children {
+        if let XmlNode::Element(e) = c {
+            total += 1;
+            let lower = tag_local(&e.name).to_ascii_lowercase();
+            *tag_totals.entry(lower).or_insert(0) += 1;
+        }
+    }
+    (total, tag_totals)
+}
+
+/// Build the [`MatchContext`] for one element child.
+fn child_match_context<'a>(
+    parent_mctx: &'a MatchContext<'a>,
+    child_el: &'a Element,
+    child_index: usize,
+    of_type_index: usize,
+    sibling_count: usize,
+    of_type_count: usize,
+) -> MatchContext<'a> {
+    MatchContext {
+        el: child_el,
+        child_index,
+        of_type_index,
+        sibling_count,
+        of_type_count,
+        parent: Some(parent_mctx),
+    }
+}
+
+/// Round-5 entry point. Same as [`parse_element_to_node`] but takes a
+/// fully-chained [`MatchContext`] so the CSS cascade can resolve
+/// combinator selectors and structural pseudo-classes.
+pub fn parse_element_to_node_ctx(
+    el: &Element,
+    parent_state: &PaintState,
+    ctx: &mut ParseContext,
+    mctx: &MatchContext<'_>,
 ) -> Result<Option<Node>> {
     // Round 4: snapshot any `<animate>` / `<set>` /
     // `<animateTransform>` children at `ctx.animation_t` and fold them
@@ -570,10 +640,18 @@ pub fn parse_element_to_node(
     // snapshot at any point on the timeline.
     let with_anim = apply_animation_overrides(el, ctx.animation_t);
     let el = with_anim.as_ref().unwrap_or(el);
+    // If we cloned the element to fold animation values in, the
+    // MatchContext still references the *original* element (its
+    // tag/class/id/attrs are byte-identical post-clone, plus the
+    // sibling counts are computed from the original parent). Rebuild
+    // the context to point at the cloned `el` so attribute predicates
+    // see the snapshotted values.
+    let mctx_local = MatchContext { el, ..*mctx };
+    let mctx = &mctx_local;
     let local = tag_local(&el.name);
     let node_opt = match local.as_str() {
         "g" => {
-            let state = parent_state.merged_with_css(el, &ctx.stylesheet)?;
+            let state = parent_state.merged_with_mctx(mctx, &ctx.stylesheet)?;
             let transform = match attr(el, "transform") {
                 Some(v) => parse_transform(v)?,
                 None => Transform2D::identity(),
@@ -585,11 +663,20 @@ pub fn parse_element_to_node(
                 children: Vec::new(),
                 cache_key: None,
             };
+            let (total, tag_totals) = child_sibling_totals(el);
+            let mut child_idx = 0usize;
+            let mut tag_seen: HashMap<String, usize> = HashMap::new();
             for child in &el.children {
                 if let XmlNode::Element(c) = child {
-                    if let Some(node) = parse_element_to_node(c, &state, ctx)? {
+                    let lower = tag_local(&c.name).to_ascii_lowercase();
+                    let of_idx = *tag_seen.entry(lower.clone()).or_insert(0);
+                    *tag_seen.get_mut(&lower).unwrap() += 1;
+                    let of_count = *tag_totals.get(&lower).unwrap_or(&0);
+                    let cmctx = child_match_context(mctx, c, child_idx, of_idx, total, of_count);
+                    if let Some(node) = parse_element_to_node_ctx(c, &state, ctx, &cmctx)? {
                         group.children.push(node);
                     }
+                    child_idx += 1;
                 }
             }
             Some(Node::Group(group))
@@ -632,9 +719,9 @@ pub fn parse_element_to_node(
         // Round-3: `<use href="#id">` resolves the referenced element
         // and instantiates it as a child node, applying the use's
         // x / y / transform / width / height. See `parse_use_element`.
-        "use" => parse_use_element(el, parent_state, ctx)?,
+        "use" => parse_use_element(el, parent_state, ctx, mctx)?,
         "rect" | "circle" | "ellipse" | "line" | "polyline" | "polygon" | "path" => {
-            let state = parent_state.merged_with_css(el, &ctx.stylesheet)?;
+            let state = parent_state.merged_with_mctx(mctx, &ctx.stylesheet)?;
             let path_opt = match local.as_str() {
                 "rect" => parse_rect(el)?,
                 "circle" => parse_circle(el)?,
@@ -684,7 +771,7 @@ pub fn parse_element_to_node(
         }
         #[cfg(feature = "text")]
         "text" => {
-            let state = parent_state.merged_with_css(el, &ctx.stylesheet)?;
+            let state = parent_state.merged_with_mctx(mctx, &ctx.stylesheet)?;
             crate::text::parse_text_element(el, &state, ctx)?
         }
         // <text> when text feature is disabled — silently skip.
@@ -952,6 +1039,7 @@ pub fn parse_use_element(
     el: &Element,
     parent_state: &PaintState,
     ctx: &mut ParseContext,
+    _mctx: &MatchContext<'_>,
 ) -> Result<Option<Node>> {
     let href = match attr(el, "href").or_else(|| attr(el, "xlink:href")) {
         Some(v) => v.trim(),

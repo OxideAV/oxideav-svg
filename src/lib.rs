@@ -71,11 +71,34 @@
 //!   is applied as the static value of the targeted attribute on the
 //!   parent element. Matches what most browsers paint on first frame.
 //!
-//! # Deferred to round 4+
+//! # Round 5 additions
+//!
+//! * **CSS 3 Selectors Level 3 subset** in the
+//!   [`crate::css`] module. Extends the round-4 cascade with
+//!   attribute predicates (`[attr=val]`, `[attr~=val]`, `[attr|=val]`,
+//!   `[attr^=val]`, `[attr$=val]`, `[attr*=val]`, bare `[attr]`),
+//!   combinators (descendant, `>`, `+`, `~`), and structural
+//!   pseudo-classes (`:first-child`, `:last-child`, `:only-child`,
+//!   `:nth-child(An+B)`, `:first-of-type`, `:last-of-type`,
+//!   `:only-of-type`, `:nth-of-type(An+B)`, `:not(simple)`).
+//!   Combinator matching is right-to-left through a lifetime-tied
+//!   `MatchContext` ancestor chain; no per-element Vec allocations.
+//!   Unsupported pseudo-classes (`:hover`, `:focus`, …) are silently
+//!   dropped at parse time so the rest of the rule still applies.
+//!
+//! # Deferred to round 6+
 //!
 //! * `<script>`.
-//! * Animation timing beyond `t=0` (`begin`, `dur`, keyframe
-//!   interpolation, `repeatCount`).
+//! * Filter-primitive rasterisation (feGaussianBlur, feOffset,
+//!   feFlood, feComposite, feBlend, feMorphology) — round 4 preserves
+//!   `<filter>` definitions structurally; the rasteriser path is
+//!   `oxideav-raster` work.
+//! * `<marker>` defs + `marker-start` / `marker-mid` / `marker-end`.
+//! * SVG 2 path syntax extensions (bearing commands `B/b`,
+//!   reflective `B/b`, `d` as a CSS property).
+//! * Stateful pseudo-classes (`:hover`, `:focus`, `:checked`,
+//!   `:lang(...)`); `:nth-last-child` / `:nth-last-of-type`;
+//!   pseudo-elements (`::before`, `::after`).
 
 pub mod animation;
 pub mod color;

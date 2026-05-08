@@ -6,8 +6,9 @@ use oxideav_core::{
     ViewBox,
 };
 
+use crate::css::MatchContext;
 use crate::element::{
-    parse_clip_path_def, parse_element_to_node, parse_filter_def, parse_mask_def, parse_number,
+    parse_clip_path_def, parse_element_to_node_ctx, parse_filter_def, parse_mask_def, parse_number,
     parse_symbol_def, PaintState, ParseContext,
 };
 use crate::parser::{
@@ -162,13 +163,33 @@ fn parse_svg_root(svg: &Element, t_seconds: f32) -> Result<VectorFrame> {
     register_all_defs(svg, &mut ctx)?;
 
     // Second pass: walk the tree and build the scene graph. Gradients
-    // and round-2 defs are now resolvable.
+    // and round-2 defs are now resolvable. Build a per-child
+    // [`MatchContext`] so round-5 structural pseudo-classes
+    // (`:first-child`, `:nth-of-type`, …) and sibling combinators
+    // (`a + b`, `a ~ b`) match against the document tree.
     let mut root = Group::default();
+    let svg_mctx = MatchContext::root(svg);
+    let (total, tag_totals) = count_element_children(svg);
+    let mut child_idx = 0usize;
+    let mut tag_seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for child in &svg.children {
         if let XmlNode::Element(c) = child {
-            if let Some(node) = parse_element_to_node(c, &parent_state, &mut ctx)? {
+            let lower = tag_local(&c.name).to_ascii_lowercase();
+            let of_idx = *tag_seen.entry(lower.clone()).or_insert(0);
+            *tag_seen.get_mut(&lower).unwrap() += 1;
+            let of_count = *tag_totals.get(&lower).unwrap_or(&0);
+            let cmctx = MatchContext {
+                el: c,
+                child_index: child_idx,
+                of_type_index: of_idx,
+                sibling_count: total,
+                of_type_count: of_count,
+                parent: Some(&svg_mctx),
+            };
+            if let Some(node) = parse_element_to_node_ctx(c, &parent_state, &mut ctx, &cmctx)? {
                 root.children.push(node);
             }
+            child_idx += 1;
         }
     }
 
@@ -228,6 +249,22 @@ fn register_all_defs(el: &Element, ctx: &mut ParseContext) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Count element-only children of `parent` and per-tag totals — used
+/// to pre-compute `:nth-child` / `:nth-of-type` denominators for each
+/// child's [`MatchContext`].
+fn count_element_children(parent: &Element) -> (usize, std::collections::HashMap<String, usize>) {
+    let mut total = 0usize;
+    let mut tag_totals: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for c in &parent.children {
+        if let XmlNode::Element(e) = c {
+            total += 1;
+            let lower = tag_local(&e.name).to_ascii_lowercase();
+            *tag_totals.entry(lower).or_insert(0) += 1;
+        }
+    }
+    (total, tag_totals)
 }
 
 fn parse_view_box(s: &str) -> Result<ViewBox> {
