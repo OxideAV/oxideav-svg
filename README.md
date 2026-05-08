@@ -105,7 +105,36 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   filter / CSS definitions. Bare `parse_svg` / `write_svg` retain
   round-3 behaviour.
 
-## Deferred to round 5+
+## Round 5 additions
+
+- **CSS 3 Selectors Level 3 subset** — extends the round-4 cascade
+  with attribute predicates (`[attr]`, `[attr=val]`, `[attr~=val]`,
+  `[attr|=val]`, `[attr^=val]`, `[attr$=val]`, `[attr*=val]`),
+  combinators (descendant ` `, child `>`, adjacent sibling `+`,
+  general sibling `~`), and structural pseudo-classes
+  (`:first-child`, `:last-child`, `:only-child`, `:nth-child(An+B)`,
+  `:first-of-type`, `:last-of-type`, `:only-of-type`,
+  `:nth-of-type(An+B)`, `:not(simple)`). Combinator matching is
+  right-to-left through a lifetime-tied `MatchContext` ancestor chain
+  so deep trees don't allocate per-element scratch Vecs. Unsupported
+  pseudo-classes (`:hover`, `:focus`, …) are silently dropped at
+  parse time so the rest of the rule still applies.
+
+## Round 6 additions
+
+- **CSS 3 Selectors L3 leftovers** — `:nth-last-child(An+B)`,
+  `:nth-last-of-type(An+B)` (1-indexed from the end of the parent's
+  element-children list); `:lang(L)` (BCP 47 dash-match against the
+  nearest `xml:lang` / `lang` attribute, walked up the ancestor
+  chain via the existing `MatchContext` parent pointers).
+- **SVG 2 §9.3.2 — `d` as a presentation property**. A `<style>`
+  rule (`path { d: "M 0 0 L 10 10" }`) or inline
+  `style='d: "..."'` overrides the `d` attribute via the normal
+  cascade; the value is `none | <string>`. `d: none` reduces the path
+  to a no-render. Wired through a new `parse_path_with_css(el, mctx,
+  sheet)` next to the legacy `parse_path(el)`.
+
+## Deferred to round 7+
 
 - `<script>`.
 - Filter primitive rasterisation (feGaussianBlur, feColorMatrix,
@@ -113,8 +142,10 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   `PreservedExtras`; actual rasterisation lives in `oxideav-raster`.
 - Animation `calcMode="paced|spline"` (currently degrade to
   `linear`).
-- CSS combinators (descendant, child, sibling) and pseudo-classes;
-  `@import` of external stylesheets.
+- `<marker>` defs + `marker-start` / `marker-mid` / `marker-end`
+  (needs a `Marker` construct in `oxideav-core`).
+- Pseudo-elements (`::before`, `::after`); stateful pseudo-classes
+  (`:hover`, `:focus`, `:checked`); `@import` of external stylesheets.
 - Animation re-attachment to specific scene-graph emit sites in the
   encoder (currently appended at the trailing edge of the document
   with a parent-id comment).
