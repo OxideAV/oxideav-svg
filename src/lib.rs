@@ -86,7 +86,22 @@
 //!   Unsupported pseudo-classes (`:hover`, `:focus`, …) are silently
 //!   dropped at parse time so the rest of the rule still applies.
 //!
-//! # Deferred to round 6+
+//! # Round 6 additions
+//!
+//! * **CSS 3 Selectors L3 leftovers** — `:nth-last-child(An+B)` and
+//!   `:nth-last-of-type(An+B)` (1-indexed from the end of the parent's
+//!   element-children list); `:lang(L)` (BCP 47 dash-match against the
+//!   nearest `xml:lang` / `lang` attribute, walked up the ancestor
+//!   chain via the existing [`crate::css::MatchContext`] parent
+//!   pointers — no extra storage).
+//! * **SVG 2 §9.3.2 — `d` as a presentation property.** A CSS
+//!   declaration on a `<path>` element (from a `<style>` rule or an
+//!   inline `style="..."`) overrides the `d` attribute via the normal
+//!   cascade; the value is `none | <string>`, where the string is the
+//!   same SVG 1.1 path-data mini-language. `d: none` drops the path
+//!   entirely (no scene-graph node).
+//!
+//! # Deferred to round 7+
 //!
 //! * `<script>`.
 //! * Filter-primitive rasterisation (feGaussianBlur, feOffset,
@@ -94,11 +109,8 @@
 //!   `<filter>` definitions structurally; the rasteriser path is
 //!   `oxideav-raster` work.
 //! * `<marker>` defs + `marker-start` / `marker-mid` / `marker-end`.
-//! * SVG 2 path syntax extensions (bearing commands `B/b`,
-//!   reflective `B/b`, `d` as a CSS property).
-//! * Stateful pseudo-classes (`:hover`, `:focus`, `:checked`,
-//!   `:lang(...)`); `:nth-last-child` / `:nth-last-of-type`;
-//!   pseudo-elements (`::before`, `::after`).
+//! * Pseudo-elements (`::before`, `::after`).
+//! * Stateful pseudo-classes (`:hover`, `:focus`, `:checked`).
 
 pub mod animation;
 pub mod color;

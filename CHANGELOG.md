@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 6** — CSS 3 Selectors L3 leftovers + SVG 2 `d` as a
+  presentation property.
+  - **`:nth-last-child(An+B)`** and **`:nth-last-of-type(An+B)`** —
+    1-indexed structural pseudo-classes counted from the *end* of the
+    parent's element-children list. Uses the existing
+    `MatchContext.{sibling,of_type}_count` totals — no extra storage.
+  - **`:lang(L)`** — BCP 47 dash-match against the element's nearest
+    `xml:lang` / `lang` attribute. Walks the existing `MatchContext`
+    parent chain so an `xml:lang` on a `<g>` or root `<svg>` flows
+    through to descendants per Selectors L3 §6.6.2.
+  - **`d` as a CSS property** (SVG 2 §9.3.2) — a `<path>` element's
+    geometry can now be set via a CSS rule (`path { d: "M 0 0 L 10 10" }`)
+    or inline `style="..."`. The cascade is the same as for `fill` /
+    `stroke`: the last `d` declaration wins; presentation-attr is the
+    floor; `d: none` reduces the path to a no-render. New
+    `parse_path_with_css(el, mctx, sheet)` helper sits next to the
+    legacy `parse_path(el)`; the path branch of `parse_element_to_node_ctx`
+    routes through the CSS-aware version.
+
+  *Alternatives considered* (Round 6 candidate list, picked option
+  3 + option 1's surviving piece): bearing commands `B/b` (#1) — were
+  dropped from SVG 2 CR, so out of scope; marker rendering (#2) —
+  needs a `Marker` construct in `oxideav-core` (deferred); filter
+  primitive rasterisation (#4) — `oxideav-raster` work; text
+  rendering (#5) — already wired through scribe in round 2.
+  CSS3 leftovers + SVG 2 `d` are the highest-leverage unblock for
+  modern editor exports (Figma + Illustrator emit both).
+
 - **Round 5** — CSS 3 Selectors Level 3 subset (W3C
   REC-css3-selectors). Extends the round-4 cascade with:
   - **Attribute predicates**: `[attr]`, `[attr=val]`, `[attr~=val]`,

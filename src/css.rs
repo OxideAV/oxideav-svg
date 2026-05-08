@@ -26,11 +26,13 @@
 //! - Structural pseudo-classes: `:first-child`, `:last-child`,
 //!   `:only-child`, `:nth-child(n)` and variants (`odd` / `even` /
 //!   `An+B` form), `:first-of-type`, `:last-of-type`, `:only-of-type`,
-//!   `:nth-of-type(n)`, `:not(simple)` (parameter is a single simple
-//!   selector — the spec's full selector list is round 6+).
-//! - Other pseudo-classes (`:hover`, `:focus`, `:checked`, `:lang`, …)
-//!   are silently skipped (treated as "always false") — they're
-//!   interactive states without a place in a static document scrape.
+//!   `:nth-of-type(n)`, `:nth-last-child(n)`, `:nth-last-of-type(n)`,
+//!   `:not(simple)` (parameter is a single simple selector). Round 6
+//!   adds `:lang(L)` (BCP 47 dash-match against the element's nearest
+//!   `xml:lang` / `lang` attribute, walked up the ancestor chain).
+//! - Other pseudo-classes (`:hover`, `:focus`, `:checked`, …) are
+//!   silently skipped — they're interactive states without a place in
+//!   a static document scrape.
 //! - Comma-separated selector lists, with each component being a
 //!   compound selector chain.
 //!
@@ -112,6 +114,18 @@ pub enum Pseudo {
     /// `i = a*n + b`.
     NthChild(i32, i32),
     NthOfType(i32, i32),
+    /// `:nth-last-child(An+B)` — same as [`Pseudo::NthChild`] but the
+    /// index is counted from the *end* of the parent's element-children
+    /// list (the last child has index 1). Round 6.
+    NthLastChild(i32, i32),
+    /// `:nth-last-of-type(An+B)` — same as [`Pseudo::NthOfType`] but the
+    /// of-type index is counted from the end. Round 6.
+    NthLastOfType(i32, i32),
+    /// `:lang(prefix)` — matches when the element's effective BCP 47
+    /// language tag (the nearest `xml:lang` / `lang` attribute on the
+    /// element or any ancestor) equals `prefix` exactly, or starts with
+    /// `prefix-` (Selectors L3 §6.6.2 + CSS dash-match rule). Round 6.
+    Lang(String),
     /// `:not(simple)` — negation of a single simple selector.
     Not(Box<SimpleSelector>),
 }
@@ -281,9 +295,52 @@ impl Pseudo {
             Pseudo::OnlyOfType => mctx.of_type_count == 1,
             Pseudo::NthChild(a, b) => nth_match(mctx.child_index as i32 + 1, *a, *b),
             Pseudo::NthOfType(a, b) => nth_match(mctx.of_type_index as i32 + 1, *a, *b),
+            // 1-indexed from the end: last child is 1.
+            Pseudo::NthLastChild(a, b) => {
+                let last_idx = mctx.sibling_count.saturating_sub(mctx.child_index) as i32;
+                nth_match(last_idx, *a, *b)
+            }
+            Pseudo::NthLastOfType(a, b) => {
+                let last_idx = mctx.of_type_count.saturating_sub(mctx.of_type_index) as i32;
+                nth_match(last_idx, *a, *b)
+            }
+            // Walk up the parent chain to find the nearest element with
+            // an `xml:lang` / `lang` attribute, then dash-match it
+            // against the prefix per Selectors L3 §6.6.2.
+            Pseudo::Lang(prefix) => {
+                let mut cur: Option<&MatchContext<'_>> = Some(mctx);
+                while let Some(c) = cur {
+                    if let Some(tag) = lang_attr(c.el) {
+                        return lang_dash_match(tag, prefix);
+                    }
+                    cur = c.parent;
+                }
+                false
+            }
             Pseudo::Not(inner) => !inner.matches(mctx),
         }
     }
+}
+
+/// Look up the BCP 47 language tag on `el`. SVG inherits the
+/// XML-namespace `xml:lang` attribute and (in HTML / SVG 2) the bare
+/// `lang` attribute; either is honoured, with `xml:lang` taking
+/// precedence when both are present.
+fn lang_attr(el: &Element) -> Option<&str> {
+    if let Some(v) = attr(el, "xml:lang") {
+        return Some(v);
+    }
+    attr(el, "lang")
+}
+
+/// Selectors L3 §6.6.2: `:lang(C)` matches when the element's language
+/// tag is `C` (case-insensitive) or starts with `C-` (case-insensitive).
+fn lang_dash_match(have: &str, want: &str) -> bool {
+    if have.eq_ignore_ascii_case(want) {
+        return true;
+    }
+    let n = want.len();
+    have.len() > n && have.as_bytes()[n] == b'-' && have[..n].eq_ignore_ascii_case(want)
 }
 
 /// `:nth-child(An+B)` — CSS3 §6.6.5: matches when there exists a
@@ -992,6 +1049,24 @@ fn parse_pseudo(name: &str, arg: Option<&str>) -> Option<Pseudo> {
             let (an, b) = parse_nth(a)?;
             Some(Pseudo::NthOfType(an, b))
         }
+        ("nth-last-child", Some(a)) => {
+            let (an, b) = parse_nth(a)?;
+            Some(Pseudo::NthLastChild(an, b))
+        }
+        ("nth-last-of-type", Some(a)) => {
+            let (an, b) = parse_nth(a)?;
+            Some(Pseudo::NthLastOfType(an, b))
+        }
+        ("lang", Some(arg)) => {
+            // CSS strips surrounding whitespace + optional quotes per
+            // §3.3 ("strings"). Empty after strip → drop the rule.
+            let trimmed = arg.trim();
+            let unquoted = unquote(trimmed);
+            if unquoted.is_empty() {
+                return None;
+            }
+            Some(Pseudo::Lang(unquoted))
+        }
         ("not", Some(arg)) => {
             // Recursive, but only one level deep — we only allow a
             // simple selector inside `:not(...)` per Selectors L3 spec.
@@ -1381,5 +1456,69 @@ mod tests {
         assert_eq!(s.rules.len(), 1);
         // The class survives.
         assert_eq!(s.rules[0].selectors[0].head.classes, vec!["x".to_string()]);
+    }
+
+    // ---- Round 6 selector tests ----
+
+    #[test]
+    fn parse_nth_last_child_pseudo() {
+        let mut s = Stylesheet::new();
+        s.parse_block(":nth-last-child(2) { fill: red }");
+        assert_eq!(s.rules.len(), 1);
+        match &s.rules[0].selectors[0].head.pseudos[0] {
+            Pseudo::NthLastChild(0, 2) => {}
+            other => panic!("expected NthLastChild(0,2), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_nth_last_of_type_pseudo() {
+        let mut s = Stylesheet::new();
+        s.parse_block(":nth-last-of-type(odd) { fill: red }");
+        assert_eq!(s.rules.len(), 1);
+        match &s.rules[0].selectors[0].head.pseudos[0] {
+            Pseudo::NthLastOfType(2, 1) => {}
+            other => panic!("expected NthLastOfType(2,1), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_lang_pseudo_unquoted() {
+        let mut s = Stylesheet::new();
+        s.parse_block(":lang(en) { fill: red }");
+        assert_eq!(s.rules.len(), 1);
+        match &s.rules[0].selectors[0].head.pseudos[0] {
+            Pseudo::Lang(p) => assert_eq!(p, "en"),
+            other => panic!("expected Lang, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_lang_pseudo_quoted() {
+        let mut s = Stylesheet::new();
+        s.parse_block(r#":lang("zh") { fill: red }"#);
+        match &s.rules[0].selectors[0].head.pseudos[0] {
+            Pseudo::Lang(p) => assert_eq!(p, "zh"),
+            other => panic!("expected Lang, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lang_dash_match_helper() {
+        assert!(lang_dash_match("en", "en"));
+        assert!(lang_dash_match("en-US", "en"));
+        assert!(lang_dash_match("EN-us", "en")); // case-insensitive
+        assert!(!lang_dash_match("english", "en")); // not a dash boundary
+        assert!(!lang_dash_match("fr", "en"));
+        assert!(!lang_dash_match("en", "fr"));
+    }
+
+    #[test]
+    fn lang_attr_prefers_xml_lang_over_lang() {
+        let only_lang = elem("text", &[("lang", "fr")]);
+        assert_eq!(lang_attr(&only_lang), Some("fr"));
+        let both = elem("text", &[("xml:lang", "ja"), ("lang", "en")]);
+        // `xml:lang` checked first.
+        assert_eq!(lang_attr(&both), Some("ja"));
     }
 }

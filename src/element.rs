@@ -558,6 +558,10 @@ fn parse_points(s: &str) -> Result<Vec<Point>> {
 }
 
 /// Parse `<path d="...">` directly into [`Path`].
+///
+/// Reads the `d` attribute only — for the round-6 SVG 2 cascade where
+/// CSS `d` overrides the attribute, callers thread through
+/// [`parse_path_with_css`] which consults the [`Stylesheet`] first.
 pub fn parse_path(el: &Element) -> Result<Option<Path>> {
     let d = match attr(el, "d") {
         Some(v) => v,
@@ -568,6 +572,61 @@ pub fn parse_path(el: &Element) -> Result<Option<Path>> {
         return Ok(None);
     }
     Ok(Some(Path { commands: cmds }))
+}
+
+/// Round 6 — SVG 2 §9.3.2: `d` is a presentation property, so a CSS
+/// declaration on the element (from a `<style>` rule or an inline
+/// `style="..."`) overrides the `d` attribute. The CSS value is
+/// `none | <string>`; the string must be quoted with `'` or `"` and
+/// holds the same path-data mini-language the attribute does.
+///
+/// Cascade: matched stylesheet rules (sorted by specificity) + inline
+/// style come *after* the presentation attribute, so the last `d`
+/// declaration wins. A `d: none` declaration (or empty string) reduces
+/// the path to "no rendering" — we return `Ok(None)` so the caller
+/// drops the node.
+pub fn parse_path_with_css(
+    el: &Element,
+    mctx: &MatchContext<'_>,
+    sheet: &Stylesheet,
+) -> Result<Option<Path>> {
+    // Walk the cascade in order — last `d` declaration wins.
+    let mut effective: Option<String> = attr(el, "d").map(|s| s.to_string());
+    for (name, value) in declarations_for(mctx, sheet) {
+        if name == "d" {
+            effective = Some(value);
+        }
+    }
+    let raw = match effective {
+        Some(v) => v,
+        None => return Ok(None),
+    };
+    let stripped = unwrap_d_property(&raw);
+    if stripped.eq_ignore_ascii_case("none") || stripped.is_empty() {
+        return Ok(None);
+    }
+    let cmds = parse_path_data(stripped)?;
+    if cmds.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(Path { commands: cmds }))
+}
+
+/// Strip the surrounding quotes that the CSS `d` property requires
+/// (`d: "M 0 0 L 10 10"`). Inputs that came from the raw `d` attribute
+/// are passed through unchanged. Whitespace around the literal is
+/// trimmed in either case.
+fn unwrap_d_property(raw: &str) -> &str {
+    let t = raw.trim();
+    let bytes = t.as_bytes();
+    if bytes.len() >= 2 {
+        let first = bytes[0];
+        let last = bytes[bytes.len() - 1];
+        if (first == b'"' || first == b'\'') && first == last {
+            return t[1..t.len() - 1].trim();
+        }
+    }
+    t
 }
 
 /// Parse a parsed `Element` into an `oxideav-core` `Node`. Returns
@@ -729,7 +788,10 @@ pub fn parse_element_to_node_ctx(
                 "line" => Some(parse_line(el)?),
                 "polyline" => parse_polyline(el, false)?,
                 "polygon" => parse_polyline(el, true)?,
-                "path" => parse_path(el)?,
+                // Round 6: the SVG 2 `d` property allows CSS to set the
+                // path data, which overrides the `d` attribute via the
+                // normal cascade. `parse_path_with_css` honours that.
+                "path" => parse_path_with_css(el, mctx, &ctx.stylesheet)?,
                 _ => unreachable!(),
             };
             let path = match path_opt {
