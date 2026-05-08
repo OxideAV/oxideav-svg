@@ -9,6 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 10** — lighting filter primitives. Two more primitives join
+  the typed-graph allowlist (now 15 of the W3C Filter Effects §11
+  set):
+  - **`<feDiffuseLighting>`** — `crate::filter::FilterPrimitive::DiffuseLighting
+    { input, surface_scale, diffuse_constant, kernel_unit_length,
+    lighting_color, light_source }`. Per W3C Filter Effects §18.
+    `surfaceScale` and `diffuseConstant` default to 1; `kernelUnitLength`
+    is `Option<(f32, f32)>` (absent → `None`, single number mirrors);
+    `lighting-color` defaults to opaque white per §21.
+  - **`<feSpecularLighting>`** — same shared shape plus
+    `specular_constant` and `specular_exponent` (both default 1) per
+    §19.
+  - **`crate::filter::LightSource` enum** — shared by both lighting
+    primitives. `Distant { azimuth, elevation }` for
+    `<feDistantLight>` (§18.5), `Point { x, y, z }` for
+    `<fePointLight>` (§18.6) and the eight-attribute
+    `Spot { x, y, z, points_at_x, points_at_y, points_at_z,
+    specular_exponent, limiting_cone_angle }` for `<feSpotLight>`
+    (§18.7). `limiting_cone_angle: Option<f32>` so an absent
+    attribute records as "no cone clipping". A missing light-source
+    child collapses to a default distant light at azimuth=0,
+    elevation=0.
+  - 11 new integration tests in `tests/round10_filter.rs` plus 11 new
+    unit tests in `crate::filter::tests` (per-primitive defaults,
+    explicit attrs, spot-light eight-attribute form, kernel-unit-
+    length single-number mirroring, currentColor → opaque-black
+    fallback, child precedence when multiple light-source elements
+    appear, mixed pipelines round-tripped through
+    `parse_svg_with_extras` / `write_svg_with_extras`).
+  - The verbatim-XML round-trip path continues to preserve
+    `<feImage>` and `<feTile>` (the still-untyped tail) via
+    `PreservedExtras`.
+  - Round-7 / round-9 "unknown primitive" tests retargeted to
+    `<feImage>` (the only short-name primitive still outside the
+    allowlist) so they keep witnessing the skip-then-preserve
+    invariant.
+
 - **Round 9** — three more long-tail filter primitives. Round 8
   covered four (`feColorMatrix` / `feMerge` / `feComponentTransfer` /
   `feDropShadow`); round 9 extends typed parsing to:

@@ -153,6 +153,27 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
+## Round 10 additions
+
+- **Lighting filter primitives** — typed-graph allowlist extended
+  from 13 to 15 primitives:
+  - **`<feDiffuseLighting>`** — Lambertian-diffuse lighting model
+    (W3C Filter Effects §18). Captures `surfaceScale` (default 1),
+    `diffuseConstant` (default 1), `kernelUnitLength` (1 or 2
+    numbers, mirrored if one), `lighting-color` (CSS colour, default
+    opaque white per §21).
+  - **`<feSpecularLighting>`** — Phong-specular lighting model
+    (§19). Same shared attributes plus `specularConstant` and
+    `specularExponent` (both default 1).
+  - **`LightSource` enum** — shared by both primitives.
+    `<feDistantLight azimuth elevation>` (§18.5),
+    `<fePointLight x y z>` (§18.6) and the eight-attribute
+    `<feSpotLight x y z pointsAtX pointsAtY pointsAtZ
+    specularExponent limitingConeAngle>` (§18.7); `limitingConeAngle`
+    is `Option<f32>` so an absent attribute records as "no cone
+    clipping". A missing light-source child collapses to a default
+    distant light at azimuth=0 / elevation=0.
+
 ## Round 9 additions
 
 - **More long-tail filter primitives** — typed-graph allowlist
@@ -193,12 +214,11 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
     so the rasterizer can implement it directly. Defaults `dx=dy=2`,
     `stdDeviation=2 2`, `flood-color` opaque black, `flood-opacity=1`.
 
-## Deferred to round 10+
+## Deferred to round 11+
 
 - Actual filter-primitive rasterisation (the typed graph is
   pre-rasteriser plumbing; pixel evaluation is `oxideav-raster` work).
-- Remaining long-tail primitives: `<feDiffuseLighting>`,
-  `<feSpecularLighting>`, `<feImage>`, `<feTile>`.
+- Remaining long-tail primitives: `<feImage>`, `<feTile>`.
 - `<script>`.
 - `<marker>` defs + `marker-start` / `marker-mid` / `marker-end`
   (needs a `Marker` construct in `oxideav-core`).

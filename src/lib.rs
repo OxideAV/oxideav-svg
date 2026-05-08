@@ -159,12 +159,28 @@
 //!   - **`<feDisplacementMap>`** — `scale` and X / Y channel selectors
 //!     mapped to [`crate::filter::ChannelSelector`]. Per §17.
 //!
-//! # Deferred to round 10+
+//! # Round 10 additions
+//!
+//! * **Lighting filter primitives.** The typed-graph allowlist grows
+//!   from 13 to 15: `<feDiffuseLighting>` (per W3C Filter Effects §18)
+//!   and `<feSpecularLighting>` (§19). Both share a new
+//!   [`crate::filter::LightSource`] enum capturing the three SVG
+//!   light-source children — `<feDistantLight azimuth elevation>`,
+//!   `<fePointLight x y z>` and the eight-attribute form
+//!   `<feSpotLight x y z pointsAtX pointsAtY pointsAtZ
+//!   specularExponent limitingConeAngle>` — per §18.5 / §18.6 / §18.7.
+//!   `surfaceScale` / `diffuseConstant` / `specularConstant` /
+//!   `specularExponent` / `kernelUnitLength` / `lighting-color` are all
+//!   captured. Missing light-source child collapses to a default
+//!   distant light at azimuth=0 / elevation=0; `lighting-color`
+//!   defaults to opaque white per §21. The verbatim-XML round-trip
+//!   path continues to preserve the elements regardless.
+//!
+//! # Deferred to round 11+
 //!
 //! * Actual filter-primitive rasterisation (the typed graph is
 //!   pre-rasteriser plumbing; pixel evaluation is oxideav-raster work).
-//! * `<feDiffuseLighting>`, `<feSpecularLighting>`, `<feImage>`,
-//!   `<feTile>` — the still-uncommon long tail.
+//! * `<feImage>`, `<feTile>` — the still-uncommon long tail.
 //! * `<script>`.
 //! * `<marker>` defs + `marker-start` / `marker-mid` / `marker-end`.
 //! * Pseudo-elements (`::before`, `::after`); `@import` of external
