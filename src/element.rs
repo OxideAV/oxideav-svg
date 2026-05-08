@@ -914,12 +914,18 @@ fn wrap_with_clip(node: Node, clip: Path) -> Node {
 
 /// Parse `<filter id="...">` into a [`FilterDef`]. Returns `None` if
 /// the element has no `id` (then it can't be referenced).
+///
+/// Round 7 also walks each primitive child and parses it into the
+/// typed [`crate::filter::FilterGraph`] stored on the def, so consumers
+/// can access the pipeline without re-parsing the XML.
 pub fn parse_filter_def(el: &Element) -> Option<(String, FilterDef)> {
     let id = attr(el, "id")?.to_string();
+    let graph = crate::filter::parse_filter_graph(el);
     Some((
         id,
         FilterDef {
             element: el.clone(),
+            graph,
         },
     ))
 }

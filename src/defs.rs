@@ -26,15 +26,23 @@ use std::collections::HashMap;
 
 use oxideav_core::{Group, Path};
 
+use crate::filter::FilterGraph;
 use crate::parser::Element;
 
-/// Captured `<filter id="...">` element. Round 2 stores the original
-/// element verbatim so the encoder can re-emit it; the rendering path
-/// (Gaussian blur, color matrix, …) is wired up by oxideav-raster in
-/// a later round.
+/// Captured `<filter id="...">` element. Round 2 stored the original
+/// element verbatim so the encoder could re-emit it; round 7 also
+/// parses the primitive graph into a typed [`FilterGraph`] so a
+/// downstream rasterizer (oxideav-raster) can consume the pipeline
+/// without re-parsing XML.
+///
+/// Both fields stay populated — `element` is the source of truth for
+/// round-trip emission (preserves attribute ordering, comments,
+/// unknown primitives), while `graph` is the typed view consumers
+/// should prefer for actual rendering.
 #[derive(Clone, Debug)]
 pub struct FilterDef {
     pub element: Element,
+    pub graph: FilterGraph,
 }
 
 /// Captured `<mask id="...">`. The mask subtree is pre-parsed into a

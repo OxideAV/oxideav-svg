@@ -25,10 +25,18 @@
 //! - everything else → discrete (snap to nearest keyframe).
 //!
 //! Timing functions (`calcMode="discrete|linear|paced|spline"`) — round
-//! 4 implements `linear` (the SMIL default) and `discrete`. `paced`
-//! degrades to `linear` (without a distance metric per attribute it
-//! would require per-type code that adds little value over uniform
-//! `keyTimes`). `spline` degrades to `linear`.
+//! 4 shipped `linear` (the SMIL default) and `discrete`; round 7 fills
+//! in `paced` and `spline`.
+//!
+//! - `paced` redistributes `keyTimes` so each segment is traversed at
+//!   constant attribute-space speed. Numeric values (and colour values
+//!   in 4-component RGBA space) get a real distance metric; non-numeric
+//!   values fall back to uniform spacing.
+//! - `spline` reads `keySplines="x1 y1 x2 y2 ; ..."` (one quadruple
+//!   per segment) and remaps the per-segment local `t` through the
+//!   cubic Bézier `(0,0)→(x1,y1)→(x2,y2)→(1,1)`.  Resolved with a few
+//!   Newton-Raphson iterations on the x curve to invert `x(s)→s`,
+//!   then `y(s)` gives the eased fraction.
 //!
 //! `<animateTransform>` is supported for `type="translate|rotate|scale"`
 //! and produces a serialised `transform="..."` attribute string that the
@@ -62,11 +70,20 @@ pub fn evaluate_at(el: &Element, t_seconds: f32) -> Option<(String, String)> {
     }
 
     // Standard <animate> / <set>: interpolate the value.
-    let frames = collect_frames(el)?;
+    let mut frames = collect_frames(el)?;
     if frames.is_empty() {
         return None;
     }
-    let raw = interpolate_frames(&frames, local_t, dur, calc_mode(el));
+    let mode = calc_mode(el);
+    if matches!(mode, CalcMode::Paced) {
+        repace_frames(&mut frames);
+    }
+    let key_splines = if matches!(mode, CalcMode::Spline) {
+        parse_key_splines(attr(el, "keySplines"), frames.len().saturating_sub(1))
+    } else {
+        None
+    };
+    let raw = interpolate_frames(&frames, local_t, dur, mode, key_splines.as_deref());
     Some((attr_name, raw))
 }
 
@@ -273,21 +290,34 @@ fn uniform_times(n: usize) -> Vec<f32> {
     (0..n).map(|i| i as f32 / denom).collect()
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CalcMode {
     Discrete,
     Linear,
+    /// `calcMode="paced"` — redistributes keyTimes by attribute-space
+    /// distance so segments traverse at constant speed. Round 7.
+    Paced,
+    /// `calcMode="spline"` — eases each segment through a cubic Bézier
+    /// from `keySplines`. Round 7.
+    Spline,
 }
 
 fn calc_mode(el: &Element) -> CalcMode {
     match attr(el, "calcMode").map(str::trim) {
         Some("discrete") => CalcMode::Discrete,
-        // round 4 collapses paced/spline → linear (see module doc).
+        Some("paced") => CalcMode::Paced,
+        Some("spline") => CalcMode::Spline,
         _ => CalcMode::Linear,
     }
 }
 
-fn interpolate_frames(frames: &[Frame], local_t: f32, dur: Option<f32>, mode: CalcMode) -> String {
+fn interpolate_frames(
+    frames: &[Frame],
+    local_t: f32,
+    dur: Option<f32>,
+    mode: CalcMode,
+    key_splines: Option<&[KeySpline]>,
+) -> String {
     if frames.is_empty() {
         return String::new();
     }
@@ -322,8 +352,147 @@ fn interpolate_frames(frames: &[Frame], local_t: f32, dur: Option<f32>, mode: Ca
     let local = ((t01 - a.time) / span).clamp(0.0, 1.0);
     match mode {
         CalcMode::Discrete => a.value.clone(),
-        CalcMode::Linear => lerp_string(&a.value, &b.value, local),
+        CalcMode::Linear | CalcMode::Paced => lerp_string(&a.value, &b.value, local),
+        CalcMode::Spline => {
+            // One spline per *segment* (frames.len() - 1 quadruples).
+            let eased = match key_splines.and_then(|s| s.get(idx)) {
+                Some(spline) => spline.ease(local),
+                // Missing / malformed keySplines → linear within the
+                // segment (matches the SMIL "value not animated" fallback
+                // mandated by spec).
+                None => local,
+            };
+            lerp_string(&a.value, &b.value, eased)
+        }
     }
+}
+
+/// One cubic Bézier easing segment from `keySplines="x1 y1 x2 y2"`.
+#[derive(Clone, Copy, Debug)]
+struct KeySpline {
+    x1: f32,
+    y1: f32,
+    x2: f32,
+    y2: f32,
+}
+
+impl KeySpline {
+    /// Map a linear segment-local `t in [0,1]` through the cubic Bézier
+    /// curve `(0,0) → (x1,y1) → (x2,y2) → (1,1)`. Newton-Raphson on
+    /// `x(s) = t` (3 iterations is plenty since the curve is monotone
+    /// in x for valid splines per the SMIL spec).
+    fn ease(self, t: f32) -> f32 {
+        let t = t.clamp(0.0, 1.0);
+        // Bezier coefficients in the polynomial form:
+        // x(s) = 3(1-s)^2 s · x1 + 3(1-s) s^2 · x2 + s^3
+        let mut s = t;
+        for _ in 0..6 {
+            let xs = bezier_axis(s, self.x1, self.x2);
+            let dx = bezier_axis_d(s, self.x1, self.x2);
+            if dx.abs() < 1e-6 {
+                break;
+            }
+            s -= (xs - t) / dx;
+            s = s.clamp(0.0, 1.0);
+        }
+        bezier_axis(s, self.y1, self.y2).clamp(0.0, 1.0)
+    }
+}
+
+fn bezier_axis(s: f32, p1: f32, p2: f32) -> f32 {
+    let one = 1.0 - s;
+    3.0 * one * one * s * p1 + 3.0 * one * s * s * p2 + s * s * s
+}
+
+fn bezier_axis_d(s: f32, p1: f32, p2: f32) -> f32 {
+    let one = 1.0 - s;
+    3.0 * one * one * p1 + 6.0 * one * s * (p2 - p1) + 3.0 * s * s * (1.0 - p2)
+}
+
+/// Parse `keySplines="x1 y1 x2 y2 ; x1 y1 x2 y2 ; ..."`. Returns
+/// `None` when malformed or when the segment count doesn't match.
+fn parse_key_splines(raw: Option<&str>, expected: usize) -> Option<Vec<KeySpline>> {
+    if expected == 0 {
+        return None;
+    }
+    let raw = raw?;
+    let segments: Vec<KeySpline> = raw
+        .split(';')
+        .filter_map(|seg| {
+            let nums: Result<Vec<f32>, _> = seg
+                .split(|c: char| c == ',' || c.is_whitespace())
+                .filter(|p| !p.is_empty())
+                .map(|p| p.parse::<f32>())
+                .collect();
+            let nums = nums.ok()?;
+            if nums.len() != 4 {
+                return None;
+            }
+            Some(KeySpline {
+                x1: nums[0],
+                y1: nums[1],
+                x2: nums[2],
+                y2: nums[3],
+            })
+        })
+        .collect();
+    if segments.len() != expected {
+        return None;
+    }
+    Some(segments)
+}
+
+/// Redistribute `frame.time` values for `calcMode="paced"`. Each
+/// segment's time becomes proportional to its attribute-space
+/// distance.  Numeric and colour values get a real metric; non-numeric
+/// values fall back to uniform spacing.
+fn repace_frames(frames: &mut [Frame]) {
+    if frames.len() < 2 {
+        return;
+    }
+    let n = frames.len();
+    let mut dists = Vec::with_capacity(n - 1);
+    let mut total = 0.0_f32;
+    for w in frames.windows(2) {
+        let d = paced_distance(&w[0].value, &w[1].value);
+        total += d;
+        dists.push(d);
+    }
+    if total <= 0.0 {
+        // No usable distance metric — keep uniform spacing (the round-4
+        // default).
+        for (i, f) in frames.iter_mut().enumerate() {
+            f.time = i as f32 / (n - 1) as f32;
+        }
+        return;
+    }
+    let mut acc = 0.0_f32;
+    frames[0].time = 0.0;
+    for (i, d) in dists.iter().enumerate() {
+        acc += *d;
+        frames[i + 1].time = (acc / total).clamp(0.0, 1.0);
+    }
+    // Floating-point safety: pin the last entry to exactly 1.0.
+    if let Some(last) = frames.last_mut() {
+        last.time = 1.0;
+    }
+}
+
+/// Distance metric between two animation values for `calcMode="paced"`.
+/// Numeric → absolute difference; RGBA colour → Euclidean in
+/// 4-component space (each component in 0..=255). Anything else → 0.
+fn paced_distance(a: &str, b: &str) -> f32 {
+    if let (Ok(av), Ok(bv)) = (a.trim().parse::<f32>(), b.trim().parse::<f32>()) {
+        return (bv - av).abs();
+    }
+    if let (Some(ca), Some(cb)) = (parse_color_for_lerp(a), parse_color_for_lerp(b)) {
+        let dr = ca.0 as f32 - cb.0 as f32;
+        let dg = ca.1 as f32 - cb.1 as f32;
+        let db = ca.2 as f32 - cb.2 as f32;
+        let da = ca.3 as f32 - cb.3 as f32;
+        return (dr * dr + dg * dg + db * db + da * da).sqrt();
+    }
+    0.0
 }
 
 /// Linearly interpolate two values. Tries colour, then scalar, else

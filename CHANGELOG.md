@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 7** — typed `<filter>` primitive graph parsing + SMIL
+  animation `calcMode="paced"` and `calcMode="spline"`.
+  - **`crate::filter` module** — walks each `<filter>` element and
+    parses its primitive children (`<feGaussianBlur>`, `<feOffset>`,
+    `<feFlood>`, `<feComposite>`, `<feBlend>`, `<feMorphology>`) into
+    a typed `FilterGraph`. Each `FilterPrimitiveNode` carries the
+    primitive's region (`x` / `y` / `width` / `height`), optional
+    `result="..."` label, and the typed `FilterPrimitive` enum value.
+    Implicit input chaining: `in=` defaults to the previous
+    primitive's `result`, or `SourceGraphic` for the first primitive
+    (per W3C Filter Effects §6.2). Unknown primitives (e.g.
+    `<feColorMatrix>`) are skipped from the typed graph but still
+    survive the verbatim XML round-trip via `PreservedExtras`.
+  - `defs::FilterDef` now carries a `graph: FilterGraph` field
+    alongside the existing `element: Element`. The verbatim XML
+    remains the source of truth for round-trip emission; the typed
+    graph is the parallel view a downstream rasterizer should
+    consume.
+  - **`calcMode="paced"`** — redistributes `keyTimes` so each segment
+    is traversed at constant attribute-space speed. Numeric values
+    use `|b - a|`; colour values use Euclidean distance in 4-component
+    RGBA. Non-numeric / non-colour values fall back to uniform
+    spacing (the round-4 default).
+  - **`calcMode="spline"`** — eases each segment through a cubic
+    Bézier from `keySplines="x1 y1 x2 y2 ; ..."` (one quadruple per
+    segment).  Resolved with 6 Newton-Raphson iterations on the x
+    curve to invert `x(s)→s`, then `y(s)` gives the eased fraction.
+    Missing or malformed `keySplines` falls back to linear within
+    the segment.
+
 - **Round 6** — CSS 3 Selectors L3 leftovers + SVG 2 `d` as a
   presentation property.
   - **`:nth-last-child(An+B)`** and **`:nth-last-of-type(An+B)`** —

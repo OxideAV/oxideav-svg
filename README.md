@@ -134,14 +134,34 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   to a no-render. Wired through a new `parse_path_with_css(el, mctx,
   sheet)` next to the legacy `parse_path(el)`.
 
-## Deferred to round 7+
+## Round 7 additions
 
+- **Typed `<filter>` primitive graph parsing** — `<feGaussianBlur>`,
+  `<feOffset>`, `<feFlood>`, `<feComposite>`, `<feBlend>`,
+  `<feMorphology>` are walked into a typed `crate::filter::FilterGraph`
+  (primitives + per-primitive region + `result` / `in` chaining per
+  W3C Filter Effects §6.2). The graph hangs off `defs::FilterDef`
+  alongside the verbatim XML, so a downstream rasterizer can consume
+  the pipeline without re-parsing. Unknown primitives (e.g.
+  `<feColorMatrix>`) survive the verbatim XML round-trip via
+  `PreservedExtras`.
+- **SMIL `calcMode="paced"`** — redistributes `keyTimes` so each
+  segment is traversed at constant attribute-space speed (numeric:
+  `|b - a|`; colour: Euclidean RGBA distance; otherwise: uniform
+  fallback).
+- **SMIL `calcMode="spline"`** — eases each segment through a cubic
+  Bézier from `keySplines`; resolved with Newton-Raphson on the x
+  curve. Missing / malformed `keySplines` falls back to linear.
+
+## Deferred to round 8+
+
+- Actual filter-primitive rasterisation (the round-7 graph is
+  pre-rasteriser plumbing; pixel evaluation is `oxideav-raster` work).
+- Long-tail filter primitives: `<feColorMatrix>`,
+  `<feConvolveMatrix>`, `<feTurbulence>`, `<feDiffuseLighting>`,
+  `<feSpecularLighting>`, `<feDisplacementMap>`, `<feImage>`,
+  `<feMerge>`, `<feComponentTransfer>`, `<feTile>`, `<feDropShadow>`.
 - `<script>`.
-- Filter primitive rasterisation (feGaussianBlur, feColorMatrix,
-  …). The `<filter>` definition survives round-trip via
-  `PreservedExtras`; actual rasterisation lives in `oxideav-raster`.
-- Animation `calcMode="paced|spline"` (currently degrade to
-  `linear`).
 - `<marker>` defs + `marker-start` / `marker-mid` / `marker-end`
   (needs a `Marker` construct in `oxideav-core`).
 - Pseudo-elements (`::before`, `::after`); stateful pseudo-classes

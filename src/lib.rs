@@ -101,16 +101,37 @@
 //!   same SVG 1.1 path-data mini-language. `d: none` drops the path
 //!   entirely (no scene-graph node).
 //!
-//! # Deferred to round 7+
+//! # Round 7 additions
 //!
+//! * **Typed filter-primitive graph parsing.** Round 2-4 captured
+//!   `<filter>` element trees verbatim and round-tripped them, but
+//!   never inspected the primitives inside. Round 7 walks each
+//!   `<feGaussianBlur>`, `<feOffset>`, `<feFlood>`, `<feComposite>`,
+//!   `<feBlend>`, `<feMorphology>` child and folds it into a typed
+//!   [`crate::filter::FilterGraph`] stored on the
+//!   [`crate::defs::FilterDef`]. Implicit input chaining
+//!   (`in` defaults to the previous primitive's `result`, or
+//!   `SourceGraphic` for the first) follows W3C Filter Effects §6.2.
+//!   Unknown primitives are skipped; the verbatim XML element is still
+//!   kept on the def for lossless round-trip emission. A downstream
+//!   rasterizer (oxideav-raster) is the consumer of the typed graph.
+//!
+//! # Deferred to round 8+
+//!
+//! * Actual filter-primitive rasterisation (the round-7 graph is
+//!   pre-rasteriser plumbing; pixel evaluation is oxideav-raster work).
+//! * `<feColorMatrix>`, `<feConvolveMatrix>`, `<feTurbulence>`,
+//!   `<feDiffuseLighting>`, `<feSpecularLighting>`, `<feDisplacementMap>`,
+//!   `<feImage>`, `<feMerge>`, `<feComponentTransfer>`, `<feTile>`,
+//!   `<feDropShadow>` — round 7 covers the six primitives most
+//!   commonly seen in real-world SVG icons; the long tail follows once
+//!   the rasterizer side lands.
 //! * `<script>`.
-//! * Filter-primitive rasterisation (feGaussianBlur, feOffset,
-//!   feFlood, feComposite, feBlend, feMorphology) — round 4 preserves
-//!   `<filter>` definitions structurally; the rasteriser path is
-//!   `oxideav-raster` work.
 //! * `<marker>` defs + `marker-start` / `marker-mid` / `marker-end`.
 //! * Pseudo-elements (`::before`, `::after`).
 //! * Stateful pseudo-classes (`:hover`, `:focus`, `:checked`).
+//! * Animation `calcMode="paced"` / `calcMode="spline"` (currently both
+//!   degrade to `linear`).
 
 pub mod animation;
 pub mod color;
@@ -120,6 +141,7 @@ pub mod decoder;
 pub mod defs;
 pub mod element;
 pub mod encoder;
+pub mod filter;
 pub mod parser;
 pub mod path_data;
 pub mod preserved;
