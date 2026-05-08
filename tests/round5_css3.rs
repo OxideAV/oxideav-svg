@@ -397,16 +397,20 @@ fn attribute_predicate_specificity_matches_class() {
 
 #[test]
 fn unsupported_pseudo_class_doesnt_break_rule() {
-    // `:hover` is not modelled; the rule should still match the class
-    // selector portion.
+    // Round 11 — `:hover` is now modelled as a Stateful pseudo-class
+    // that never matches in a static document. Previously this rule
+    // over-matched `.btn` because `:hover` was silently dropped; the
+    // updated behaviour correctly leaves the rect at its
+    // SVG-default fill (opaque black). See `tests/round11_css.rs` for
+    // the regression net.
     let src = br##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
   <style>.btn:hover { fill: #112233 }</style>
   <rect class="btn" width="10" height="10"/>
 </svg>"##;
     let frame = parse_svg(src).unwrap();
     let fills = fills_in_order(&frame);
-    // Per our spec note in css.rs: unknown pseudo-classes drop to
-    // "no extra constraint" so the rule applies. (Round 6+ would
-    // wire `:hover` to a stateful matcher.)
-    assert_eq!(fills[0], Some(Rgba::opaque(0x11, 0x22, 0x33)));
+    // SVG default fill is opaque black per SVG 1.1 §11.3 — the
+    // `:hover` rule is preserved on the stylesheet but doesn't apply
+    // to a static rendering.
+    assert_eq!(fills[0], Some(Rgba::opaque(0, 0, 0)));
 }

@@ -9,6 +9,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 11** — `<feImage>` + `<feTile>` close the W3C Filter Effects
+  §11 short-name set; CSS pseudo-elements parse to typed
+  `PseudoElement`; `@import` URL capture per CSS 2.1 §6.3; stateful
+  pseudo-classes parse to typed `Stateful` variant.
+  - **`<feImage>`** — `crate::filter::FilterPrimitive::Image { href,
+    preserve_aspect_ratio, crossorigin }`. Per W3C Filter Effects §21.
+    `href` falls back to `xlink:href` for legacy SVG-1.1 documents.
+    `preserveAspectRatio` parses the full SVG-2 §8.10 keyword set
+    (`xMin/Mid/MaxYMin/Mid/Max` + `none`, with optional `meet`/`slice`
+    modifier; default `xMidYMid meet`). `crossorigin` is
+    `Option<CrossOrigin>` with the HTML CORS values
+    (`anonymous`/`use-credentials`; empty value maps to `anonymous`
+    per HTML §2.7). Absent `href` records as `""` (rasterizer treats
+    as transparent-black no-op).
+  - **`<feTile>`** — `crate::filter::FilterPrimitive::Tile { input }`.
+    Per W3C Filter Effects §20. The only attribute is `in`; the
+    primitive's region (already on `FilterPrimitiveNode`) drives the
+    tiled-fill area.
+  - **`crate::filter::PreserveAspectRatio`** + helper enums
+    `PreserveAspectRatioAlign` (10 keyword variants + `None`) and
+    `MeetOrSlice`.
+  - **`crate::filter::CrossOrigin`** — `Anonymous` /
+    `UseCredentials`.
+  - **`crate::css::PseudoElement`** — `Before` / `After` /
+    `FirstLetter` / `FirstLine` (CSS 3 §3.7). Recorded on
+    `SimpleSelector::pseudo_element`. CSS 2.1 §5.12.1 single-colon
+    legacy syntax (`:before`, `:after`, …) honoured.
+    `pseudo_element` adds one tag-level point to specificity per
+    CSS3 §9. A rule with a pseudo-element never matches a live
+    element (the pseudo-element is a synthesised box; live matching
+    is up to a future renderer).
+  - **`crate::css::Pseudo::Stateful(StatefulPseudo)`** — wraps the
+    eight interactive pseudo-classes recognised by Selectors L3
+    §6.6: `Hover` / `Focus` / `Active` / `Checked` / `Visited` /
+    `Link` / `Disabled` / `Enabled`. None match in a static document
+    — they're preserved on the cascade so a future interactive
+    consumer can re-evaluate. Fixes a round-5 over-match bug where
+    `.x:hover` collapsed to `.x` because `:hover` was silently
+    dropped.
+  - **`crate::css::Stylesheet::imports: Vec<String>`** — populated
+    from every `@import url(…) [media-query-list];` (CSS 2.1 §6.3).
+    Both `@import url("foo.css")` and bare-string
+    (`@import "foo.css";`) forms accepted; loading external
+    stylesheets is left to the caller (the parser deliberately does
+    not fetch network resources). `@media`, `@font-face`,
+    `@keyframes` and other block-form @-rules continue to be
+    skipped.
+  - 9 new integration tests in `tests/round11_filter.rs`, 17 new
+    integration tests in `tests/round11_css.rs`, plus 25 new unit
+    tests across `crate::filter::tests` and `crate::css::tests`
+    (per-primitive defaults, explicit attrs, legacy `xlink:href`,
+    `data:` URI preservation, `crossorigin` empty-string mapping,
+    pseudo-element specificity, single-colon legacy parsing,
+    @import URL forms with quotes / parentheses / media-queries,
+    stateful-pseudo never-match, `:not(:hover)` matching all real
+    `<a>` because the inner `:hover` rejects).
+  - The verbatim-XML round-trip path continues to preserve every
+    primitive (including any future tail elements like
+    `<feFunctionalNotation>` should they appear) via
+    `PreservedExtras`.
+  - Round-7 "unknown primitive" tests retargeted from `<feImage>` to
+    a deliberately-fake `<feBogusPrimitive>` so the skip-then-
+    preserve invariant keeps a stable witness target.
+  - Round-5 `unsupported_pseudo_class_doesnt_break_rule` test
+    updated to assert the new (correct) static behaviour: `:hover`
+    is recorded but never matches, so the rule does not paint.
+
 - **Round 10** — lighting filter primitives. Two more primitives join
   the typed-graph allowlist (now 15 of the W3C Filter Effects §11
   set):

@@ -14,7 +14,10 @@
 //! long tail of common primitives by typing `<feDiffuseLighting>` and
 //! `<feSpecularLighting>` (sharing a [`LightSource`] enum that
 //! captures `<feDistantLight>` / `<fePointLight>` / `<feSpotLight>`
-//! children). Allowlist count: 15 of the W3C Filter Effects §11 set.
+//! children); round 11 closes the W3C Filter Effects §11 short-name set
+//! by typing `<feImage>` (per §21) and `<feTile>` (per §20). Allowlist
+//! count: 17 of the W3C Filter Effects §11 set — every short-name
+//! primitive is now typed.
 //!
 //! The graph model mirrors the W3C Filter Effects spec
 //! (drafts.fxtf.org/filter-effects-1, referenced from SVG 2 §15):
@@ -252,6 +255,32 @@ pub enum FilterPrimitive {
         lighting_color: FloodColor,
         light_source: LightSource,
     },
+    /// `<feImage href preserveAspectRatio crossorigin>` — sources an
+    /// external image (or document fragment) as a filter input. Per
+    /// W3C Filter Effects §21.
+    ///
+    /// The `href` (or legacy `xlink:href`) string is recorded verbatim
+    /// — the rasterizer is responsible for resolving it (`data:` URI,
+    /// document-fragment `#id`, or external HTTP(S) URL); a `#id`
+    /// fragment may target any element in the same document.
+    Image {
+        /// `href` value verbatim. Empty string when absent (per §21
+        /// the primitive is then a no-op transparent black).
+        href: String,
+        /// `preserveAspectRatio` — defaults to `xMidYMid meet` per
+        /// SVG 2 §8.10.
+        preserve_aspect_ratio: PreserveAspectRatio,
+        /// `crossorigin="anonymous|use-credentials"` (HTML CORS
+        /// attribute spec). Absent → `None`.
+        crossorigin: Option<CrossOrigin>,
+    },
+    /// `<feTile in>` — tiles `in`'s rectangle to fill the primitive
+    /// sub-region. Per W3C Filter Effects §20.
+    ///
+    /// The only attribute is `in` (no parameters of its own); the
+    /// shared `region` on [`FilterPrimitiveNode`] determines the area
+    /// being filled.
+    Tile { input: FilterInput },
 }
 
 /// One of the three SVG light-source elements
@@ -369,6 +398,120 @@ impl TurbulenceKind {
             "fractalNoise" => Self::FractalNoise,
             // `turbulence` and any unknown value default to Turbulence.
             _ => Self::Turbulence,
+        }
+    }
+}
+
+/// `preserveAspectRatio` on `<feImage>` (and elsewhere in SVG 2 §8.10).
+///
+/// The attribute combines an alignment keyword (`xMin/Mid/MaxYMin/Mid/Max`,
+/// or `none`) with an optional `meet`/`slice` modifier defaulting to
+/// `meet` per spec.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PreserveAspectRatio {
+    pub align: PreserveAspectRatioAlign,
+    pub meet_or_slice: MeetOrSlice,
+}
+
+impl Default for PreserveAspectRatio {
+    /// Per SVG 2 §8.10 default is `xMidYMid meet`.
+    fn default() -> Self {
+        Self {
+            align: PreserveAspectRatioAlign::XMidYMid,
+            meet_or_slice: MeetOrSlice::Meet,
+        }
+    }
+}
+
+impl PreserveAspectRatio {
+    fn from_str(s: &str) -> Self {
+        let mut parts = s.split_whitespace();
+        let align = parts
+            .next()
+            .map(PreserveAspectRatioAlign::from_str)
+            .unwrap_or_default();
+        let meet_or_slice = parts.next().map(MeetOrSlice::from_str).unwrap_or_default();
+        Self {
+            align,
+            meet_or_slice,
+        }
+    }
+}
+
+/// Alignment keyword for `preserveAspectRatio` per SVG 2 §8.10.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PreserveAspectRatioAlign {
+    /// `none` — stretch independently on each axis (no aspect-ratio
+    /// preservation).
+    None,
+    XMinYMin,
+    XMidYMin,
+    XMaxYMin,
+    XMinYMid,
+    /// Default per spec — `xMidYMid`.
+    #[default]
+    XMidYMid,
+    XMaxYMid,
+    XMinYMax,
+    XMidYMax,
+    XMaxYMax,
+}
+
+impl PreserveAspectRatioAlign {
+    fn from_str(s: &str) -> Self {
+        match s.trim() {
+            "none" => Self::None,
+            "xMinYMin" => Self::XMinYMin,
+            "xMidYMin" => Self::XMidYMin,
+            "xMaxYMin" => Self::XMaxYMin,
+            "xMinYMid" => Self::XMinYMid,
+            "xMidYMid" => Self::XMidYMid,
+            "xMaxYMid" => Self::XMaxYMid,
+            "xMinYMax" => Self::XMinYMax,
+            "xMidYMax" => Self::XMidYMax,
+            "xMaxYMax" => Self::XMaxYMax,
+            _ => Self::XMidYMid,
+        }
+    }
+}
+
+/// Meet-or-slice modifier on `preserveAspectRatio` per SVG 2 §8.10.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MeetOrSlice {
+    /// Default — fit inside the viewport, may letterbox.
+    #[default]
+    Meet,
+    /// Fill the viewport, may overflow.
+    Slice,
+}
+
+impl MeetOrSlice {
+    fn from_str(s: &str) -> Self {
+        match s.trim() {
+            "slice" => Self::Slice,
+            _ => Self::Meet,
+        }
+    }
+}
+
+/// `crossorigin` on `<feImage>` (and other resource-loading elements)
+/// per the HTML CORS attribute spec.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CrossOrigin {
+    /// `crossorigin="anonymous"` — request omits credentials.
+    Anonymous,
+    /// `crossorigin="use-credentials"` — request includes credentials.
+    UseCredentials,
+}
+
+impl CrossOrigin {
+    fn from_str(s: &str) -> Option<Self> {
+        match s.trim() {
+            // Per HTML §2.7: empty value or `anonymous` both map to
+            // anonymous.
+            "" | "anonymous" => Some(Self::Anonymous),
+            "use-credentials" => Some(Self::UseCredentials),
+            _ => None,
         }
     }
 }
@@ -610,6 +753,8 @@ pub fn parse_filter_graph(el: &Element) -> FilterGraph {
             "fedisplacementmap" => parse_displacement_map(c, &prev_result),
             "fediffuselighting" => parse_diffuse_lighting(c, &prev_result),
             "fespecularlighting" => parse_specular_lighting(c, &prev_result),
+            "feimage" => parse_image(c),
+            "fetile" => parse_tile(c, &prev_result),
             _ => continue,
         };
         let prim_region = PrimitiveRegion {
@@ -994,6 +1139,35 @@ fn parse_specular_lighting(el: &Element, prev: &Option<String>) -> FilterPrimiti
         kernel_unit_length: parse_kernel_unit_length(attr(el, "kernelUnitLength")),
         lighting_color: parse_lighting_color(attr(el, "lighting-color")),
         light_source: parse_light_source(el),
+    }
+}
+
+/// Parse `<feImage>` per Filter Effects §21. `href` (or legacy
+/// `xlink:href`) is recorded verbatim. `preserveAspectRatio` defaults
+/// to `xMidYMid meet` per SVG 2 §8.10. `crossorigin` is `None` when
+/// the attribute is absent.
+fn parse_image(el: &Element) -> FilterPrimitive {
+    let href = attr(el, "href")
+        .or_else(|| attr(el, "xlink:href"))
+        .map(|s| s.to_string())
+        .unwrap_or_default();
+    let preserve_aspect_ratio = attr(el, "preserveAspectRatio")
+        .map(PreserveAspectRatio::from_str)
+        .unwrap_or_default();
+    let crossorigin = attr(el, "crossorigin").and_then(CrossOrigin::from_str);
+    FilterPrimitive::Image {
+        href,
+        preserve_aspect_ratio,
+        crossorigin,
+    }
+}
+
+/// Parse `<feTile>` per Filter Effects §20. The only attribute is
+/// `in`; the primitive's region (already captured on the surrounding
+/// [`FilterPrimitiveNode`]) determines the area being tiled.
+fn parse_tile(el: &Element, prev: &Option<String>) -> FilterPrimitive {
+    FilterPrimitive::Tile {
+        input: input_or_default(el, prev),
     }
 }
 
@@ -2433,5 +2607,201 @@ mod tests {
         assert_eq!(g.region.y, Some(-10.0));
         assert_eq!(g.region.width, Some(120.0));
         assert_eq!(g.region.height, Some(80.0));
+    }
+
+    // ---- Round 11: feImage / feTile typed parsing ----
+
+    #[test]
+    fn parses_fe_image_with_href_and_aspect_ratio() {
+        let f = first_filter(
+            r##"<svg xmlns="http://www.w3.org/2000/svg">
+              <filter id="f">
+                <feImage href="texture.png" preserveAspectRatio="xMinYMin slice" crossorigin="anonymous"/>
+              </filter>
+            </svg>"##,
+        );
+        let g = parse_filter_graph(&f);
+        assert_eq!(g.primitives.len(), 1);
+        let FilterPrimitive::Image {
+            href,
+            preserve_aspect_ratio,
+            crossorigin,
+        } = &g.primitives[0].primitive
+        else {
+            panic!("not Image");
+        };
+        assert_eq!(href, "texture.png");
+        assert_eq!(
+            preserve_aspect_ratio.align,
+            PreserveAspectRatioAlign::XMinYMin
+        );
+        assert_eq!(preserve_aspect_ratio.meet_or_slice, MeetOrSlice::Slice);
+        assert_eq!(*crossorigin, Some(CrossOrigin::Anonymous));
+    }
+
+    #[test]
+    fn fe_image_falls_back_to_xlink_href_legacy() {
+        let f = first_filter(
+            r##"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+              <filter id="f">
+                <feImage xlink:href="bg.jpg"/>
+              </filter>
+            </svg>"##,
+        );
+        let g = parse_filter_graph(&f);
+        let FilterPrimitive::Image { href, .. } = &g.primitives[0].primitive else {
+            panic!("not Image");
+        };
+        assert_eq!(href, "bg.jpg");
+    }
+
+    #[test]
+    fn fe_image_default_preserve_aspect_ratio_is_xmidymid_meet() {
+        let f = first_filter(
+            r##"<svg xmlns="http://www.w3.org/2000/svg">
+              <filter id="f">
+                <feImage href="x.png"/>
+              </filter>
+            </svg>"##,
+        );
+        let g = parse_filter_graph(&f);
+        let FilterPrimitive::Image {
+            preserve_aspect_ratio,
+            crossorigin,
+            ..
+        } = &g.primitives[0].primitive
+        else {
+            panic!("not Image");
+        };
+        assert_eq!(*preserve_aspect_ratio, PreserveAspectRatio::default());
+        assert_eq!(*crossorigin, None);
+    }
+
+    #[test]
+    fn fe_image_absent_href_records_empty_string() {
+        // Per spec, a `<feImage>` with no href is a no-op transparent
+        // black; we record that as `href=""` so the rasterizer can detect
+        // the case.
+        let f = first_filter(
+            r##"<svg xmlns="http://www.w3.org/2000/svg">
+              <filter id="f">
+                <feImage/>
+              </filter>
+            </svg>"##,
+        );
+        let g = parse_filter_graph(&f);
+        let FilterPrimitive::Image { href, .. } = &g.primitives[0].primitive else {
+            panic!("not Image");
+        };
+        assert!(href.is_empty());
+    }
+
+    #[test]
+    fn fe_image_crossorigin_use_credentials() {
+        let f = first_filter(
+            r##"<svg xmlns="http://www.w3.org/2000/svg">
+              <filter id="f">
+                <feImage href="cdn.png" crossorigin="use-credentials"/>
+              </filter>
+            </svg>"##,
+        );
+        let g = parse_filter_graph(&f);
+        let FilterPrimitive::Image { crossorigin, .. } = &g.primitives[0].primitive else {
+            panic!("not Image");
+        };
+        assert_eq!(*crossorigin, Some(CrossOrigin::UseCredentials));
+    }
+
+    #[test]
+    fn fe_image_crossorigin_empty_string_maps_to_anonymous() {
+        // Per HTML §2.7 the empty value is treated as `anonymous`.
+        let f = first_filter(
+            r##"<svg xmlns="http://www.w3.org/2000/svg">
+              <filter id="f">
+                <feImage href="cdn.png" crossorigin=""/>
+              </filter>
+            </svg>"##,
+        );
+        let g = parse_filter_graph(&f);
+        let FilterPrimitive::Image { crossorigin, .. } = &g.primitives[0].primitive else {
+            panic!("not Image");
+        };
+        assert_eq!(*crossorigin, Some(CrossOrigin::Anonymous));
+    }
+
+    #[test]
+    fn parses_fe_tile_with_explicit_input() {
+        let f = first_filter(
+            r##"<svg xmlns="http://www.w3.org/2000/svg">
+              <filter id="f">
+                <feFlood flood-color="#ff0000" result="rd"/>
+                <feTile in="rd"/>
+              </filter>
+            </svg>"##,
+        );
+        let g = parse_filter_graph(&f);
+        assert_eq!(g.primitives.len(), 2);
+        let FilterPrimitive::Tile { input } = &g.primitives[1].primitive else {
+            panic!("not Tile");
+        };
+        assert_eq!(*input, FilterInput::Reference("rd".into()));
+    }
+
+    #[test]
+    fn fe_tile_implicit_input_threads_previous_result() {
+        // No `in=` → defaults to the previous primitive's result per
+        // §6.2.
+        let f = first_filter(
+            r##"<svg xmlns="http://www.w3.org/2000/svg">
+              <filter id="f">
+                <feGaussianBlur stdDeviation="2" result="b"/>
+                <feTile/>
+              </filter>
+            </svg>"##,
+        );
+        let g = parse_filter_graph(&f);
+        let FilterPrimitive::Tile { input } = &g.primitives[1].primitive else {
+            panic!("not Tile");
+        };
+        assert_eq!(*input, FilterInput::Reference("b".into()));
+    }
+
+    #[test]
+    fn fe_tile_first_primitive_defaults_to_source_graphic() {
+        let f = first_filter(
+            r##"<svg xmlns="http://www.w3.org/2000/svg">
+              <filter id="f">
+                <feTile/>
+              </filter>
+            </svg>"##,
+        );
+        let g = parse_filter_graph(&f);
+        let FilterPrimitive::Tile { input } = &g.primitives[0].primitive else {
+            panic!("not Tile");
+        };
+        assert_eq!(*input, FilterInput::SourceGraphic);
+    }
+
+    #[test]
+    fn preserve_aspect_ratio_alignment_keywords_round_trip() {
+        for (s, want) in [
+            ("none", PreserveAspectRatioAlign::None),
+            ("xMinYMin", PreserveAspectRatioAlign::XMinYMin),
+            ("xMidYMin", PreserveAspectRatioAlign::XMidYMin),
+            ("xMaxYMin", PreserveAspectRatioAlign::XMaxYMin),
+            ("xMinYMid", PreserveAspectRatioAlign::XMinYMid),
+            ("xMidYMid", PreserveAspectRatioAlign::XMidYMid),
+            ("xMaxYMid", PreserveAspectRatioAlign::XMaxYMid),
+            ("xMinYMax", PreserveAspectRatioAlign::XMinYMax),
+            ("xMidYMax", PreserveAspectRatioAlign::XMidYMax),
+            ("xMaxYMax", PreserveAspectRatioAlign::XMaxYMax),
+        ] {
+            assert_eq!(PreserveAspectRatioAlign::from_str(s), want, "for {s}");
+        }
+        // Unknown → default xMidYMid per spec.
+        assert_eq!(
+            PreserveAspectRatioAlign::from_str("not-a-real-value"),
+            PreserveAspectRatioAlign::XMidYMid
+        );
     }
 }

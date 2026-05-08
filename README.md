@@ -153,6 +153,37 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
+## Round 11 additions
+
+- **`<feImage>` + `<feTile>` close the §11 short-name set.** The
+  typed-graph allowlist now covers every short-name primitive (17 of
+  17):
+  - **`<feImage>`** — `href` (or legacy `xlink:href`),
+    `preserveAspectRatio` (full SVG-2 §8.10 keyword set —
+    `xMin/Mid/MaxYMin/Mid/Max`, plus `none`, plus optional
+    `meet`/`slice` modifier; default `xMidYMid meet`),
+    `crossorigin="anonymous|use-credentials"` (HTML CORS attribute).
+    Empty `href` is recorded as the empty string per W3C Filter
+    Effects §21 (the rasterizer treats it as a transparent-black
+    no-op).
+  - **`<feTile>`** — only `in=`; the primitive's region (already on
+    `FilterPrimitiveNode`) drives the tiled-fill area per §20.
+- **CSS pseudo-elements** — `::before`, `::after`, `::first-letter`,
+  `::first-line` parse to a typed `PseudoElement` on the carrier
+  selector. Per CSS 3 §3.2 a pseudo-element targets a synthesised box;
+  a rule with one never matches a live element but survives the
+  round-trip for a future renderer. CSS 2.1 §5.12.1 single-colon
+  legacy syntax (`:before`, …) is honoured.
+- **`@import url(…) [media-query-list];`** per CSS 2.1 §6.3 — the URL
+  is appended to `Stylesheet::imports`. Both `url("foo.css")` and
+  bare-string (`@import "foo.css";`) forms accepted; loading externals
+  is the caller's job (the parser does not fetch network resources).
+- **Stateful pseudo-classes** — `:hover`, `:focus`, `:active`,
+  `:checked`, `:visited`, `:link`, `:disabled`, `:enabled` parse to a
+  typed `Stateful` variant and never match in a static document. This
+  fixes a round-5 over-match bug where `.x:hover` collapsed to `.x`
+  because `:hover` was silently dropped.
+
 ## Round 10 additions
 
 - **Lighting filter primitives** — typed-graph allowlist extended
@@ -214,16 +245,18 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
     so the rasterizer can implement it directly. Defaults `dx=dy=2`,
     `stdDeviation=2 2`, `flood-color` opaque black, `flood-opacity=1`.
 
-## Deferred to round 11+
+## Deferred to round 12+
 
 - Actual filter-primitive rasterisation (the typed graph is
   pre-rasteriser plumbing; pixel evaluation is `oxideav-raster` work).
-- Remaining long-tail primitives: `<feImage>`, `<feTile>`.
 - `<script>`.
 - `<marker>` defs + `marker-start` / `marker-mid` / `marker-end`
   (needs a `Marker` construct in `oxideav-core`).
-- Pseudo-elements (`::before`, `::after`); stateful pseudo-classes
-  (`:hover`, `:focus`, `:checked`); `@import` of external stylesheets.
+- Live evaluation of pseudo-elements and stateful pseudo-classes (the
+  selectors parse + survive the round-trip but a synthesised-box
+  renderer is a separate oxideav-raster work-stream).
+- Resolving `@import`-ed external stylesheets (URL capture only — the
+  parser deliberately doesn't make network requests).
 - Animation re-attachment to specific scene-graph emit sites in the
   encoder (currently appended at the trailing edge of the document
   with a parent-id comment).

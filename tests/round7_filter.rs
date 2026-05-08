@@ -208,14 +208,14 @@ fn implicit_chain_uses_previous_result_when_in_is_omitted() {
 
 #[test]
 fn unknown_primitive_is_skipped_in_typed_graph() {
-    // Round 8 added feColorMatrix, round 9 added feConvolveMatrix /
-    // feTurbulence / feDisplacementMap, and round 10 added the lighting
-    // pair (feDiffuseLighting / feSpecularLighting) to the allowlist;
-    // feImage and feTile are still un-typed at the time of round 10.
+    // Round 11 closed the W3C Filter Effects §11 short-name set
+    // (feImage + feTile typed). The "unknown primitive" witness now
+    // uses a deliberately-fake `<feBogusPrimitive>` so the skip-then-
+    // preserve invariant keeps a stable test target.
     let src = br##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
         <defs><filter id="f">
           <feGaussianBlur stdDeviation="1"/>
-          <feImage href="data:image/png;base64,iVBORw0KGgo="/>
+          <feBogusPrimitive foo="bar"/>
           <feOffset dx="1" dy="1"/>
         </filter></defs>
         <rect width="10" height="10" filter="url(#f)"/>
@@ -224,7 +224,7 @@ fn unknown_primitive_is_skipped_in_typed_graph() {
     assert_eq!(
         g.primitives.len(),
         2,
-        "feImage isn't yet typed; should be skipped"
+        "feBogusPrimitive isn't typed; should be skipped"
     );
 }
 
@@ -232,12 +232,13 @@ fn unknown_primitive_is_skipped_in_typed_graph() {
 fn round_trip_preserves_unknown_primitives_via_extras() {
     // The typed graph drops unknown primitives, but the verbatim XML
     // round-trip keeps them — this is the round-4 invariant we must
-    // not regress. feImage / feTile are still outside the round-10
-    // allowlist so they make a stable witness.
+    // not regress. Round 11 typed the last two short-name primitives
+    // (feImage / feTile), so we now witness with a deliberately-fake
+    // `<feBogusPrimitive>` instead.
     let src = br##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
         <defs><filter id="f">
           <feGaussianBlur stdDeviation="2"/>
-          <feImage href="data:image/png;base64,iVBORw0KGgo="/>
+          <feBogusPrimitive foo="bar"/>
         </filter></defs>
         <rect width="10" height="10" filter="url(#f)"/>
       </svg>"##;
@@ -246,7 +247,7 @@ fn round_trip_preserves_unknown_primitives_via_extras() {
     let s = std::str::from_utf8(&out).unwrap();
     assert!(s.contains("feGaussianBlur"));
     assert!(
-        s.contains("feImage"),
+        s.contains("feBogusPrimitive"),
         "verbatim XML must keep unknown primitives: {s}"
     );
 }

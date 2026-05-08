@@ -1,5 +1,10 @@
 //! CSS cascade — round 4 (CSS 2.1 baseline) extended in round 5 with a
-//! CSS 3 Selectors Level 3 subset (W3C REC-css3-selectors).
+//! CSS 3 Selectors Level 3 subset (W3C REC-css3-selectors), and in round
+//! 11 with pseudo-element parsing (`::before` / `::after` /
+//! `::first-letter` / `::first-line`), `@import` URL capture (CSS 2.1
+//! §6.3), and stateful pseudo-classes (`:hover` / `:focus` / `:checked`
+//! / `:active` / `:visited` / `:link` / `:disabled` / `:enabled`) that
+//! parse + survive the round-trip but never match in a static document.
 //!
 //! Parses two surfaces that real SVG editors emit:
 //!
@@ -30,9 +35,12 @@
 //!   `:not(simple)` (parameter is a single simple selector). Round 6
 //!   adds `:lang(L)` (BCP 47 dash-match against the element's nearest
 //!   `xml:lang` / `lang` attribute, walked up the ancestor chain).
-//! - Other pseudo-classes (`:hover`, `:focus`, `:checked`, …) are
-//!   silently skipped — they're interactive states without a place in
-//!   a static document scrape.
+//! - **Round 11** — interactive pseudo-classes (`:hover`, `:focus`,
+//!   `:active`, `:checked`, `:visited`, `:link`, `:disabled`,
+//!   `:enabled`) parse to [`Pseudo::Stateful`] and survive the
+//!   round-trip but never match in a static rendering. Previously these
+//!   were silently dropped, which over-matched their carrier rules
+//!   (`.x:hover` collapsed to `.x`).
 //! - Comma-separated selector lists, with each component being a
 //!   compound selector chain.
 //!
@@ -43,6 +51,21 @@
 //! larger triples win; ties broken by source order at the call site.
 //! `:not(X)` contributes the specificity of `X` per spec §6.6.7. The
 //! universal (`*`) selector contributes nothing.
+//!
+//! # Round 11 additions — pseudo-elements + `@import`
+//!
+//! - **Pseudo-elements** (`::before`, `::after`, `::first-letter`,
+//!   `::first-line`) parse to [`PseudoElement`] and are recorded on the
+//!   carrier selector's [`SimpleSelector::pseudo_element`] field. A
+//!   selector with a pseudo-element never matches a real DOM element
+//!   directly (per CSS, the pseudo-element is a synthesised box) — but
+//!   the rule is preserved in the [`Stylesheet`] so a future renderer
+//!   can synthesise the box.  Specificity per CSS3 §9: each pseudo-
+//!   element contributes one tag-level point.
+//! - **`@import url(…) [media-query-list];`** (CSS 2.1 §6.3) — the URL
+//!   string is appended to [`Stylesheet::imports`]. Loading the
+//!   imported sheet is up to the caller (we deliberately don't fetch
+//!   external resources from the parser).
 
 use crate::parser::{attr, tag_local, Element, Node as XmlNode};
 
@@ -128,6 +151,64 @@ pub enum Pseudo {
     Lang(String),
     /// `:not(simple)` — negation of a single simple selector.
     Not(Box<SimpleSelector>),
+    /// **Round 11** — stateful / interactive pseudo-classes (`:hover`,
+    /// `:focus`, `:active`, `:checked`, `:visited`, `:link`,
+    /// `:disabled`, `:enabled`). These parse but never match in a
+    /// static document — recorded so the rule survives round-trip and
+    /// a future interactive consumer can re-evaluate.
+    Stateful(StatefulPseudo),
+}
+
+/// Stateful (interactive) pseudo-classes recognised in round 11. None
+/// match in a static document — a future interactive renderer would
+/// flip the relevant flag at runtime.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatefulPseudo {
+    /// `:hover` — pointing device is over the element.
+    Hover,
+    /// `:focus` — element has keyboard / programmatic focus.
+    Focus,
+    /// `:active` — element is being activated (mouse-down).
+    Active,
+    /// `:checked` — checkbox / radio / option in a checked state.
+    Checked,
+    /// `:visited` — visited hyperlink.
+    Visited,
+    /// `:link` — unvisited hyperlink (`<a href>` / `<area href>`).
+    Link,
+    /// `:disabled` — form control in a disabled state.
+    Disabled,
+    /// `:enabled` — form control in an enabled state (default).
+    Enabled,
+}
+
+/// **Round 11** — a CSS pseudo-element (`::before`, `::after`, …).
+/// Distinct from a pseudo-class in that the colon-pair syntax targets a
+/// synthesised renderer-only box rather than an existing element.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PseudoElement {
+    /// `::before` — content box generated before the element's first
+    /// child.
+    Before,
+    /// `::after` — content box generated after the element's last
+    /// child.
+    After,
+    /// `::first-letter` — the first typographic letter of a block.
+    FirstLetter,
+    /// `::first-line` — the first formatted line of a block.
+    FirstLine,
+}
+
+impl PseudoElement {
+    fn from_str(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "before" => Some(Self::Before),
+            "after" => Some(Self::After),
+            "first-letter" => Some(Self::FirstLetter),
+            "first-line" => Some(Self::FirstLine),
+            _ => None,
+        }
+    }
 }
 
 /// One simple selector: optional tag + class list + id + attribute and
@@ -141,6 +222,12 @@ pub struct SimpleSelector {
     pub id: Option<String>,
     pub attrs: Vec<AttrPredicate>,
     pub pseudos: Vec<Pseudo>,
+    /// **Round 11** — `::before` / `::after` / `::first-letter` /
+    /// `::first-line` attached to this simple. CSS allows at most one
+    /// pseudo-element per compound selector and it must come last; a
+    /// rule with a pseudo-element never matches a live element
+    /// directly (the renderer synthesises a box per CSS 3 §3.2).
+    pub pseudo_element: Option<PseudoElement>,
 }
 
 /// A compound selector — one head simple-selector plus zero or more
@@ -212,15 +299,28 @@ impl SimpleSelector {
                     cls += s.1;
                     tag += s.2;
                 }
-                // Structural pseudo-classes count as a class per CSS3 §9.
+                // Structural / stateful pseudo-classes count as a class
+                // per CSS3 §9.
                 _ => cls += 1,
             }
+        }
+        // CSS3 §9: each pseudo-element contributes one tag-level point.
+        if self.pseudo_element.is_some() {
+            tag += 1;
         }
         (id, cls, tag)
     }
 
     /// `true` when this simple selector matches `mctx.el`.
     pub fn matches(&self, mctx: &MatchContext<'_>) -> bool {
+        // Round 11: a selector that targets a pseudo-element
+        // (`::before`, `::after`, …) never matches a live DOM element
+        // — the pseudo-element is a synthesised box. We still parse +
+        // store the rule so a future renderer can apply it; the static
+        // cascade simply skips it here.
+        if self.pseudo_element.is_some() {
+            return false;
+        }
         let el = mctx.el;
         if let Some(tag) = &self.tag {
             if !tag_local(&el.name).eq_ignore_ascii_case(tag) {
@@ -318,6 +418,11 @@ impl Pseudo {
                 false
             }
             Pseudo::Not(inner) => !inner.matches(mctx),
+            // Round 11: stateful pseudo-classes never match in a static
+            // document. A `:hover` or `:checked` rule is preserved (so
+            // the round-trip + interactive consumers see it) but the
+            // static cascade skips it.
+            Pseudo::Stateful(_) => false,
         }
     }
 }
@@ -537,6 +642,11 @@ fn of_type_count(parent: &Element, target: &Element) -> usize {
 #[derive(Clone, Debug, Default)]
 pub struct Stylesheet {
     pub rules: Vec<Rule>,
+    /// **Round 11** — `@import` URLs in source order (CSS 2.1 §6.3).
+    /// Loading the imported sheet is left to the caller; we don't
+    /// fetch external resources from the parser. Quotes / `url(...)`
+    /// wrapping are stripped.
+    pub imports: Vec<String>,
 }
 
 impl Stylesheet {
@@ -559,30 +669,47 @@ impl Stylesheet {
             if i >= bytes.len() {
                 break;
             }
-            // Skip @-rules — find the matching `;` or `}`.
+            // @-rules — capture `@import url(...) [media];` per CSS
+            // 2.1 §6.3 into `imports`; skip every other @-rule
+            // (`@media`, `@font-face`, `@keyframes`, …).
             if bytes[i] == b'@' {
+                let at_start = i;
                 let mut depth = 0u32;
+                let mut had_block = false;
+                let mut end = i;
                 while i < bytes.len() {
                     match bytes[i] {
-                        b'{' => depth += 1,
+                        b'{' => {
+                            had_block = true;
+                            depth += 1;
+                        }
                         b'}' => {
                             if depth == 0 {
+                                end = i + 1;
                                 i += 1;
                                 break;
                             }
                             depth -= 1;
                             if depth == 0 {
+                                end = i + 1;
                                 i += 1;
                                 break;
                             }
                         }
                         b';' if depth == 0 => {
+                            end = i;
                             i += 1;
                             break;
                         }
                         _ => {}
                     }
                     i += 1;
+                }
+                if !had_block {
+                    let raw = &stripped[at_start..end];
+                    if let Some(url) = parse_at_import(raw) {
+                        self.imports.push(url);
+                    }
                 }
                 continue;
             }
@@ -884,8 +1011,9 @@ fn parse_simple(s: &str) -> Option<SimpleSelector> {
             b':' => {
                 i += 1;
                 if i < len && bytes[i] == b':' {
-                    // `::pseudo-element` — skip to next non-ident.
+                    // `::pseudo-element` — round 11 typed parsing.
                     i += 1;
+                    let name_start = i;
                     while i < len
                         && (bytes[i].is_ascii_alphanumeric()
                             || bytes[i] == b'-'
@@ -893,6 +1021,16 @@ fn parse_simple(s: &str) -> Option<SimpleSelector> {
                     {
                         i += 1;
                     }
+                    let name = &s[name_start..i];
+                    if let Some(pe) = PseudoElement::from_str(name) {
+                        // CSS rules: at most one pseudo-element per
+                        // compound. The last one wins (matches browser
+                        // tolerance — extras are accepted gracefully).
+                        sel.pseudo_element = Some(pe);
+                    }
+                    // Unknown `::pseudo-element` (e.g. `::placeholder`,
+                    // `::selection`) — silently drop the keyword. The
+                    // rule's other components survive.
                     continue;
                 }
                 let name_start = i;
@@ -907,6 +1045,16 @@ fn parse_simple(s: &str) -> Option<SimpleSelector> {
                     let close = memchr_close_paren(bytes, i + 1)?;
                     arg = Some(&s[i + 1..close]);
                     i = close + 1;
+                }
+                // CSS 2.1 §5.12.1 — `:before`, `:after`, `:first-letter`,
+                // `:first-line` may appear with a single colon. Treat
+                // them as pseudo-elements (round 11) so the rule never
+                // matches a real element.
+                if arg.is_none() {
+                    if let Some(pe) = PseudoElement::from_str(name) {
+                        sel.pseudo_element = Some(pe);
+                        continue;
+                    }
                 }
                 if let Some(p) = parse_pseudo(name, arg) {
                     sel.pseudos.push(p);
@@ -1077,9 +1225,71 @@ fn parse_pseudo(name: &str, arg: Option<&str>) -> Option<Pseudo> {
             }
             Some(Pseudo::Not(Box::new(inner)))
         }
-        // Interactive / link pseudo-classes — silently drop.
+        // Round 11 — interactive / link pseudo-classes parse to
+        // `Stateful` so the rule survives the round-trip but never
+        // matches in a static document. Previously these were silently
+        // dropped (over-matching their carrier rules).
+        ("hover", None) => Some(Pseudo::Stateful(StatefulPseudo::Hover)),
+        ("focus", None) => Some(Pseudo::Stateful(StatefulPseudo::Focus)),
+        ("active", None) => Some(Pseudo::Stateful(StatefulPseudo::Active)),
+        ("checked", None) => Some(Pseudo::Stateful(StatefulPseudo::Checked)),
+        ("visited", None) => Some(Pseudo::Stateful(StatefulPseudo::Visited)),
+        ("link", None) => Some(Pseudo::Stateful(StatefulPseudo::Link)),
+        ("disabled", None) => Some(Pseudo::Stateful(StatefulPseudo::Disabled)),
+        ("enabled", None) => Some(Pseudo::Stateful(StatefulPseudo::Enabled)),
+        // Anything else — silently drop (over-matches the rule, which
+        // is the friendlier failure mode for unknown pseudos).
         _ => None,
     }
+}
+
+/// Parse `@import url(…) [media-query-list];` per CSS 2.1 §6.3 and
+/// return the URL (with `url(...)` wrapping + quotes stripped). Returns
+/// `None` for any other @-rule or a malformed `@import`.
+fn parse_at_import(raw: &str) -> Option<String> {
+    let r = raw.trim();
+    let r = r.strip_prefix('@')?;
+    // Match the `import` keyword case-insensitively per CSS3 §3.1.
+    if r.len() < 6 || !r[..6].eq_ignore_ascii_case("import") {
+        return None;
+    }
+    let rest = r[6..].trim_start_matches(|c: char| c.is_whitespace() || c == ';');
+    // Strip a trailing `;` if present.
+    let rest = rest.trim().trim_end_matches(';').trim();
+    if rest.is_empty() {
+        return None;
+    }
+    // Two surface forms:
+    //   @import url("foo.css") screen;
+    //   @import "foo.css" screen;
+    let (url_token, _media) = if let Some(after_url) = rest
+        .strip_prefix("url(")
+        .or_else(|| rest.strip_prefix("URL("))
+        .or_else(|| rest.strip_prefix("Url("))
+    {
+        let close = after_url.find(')')?;
+        let inside = &after_url[..close];
+        let media = after_url[close + 1..].trim();
+        (inside.trim(), media)
+    } else {
+        // Bare `"..."` / `'...'` form. Find the closing quote.
+        let bytes = rest.as_bytes();
+        let q = bytes[0];
+        if q != b'"' && q != b'\'' {
+            return None;
+        }
+        let close_rel = rest[1..].find(q as char)?;
+        let close = close_rel + 1;
+        let inside = &rest[1..close];
+        let media = rest[close + 1..].trim();
+        (inside, media)
+    };
+    // Strip surrounding quotes if any.
+    let url = unquote(url_token.trim());
+    if url.is_empty() {
+        return None;
+    }
+    Some(url)
 }
 
 /// Parse the argument of `:nth-child` etc. — `odd`, `even`, `An+B`,
@@ -1439,23 +1649,33 @@ mod tests {
     }
 
     #[test]
-    fn double_colon_pseudo_element_dropped() {
-        // `::before` etc. — silently drop, the rule survives.
+    fn double_colon_pseudo_element_recorded() {
+        // **Round 11** — `::before` etc. now parse to a typed
+        // `PseudoElement` on the carrier selector. The rule survives.
         let mut s = Stylesheet::new();
         s.parse_block("p::before { content: 'x' }");
         assert_eq!(s.rules.len(), 1);
         assert_eq!(s.rules[0].selectors[0].head.tag, Some("p".into()));
+        assert_eq!(
+            s.rules[0].selectors[0].head.pseudo_element,
+            Some(PseudoElement::Before)
+        );
     }
 
     #[test]
-    fn unknown_pseudo_class_silently_ignored() {
+    fn stateful_pseudo_class_recorded_round11() {
+        // Round 11 — `:hover` parses to Pseudo::Stateful so the rule
+        // doesn't over-match. Previously it was silently dropped which
+        // collapsed `.x:hover { fill: red }` to `.x { fill: red }`.
         let mut s = Stylesheet::new();
-        // `:hover` is unsupported but the rest of the rule should
-        // still apply.
         s.parse_block(".x:hover { fill: red }");
         assert_eq!(s.rules.len(), 1);
-        // The class survives.
         assert_eq!(s.rules[0].selectors[0].head.classes, vec!["x".to_string()]);
+        assert_eq!(s.rules[0].selectors[0].head.pseudos.len(), 1);
+        match &s.rules[0].selectors[0].head.pseudos[0] {
+            Pseudo::Stateful(StatefulPseudo::Hover) => {}
+            other => panic!("expected Stateful(Hover), got {:?}", other),
+        }
     }
 
     // ---- Round 6 selector tests ----
@@ -1520,5 +1740,218 @@ mod tests {
         let both = elem("text", &[("xml:lang", "ja"), ("lang", "en")]);
         // `xml:lang` checked first.
         assert_eq!(lang_attr(&both), Some("ja"));
+    }
+
+    // ---- Round 11: pseudo-elements + @import + stateful pseudo-classes ----
+
+    #[test]
+    fn pseudo_element_after_recorded() {
+        let mut s = Stylesheet::new();
+        s.parse_block("li::after { content: ',' }");
+        assert_eq!(
+            s.rules[0].selectors[0].head.pseudo_element,
+            Some(PseudoElement::After)
+        );
+    }
+
+    #[test]
+    fn pseudo_element_first_letter_first_line() {
+        let mut s = Stylesheet::new();
+        s.parse_block("p::first-letter { font-size: 200% } p::first-line { color: red }");
+        assert_eq!(s.rules.len(), 2);
+        assert_eq!(
+            s.rules[0].selectors[0].head.pseudo_element,
+            Some(PseudoElement::FirstLetter)
+        );
+        assert_eq!(
+            s.rules[1].selectors[0].head.pseudo_element,
+            Some(PseudoElement::FirstLine)
+        );
+    }
+
+    #[test]
+    fn legacy_single_colon_before_after_treated_as_pseudo_element() {
+        // CSS 2.1 §5.12.1 — `:before` (single colon) is the legacy form
+        // of `::before`. Must still parse as a pseudo-element so the
+        // rule does not match an actual `::before` pseudo-class lookup.
+        let mut s = Stylesheet::new();
+        s.parse_block("h1:before { content: '★ ' }");
+        assert_eq!(
+            s.rules[0].selectors[0].head.pseudo_element,
+            Some(PseudoElement::Before)
+        );
+    }
+
+    #[test]
+    fn pseudo_element_selector_never_matches_real_element() {
+        // A `p::before` rule must not apply to a real `<p>` — the
+        // pseudo-element is a synthesised box.
+        let mut s = Stylesheet::new();
+        s.parse_block("p::before { fill: red }");
+        let p = elem("p", &[]);
+        assert_eq!(s.matched_declarations(&ctx(&p)).len(), 0);
+    }
+
+    #[test]
+    fn unknown_pseudo_element_silently_dropped() {
+        // `::placeholder` / `::selection` / etc. — not modelled but the
+        // rule's other components survive.
+        let mut s = Stylesheet::new();
+        s.parse_block("input::placeholder { color: gray }");
+        assert_eq!(s.rules.len(), 1);
+        assert_eq!(s.rules[0].selectors[0].head.tag, Some("input".into()));
+        assert_eq!(s.rules[0].selectors[0].head.pseudo_element, None);
+    }
+
+    #[test]
+    fn pseudo_element_specificity_counts_one_tag_point() {
+        // `::before` — one tag-level point per CSS3 §9.
+        let mut s = Stylesheet::new();
+        s.parse_block("p::before { fill: red }");
+        let spec = s.rules[0].selectors[0].head.specificity();
+        assert_eq!(spec, (0, 0, 2)); // tag p + ::before
+    }
+
+    #[test]
+    fn at_import_url_form_recorded() {
+        let mut s = Stylesheet::new();
+        s.parse_block(r#"@import url("foo.css") screen;  .x { fill: red }"#);
+        assert_eq!(s.imports, vec!["foo.css".to_string()]);
+        // The trailing rule still parses.
+        assert_eq!(s.rules.len(), 1);
+        assert_eq!(s.rules[0].selectors[0].head.classes, vec!["x".to_string()]);
+    }
+
+    #[test]
+    fn at_import_bare_string_form_recorded() {
+        let mut s = Stylesheet::new();
+        s.parse_block(r#"@import "theme.css"; .a { fill: blue }"#);
+        assert_eq!(s.imports, vec!["theme.css".to_string()]);
+        assert_eq!(s.rules.len(), 1);
+    }
+
+    #[test]
+    fn at_import_with_single_quotes() {
+        let mut s = Stylesheet::new();
+        s.parse_block(r#"@import url('a.css');"#);
+        assert_eq!(s.imports, vec!["a.css".to_string()]);
+    }
+
+    #[test]
+    fn at_import_with_media_query_keeps_url() {
+        let mut s = Stylesheet::new();
+        s.parse_block(r#"@import url("print.css") print and (min-width: 600px);"#);
+        assert_eq!(s.imports, vec!["print.css".to_string()]);
+    }
+
+    #[test]
+    fn at_import_multiple_urls_in_source_order() {
+        let mut s = Stylesheet::new();
+        s.parse_block(
+            r#"
+              @import url("a.css");
+              @import url("b.css");
+              .x { fill: red }
+              @import url("c.css");
+            "#,
+        );
+        assert_eq!(
+            s.imports,
+            vec![
+                "a.css".to_string(),
+                "b.css".to_string(),
+                "c.css".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn at_media_block_still_skipped_not_an_import() {
+        // `@media` opens a block — must not be recorded as an import.
+        let mut s = Stylesheet::new();
+        s.parse_block("@media print { .x { fill: red } } .y { fill: blue }");
+        assert!(s.imports.is_empty());
+        assert_eq!(s.rules.len(), 1);
+        assert_eq!(s.rules[0].selectors[0].head.classes, vec!["y".to_string()]);
+    }
+
+    #[test]
+    fn stateful_pseudo_classes_all_recognised() {
+        let mut s = Stylesheet::new();
+        s.parse_block(
+            "a:hover { fill: red }
+             a:focus { fill: blue }
+             a:active { fill: green }
+             input:checked { fill: yellow }
+             a:visited { fill: purple }
+             a:link { fill: orange }
+             input:disabled { fill: gray }
+             input:enabled { fill: black }",
+        );
+        assert_eq!(s.rules.len(), 8);
+        let want = [
+            StatefulPseudo::Hover,
+            StatefulPseudo::Focus,
+            StatefulPseudo::Active,
+            StatefulPseudo::Checked,
+            StatefulPseudo::Visited,
+            StatefulPseudo::Link,
+            StatefulPseudo::Disabled,
+            StatefulPseudo::Enabled,
+        ];
+        for (i, w) in want.iter().enumerate() {
+            match &s.rules[i].selectors[0].head.pseudos[0] {
+                Pseudo::Stateful(got) => assert_eq!(got, w, "rule {i}"),
+                other => panic!("rule {i}: expected Stateful({w:?}), got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn stateful_pseudo_class_never_matches_in_static_doc() {
+        // Static cascade — `:hover` never selects a real `<a>`.
+        let mut s = Stylesheet::new();
+        s.parse_block("a:hover { fill: red }");
+        let a = elem("a", &[]);
+        assert_eq!(s.matched_declarations(&ctx(&a)).len(), 0);
+    }
+
+    #[test]
+    fn stateful_pseudo_class_does_not_overmatch_carrier_selector() {
+        // **Bug fixed in round 11** — previously `.x:hover` was
+        // silently truncated to `.x`, so `.x` matched and applied red.
+        // Now the `:hover` Pseudo participates in matching and rejects.
+        let mut s = Stylesheet::new();
+        s.parse_block(".x:hover { fill: red } .x { stroke: blue }");
+        let el = elem("rect", &[("class", "x")]);
+        let decls = s.matched_declarations(&ctx(&el));
+        // Only the second rule (no pseudo) should apply.
+        assert_eq!(decls.len(), 1);
+        assert_eq!(decls[0].0, "stroke");
+        assert_eq!(decls[0].1, "blue");
+    }
+
+    #[test]
+    fn parse_at_import_helper_strips_url_quotes() {
+        assert_eq!(
+            parse_at_import(r#"@import url("foo.css")"#),
+            Some("foo.css".into())
+        );
+        assert_eq!(
+            parse_at_import(r#"@import "foo.css";"#),
+            Some("foo.css".into())
+        );
+        assert_eq!(
+            parse_at_import(r#"@import url(foo.css)"#),
+            Some("foo.css".into())
+        );
+        assert_eq!(
+            parse_at_import(r#"@import 'foo.css'"#),
+            Some("foo.css".into())
+        );
+        // Not an @import.
+        assert_eq!(parse_at_import("@media print"), None);
+        // Empty url — drop.
+        assert_eq!(parse_at_import(r#"@import ""#), None);
     }
 }

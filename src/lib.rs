@@ -176,16 +176,42 @@
 //!   defaults to opaque white per §21. The verbatim-XML round-trip
 //!   path continues to preserve the elements regardless.
 //!
-//! # Deferred to round 11+
+//! # Round 11 additions
+//!
+//! * **`<feImage>` + `<feTile>`** close the W3C Filter Effects §11
+//!   short-name set — the typed-graph allowlist now covers every
+//!   short-name primitive (17 total). `<feImage>` records `href` (or
+//!   legacy `xlink:href`), `preserveAspectRatio` (full SVG-2 §8.10
+//!   keyword set with optional `meet`/`slice` modifier, default
+//!   `xMidYMid meet`), and `crossorigin="anonymous|use-credentials"`.
+//!   `<feTile>` carries only its `in=` (the primitive's region drives
+//!   the tiled-fill area).
+//! * **CSS pseudo-elements** (`::before`, `::after`, `::first-letter`,
+//!   `::first-line`) parse to a typed [`crate::css::PseudoElement`] on
+//!   the carrier selector. Per CSS 3 §3.2 a pseudo-element targets a
+//!   synthesised box, so a rule with one never matches a live element
+//!   — but it survives the round-trip for a future renderer. CSS 2.1
+//!   §5.12.1 single-colon legacy syntax (`:before`, `:after`,
+//!   `:first-letter`, `:first-line`) is honoured.
+//! * **`@import url(…) [media];`** per CSS 2.1 §6.3 — the URL string
+//!   is appended to [`crate::css::Stylesheet::imports`]. Both
+//!   `url("foo.css")` and bare-string (`@import "foo.css";`) forms are
+//!   accepted; loading external sheets is left to the caller (the
+//!   parser deliberately doesn't fetch network resources).
+//! * **Stateful / interactive pseudo-classes** (`:hover`, `:focus`,
+//!   `:active`, `:checked`, `:visited`, `:link`, `:disabled`,
+//!   `:enabled`) parse to [`crate::css::Pseudo::Stateful`] and never
+//!   match in a static document. Fixes the round-5 over-match bug
+//!   where `.x:hover` collapsed to `.x` because the `:hover` was
+//!   silently dropped.
+//!
+//! # Deferred to round 12+
 //!
 //! * Actual filter-primitive rasterisation (the typed graph is
 //!   pre-rasteriser plumbing; pixel evaluation is oxideav-raster work).
-//! * `<feImage>`, `<feTile>` — the still-uncommon long tail.
 //! * `<script>`.
-//! * `<marker>` defs + `marker-start` / `marker-mid` / `marker-end`.
-//! * Pseudo-elements (`::before`, `::after`); `@import` of external
-//!   stylesheets.
-//! * Stateful pseudo-classes (`:hover`, `:focus`, `:checked`).
+//! * `<marker>` defs + `marker-start` / `marker-mid` / `marker-end`
+//!   (needs a `Marker` construct in `oxideav-core`).
 
 pub mod animation;
 pub mod color;
