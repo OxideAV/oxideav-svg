@@ -24,9 +24,9 @@
 
 use std::collections::HashMap;
 
-use oxideav_core::{Group, Path};
+use oxideav_core::{Group, Path, ViewBox};
 
-use crate::filter::FilterGraph;
+use crate::filter::{FilterGraph, PreserveAspectRatio};
 use crate::parser::Element;
 
 /// Captured `<filter id="...">` element. Round 2 stored the original
@@ -68,12 +68,25 @@ pub struct ClipPathDef {
 /// definitions — they only render when referenced via `<use>`. Stored
 /// as a Group so the resolver can clone the subtree at the use site.
 ///
-/// Round 2 doesn't yet implement `<use>` (deferred to round 3); this
-/// table is wired into the parser anyway so the captured definitions
-/// don't get lost.
+/// Round 14 extends the captured definition with the symbol's own
+/// `viewBox`, intrinsic `width` / `height`, and `preserveAspectRatio`
+/// so the [`crate::element::parse_use_element`] resolver can compute
+/// the SVG 2 §5.5 / §8.2 viewport transform when a `<use>`
+/// instantiates the symbol with its own `width` / `height`.
+///
+/// `view_box` is `None` when the source `<symbol>` had no `viewBox=`
+/// attribute (in which case there's no viewport mapping to apply —
+/// the use's `width`/`height` are ignored per spec).
+/// `intrinsic_*` are the symbol's own `width=` / `height=` attributes
+/// when present; the use site falls back to these if it doesn't carry
+/// its own.
 #[derive(Clone, Debug)]
 pub struct SymbolDef {
     pub content: Group,
+    pub view_box: Option<ViewBox>,
+    pub preserve_aspect_ratio: PreserveAspectRatio,
+    pub intrinsic_width: Option<f32>,
+    pub intrinsic_height: Option<f32>,
 }
 
 /// Aggregated tables built during the pre-walk, consumed by the main

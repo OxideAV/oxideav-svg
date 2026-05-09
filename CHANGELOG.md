@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 14** — `<symbol>` + `<use>` `viewBox` / `width` / `height`
+  resolution and CSS `@font-face` block capture.
+  - **Symbol viewport mapping.** `<use href="#sym">` instantiations
+    now apply the symbol's `viewBox`, the use's `width` / `height`
+    (falling back to the symbol's intrinsic `width` / `height` when
+    omitted), and the symbol's `preserveAspectRatio` per SVG 2 §5.5
+    + §5.6 + §8.2. The viewport transform is wrapped in an inner
+    `Group` between the use's `transform=` / translate / opacity
+    and the symbol's children, so all three semantics compose
+    cleanly. `SymbolDef` (in `crate::defs`) gains
+    `view_box: Option<ViewBox>`,
+    `preserve_aspect_ratio: PreserveAspectRatio`,
+    `intrinsic_width: Option<f32>`, and `intrinsic_height: Option<f32>`
+    fields populated by `parse_symbol_def`. Symbols without a
+    `viewBox` skip the viewport wrap (the use's `width` / `height`
+    are ignored per spec).
+  - **`@font-face` capture.** Round 11 + 13 routed `@import` to
+    `Stylesheet::imports` but tagged every other `@-rule` (including
+    `@font-face`) for tolerant skip in `parse_block`. Round 14 adds
+    a dedicated parser that surfaces the descriptor list on the new
+    `Stylesheet::font_faces: Vec<FontFace>`. `FontFace` carries the
+    typed `family: String` + `src: Vec<FontSource>` views plus a
+    `descriptors: HashMap<String, String>` map for the long tail
+    (`font-weight`, `font-style`, `font-stretch`, `unicode-range`,
+    `font-display`, …). `FontSource` covers both the `url(...)
+    [format(...)]` and `local(...)` shapes per CSS Fonts L3 §4.3.
+    A downstream font-resolver consumer can iterate the list and
+    register the user-supplied fonts before the cascade matches a
+    `font-family: ...` declaration.
+
 - **Round 13** — animation re-attachment to the source emit site +
   `Stylesheet::resolve_imports` caller-fetcher hook for `@import`.
   - **Animation re-attachment.** Round 4–12 captured every

@@ -1066,7 +1066,10 @@ pub fn parse_clip_path_def(
 }
 
 /// Parse `<symbol id="...">` into a [`SymbolDef`]. Captured here for
-/// the round-3 `<use>` resolver; round 2 doesn't yet render symbols.
+/// the `<use>` resolver. Round 14 also captures the symbol's own
+/// `viewBox` / `width` / `height` / `preserveAspectRatio` so the
+/// resolver can apply the SVG 2 §5.5 / §8.2 viewport transform when a
+/// `<use>` instantiates the symbol with its own `width` / `height`.
 pub fn parse_symbol_def(
     el: &Element,
     ctx: &mut ParseContext,
@@ -1084,7 +1087,61 @@ pub fn parse_symbol_def(
             }
         }
     }
-    Ok(Some((id, SymbolDef { content: group })))
+    let view_box = match attr(el, "viewBox") {
+        Some(s) => parse_symbol_view_box(s),
+        None => None,
+    };
+    let preserve_aspect_ratio = match attr(el, "preserveAspectRatio") {
+        Some(s) => crate::filter::PreserveAspectRatio::from_str(s),
+        None => crate::filter::PreserveAspectRatio::default(),
+    };
+    let intrinsic_width = parse_optional_length(attr(el, "width"))?;
+    let intrinsic_height = parse_optional_length(attr(el, "height"))?;
+    Ok(Some((
+        id,
+        SymbolDef {
+            content: group,
+            view_box,
+            preserve_aspect_ratio,
+            intrinsic_width,
+            intrinsic_height,
+        },
+    )))
+}
+
+/// Parse the four-number `viewBox=` attribute payload. Returns `None`
+/// for any malformed input (matches the decoder-side tolerance — a bad
+/// `viewBox` shouldn't kill the whole document).
+fn parse_symbol_view_box(s: &str) -> Option<oxideav_core::ViewBox> {
+    let nums: Vec<f32> = s
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .filter(|p| !p.is_empty())
+        .filter_map(|n| n.parse::<f32>().ok())
+        .collect();
+    if nums.len() != 4 {
+        return None;
+    }
+    Some(oxideav_core::ViewBox {
+        min_x: nums[0],
+        min_y: nums[1],
+        width: nums[2],
+        height: nums[3],
+    })
+}
+
+/// Parse an optional length attribute. Returns `Ok(None)` when the
+/// attribute is absent, empty, or `%`-suffixed (we don't model
+/// percentage lengths on `<symbol>` / `<use>` viewports). Otherwise
+/// returns the parsed number.
+fn parse_optional_length(v: Option<&str>) -> Result<Option<f32>> {
+    let s = match v {
+        None => return Ok(None),
+        Some(s) => s.trim(),
+    };
+    if s.is_empty() || s.ends_with('%') {
+        return Ok(None);
+    }
+    Ok(Some(parse_number(Some(s), 0.0)?))
 }
 
 /// Apply a 2D affine to every coordinate in `path`. Used by
@@ -1201,6 +1258,12 @@ pub fn parse_use_element(
 
     let state = parent_state.merged_with(el)?;
 
+    // Round 14: <use> may carry its own width / height that override
+    // the symbol's intrinsic size. Captured here so the symbol branch
+    // below can compute the §8.2 viewport transform.
+    let use_width = parse_optional_length(attr(el, "width"))?;
+    let use_height = parse_optional_length(attr(el, "height"))?;
+
     ctx.use_stack.insert(id.to_string());
     // For `<symbol>` references, instantiate the symbol's children
     // directly (skip the `<symbol>` wrapper — symbols are by-spec
@@ -1208,7 +1271,38 @@ pub fn parse_use_element(
     // re-parse the source itself.
     let source_local = tag_local(&source.name);
     let mut children: Vec<Node> = Vec::new();
+    let mut viewport_transform: Option<Transform2D> = None;
     if source_local == "symbol" {
+        // Round 14: prefer the pre-parsed SymbolDef (it carries the
+        // symbol's viewBox + preserveAspectRatio + intrinsic size).
+        // The defs.elements clone is the verbatim XML; the SymbolDef
+        // is the structured form built during register_all_defs.
+        let sym_meta = ctx.defs.symbols.get(id).cloned();
+        let (sym_view_box, sym_par, sym_w, sym_h) = match &sym_meta {
+            Some(s) => (
+                s.view_box,
+                s.preserve_aspect_ratio,
+                s.intrinsic_width,
+                s.intrinsic_height,
+            ),
+            None => (
+                None,
+                crate::filter::PreserveAspectRatio::default(),
+                None,
+                None,
+            ),
+        };
+        // SVG 2 §5.6 — the use's width / height fall through to the
+        // symbol's intrinsic width / height when the use omits them.
+        let dst_w = use_width.or(sym_w);
+        let dst_h = use_height.or(sym_h);
+        if let (Some(vb), Some(w), Some(h)) = (sym_view_box, dst_w, dst_h) {
+            if vb.width > 0.0 && vb.height > 0.0 && w > 0.0 && h > 0.0 {
+                // Spec algorithm 8.2 — viewport rect (0..w × 0..h)
+                // mapping to viewBox rect.
+                viewport_transform = Some(symbol_viewport_transform(w, h, vb, sym_par));
+            }
+        }
         for child in &source.children {
             if let XmlNode::Element(c) = child {
                 if let Some(node) = parse_element_to_node(c, &state, ctx)? {
@@ -1225,15 +1319,112 @@ pub fn parse_use_element(
         return Ok(None);
     }
 
+    // Round 14: when the symbol contributes a viewport transform, wrap
+    // the symbol's children in an inner Group carrying that transform
+    // BEFORE the outer Group applies the use's translate / transform /
+    // opacity. The two-level wrap keeps the use's `transform=` /
+    // `opacity` semantics independent of the viewport mapping.
+    let final_children = if let Some(vp) = viewport_transform {
+        vec![Node::Group(Group {
+            transform: vp,
+            opacity: 1.0,
+            clip: None,
+            children,
+            cache_key: None,
+        })]
+    } else {
+        children
+    };
+
     // Always wrap in a Group so the use's transform / opacity apply
     // to every instantiated child, even when there's just one.
     Ok(Some(Node::Group(Group {
         transform: total,
         opacity: state.opacity,
         clip: None,
-        children,
+        children: final_children,
         cache_key: None,
     })))
+}
+
+/// Round 14 — given a `<use>` viewport (`width` × `height`), the
+/// referenced symbol's `viewBox`, and its `preserveAspectRatio`,
+/// return the transform that maps points in the symbol's user
+/// coordinate system into the use's viewport. Mirrors the root-`<svg>`
+/// `viewport_correction_transform` in [`crate::decoder`] but emits the
+/// full spec transform directly (no "natural mapping" subtraction)
+/// because the symbol's children have no implicit canvas-vs-viewBox
+/// stretch baked in by an outer renderer.
+fn symbol_viewport_transform(
+    width: f32,
+    height: f32,
+    vb: oxideav_core::ViewBox,
+    par: crate::filter::PreserveAspectRatio,
+) -> Transform2D {
+    use crate::filter::{MeetOrSlice, PreserveAspectRatioAlign};
+    // Spec algorithm 8.2 step 2 — initial scale.
+    let nat_sx = width / vb.width;
+    let nat_sy = height / vb.height;
+    let (sx, sy) = if matches!(par.align, PreserveAspectRatioAlign::None) {
+        (nat_sx, nat_sy)
+    } else {
+        match par.meet_or_slice {
+            MeetOrSlice::Meet => {
+                let s = nat_sx.min(nat_sy);
+                (s, s)
+            }
+            MeetOrSlice::Slice => {
+                let s = nat_sx.max(nat_sy);
+                (s, s)
+            }
+        }
+    };
+    // Spec steps 9–14 — translate.
+    let mut tx = -vb.min_x * sx;
+    let mut ty = -vb.min_y * sy;
+    if !matches!(par.align, PreserveAspectRatioAlign::None) {
+        let dx = width - vb.width * sx;
+        let dy = height - vb.height * sy;
+        let x_mid = matches!(
+            par.align,
+            PreserveAspectRatioAlign::XMidYMin
+                | PreserveAspectRatioAlign::XMidYMid
+                | PreserveAspectRatioAlign::XMidYMax
+        );
+        let x_max = matches!(
+            par.align,
+            PreserveAspectRatioAlign::XMaxYMin
+                | PreserveAspectRatioAlign::XMaxYMid
+                | PreserveAspectRatioAlign::XMaxYMax
+        );
+        let y_mid = matches!(
+            par.align,
+            PreserveAspectRatioAlign::XMinYMid
+                | PreserveAspectRatioAlign::XMidYMid
+                | PreserveAspectRatioAlign::XMaxYMid
+        );
+        let y_max = matches!(
+            par.align,
+            PreserveAspectRatioAlign::XMinYMax
+                | PreserveAspectRatioAlign::XMidYMax
+                | PreserveAspectRatioAlign::XMaxYMax
+        );
+        if x_mid {
+            tx += dx / 2.0;
+        } else if x_max {
+            tx += dx;
+        }
+        if y_mid {
+            ty += dy / 2.0;
+        } else if y_max {
+            ty += dy;
+        }
+    }
+    // viewport_transform = translate(tx, ty) * scale(sx, sy) *
+    //                      translate(-vb.min_x, -vb.min_y)
+    Transform2D::translate(tx, ty)
+        .compose(&Transform2D::scale(sx, sy))
+        .compose(&Transform2D::translate(-vb.min_x, -vb.min_y))
 }
 
 // ---------------------------------------------------------------------------

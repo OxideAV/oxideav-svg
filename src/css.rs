@@ -647,6 +647,61 @@ pub struct Stylesheet {
     /// fetch external resources from the parser. Quotes / `url(...)`
     /// wrapping are stripped.
     pub imports: Vec<String>,
+    /// **Round 14** — every `@font-face { ... }` block per CSS Fonts
+    /// L3 §4. Captured in source order so a downstream font-resolver
+    /// can iterate the family / src / weight / style descriptors and
+    /// register the user-supplied fonts before the cascade is
+    /// resolved against any `font-family: ...` declaration.
+    /// Loading the actual font bytes is left to the caller; the
+    /// parser only collects the descriptors.
+    pub font_faces: Vec<FontFace>,
+}
+
+/// One captured `@font-face { ... }` block per CSS Fonts L3 §4.
+///
+/// `family` is the unquoted value of the `font-family:` descriptor;
+/// `src` is the parsed `src:` list (may be empty if the descriptor
+/// was missing or malformed). `descriptors` holds **every** parsed
+/// descriptor verbatim — `font-weight`, `font-style`, `font-stretch`,
+/// `unicode-range`, `font-display`, plus any future descriptors —
+/// indexed by lowercase name. The two-table split is for ergonomic
+/// access (callers reach for `family` and `src` 99 % of the time)
+/// while keeping the long-tail capability lossless.
+#[derive(Clone, Debug, Default)]
+pub struct FontFace {
+    /// Value of the `font-family:` descriptor with surrounding quotes
+    /// stripped. Empty if the descriptor was missing.
+    pub family: String,
+    /// Parsed `src:` list — multiple `url(...)` / `local(...)` values
+    /// in fallback order per CSS Fonts L3 §4.3.
+    pub src: Vec<FontSource>,
+    /// Every descriptor (lowercase name → trimmed value). Includes
+    /// `font-family` + `src` raw text alongside the typed views above
+    /// for full round-trip fidelity.
+    pub descriptors: std::collections::HashMap<String, String>,
+}
+
+/// One entry in an `@font-face { src: ... }` list.
+///
+/// CSS Fonts L3 §4.3 allows `src:` to be a comma-separated fallback
+/// list, where each entry is one of:
+///
+/// - `url(<url>) [format("<hint>")]` — external font file
+/// - `local(<name>)` — installed system font by family / PostScript name
+///
+/// Exactly one of `url` / `local_name` is `Some` for a well-formed
+/// entry; both being `None` means the parser kept the entry in the
+/// list but couldn't extract a usable reference (the raw text still
+/// survives in `FontFace::descriptors["src"]`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FontSource {
+    /// External font URL. `None` for `local(...)` entries.
+    pub url: Option<String>,
+    /// Optional `format("woff2"|"truetype"|...)` hint per §4.3.
+    pub format_hint: Option<String>,
+    /// Installed font name for `local(...)` entries. `None` for
+    /// `url(...)` entries.
+    pub local_name: Option<String>,
 }
 
 impl Stylesheet {
@@ -670,16 +725,22 @@ impl Stylesheet {
                 break;
             }
             // @-rules — capture `@import url(...) [media];` per CSS
-            // 2.1 §6.3 into `imports`; skip every other @-rule
-            // (`@media`, `@font-face`, `@keyframes`, …).
+            // 2.1 §6.3 into `imports`; capture `@font-face { ... }`
+            // per CSS Fonts L3 §4 into `font_faces`; skip every other
+            // @-rule (`@media`, `@keyframes`, `@page`, …).
             if bytes[i] == b'@' {
                 let at_start = i;
                 let mut depth = 0u32;
                 let mut had_block = false;
                 let mut end = i;
+                let mut block_body_start = 0usize;
+                let mut block_body_end = 0usize;
                 while i < bytes.len() {
                     match bytes[i] {
                         b'{' => {
+                            if depth == 0 {
+                                block_body_start = i + 1;
+                            }
                             had_block = true;
                             depth += 1;
                         }
@@ -691,6 +752,7 @@ impl Stylesheet {
                             }
                             depth -= 1;
                             if depth == 0 {
+                                block_body_end = i;
                                 end = i + 1;
                                 i += 1;
                                 break;
@@ -705,7 +767,22 @@ impl Stylesheet {
                     }
                     i += 1;
                 }
-                if !had_block {
+                if had_block {
+                    // Block-style @-rule. Route `@font-face` to the
+                    // dedicated parser; skip everything else.
+                    let prelude_end = block_body_start.saturating_sub(1).min(stripped.len());
+                    let prelude = stripped[at_start..prelude_end].trim();
+                    let name = prelude
+                        .strip_prefix('@')
+                        .map(|r| r.split_whitespace().next().unwrap_or("").to_string())
+                        .unwrap_or_default();
+                    if name.eq_ignore_ascii_case("font-face") {
+                        let body = &stripped[block_body_start..block_body_end];
+                        if let Some(face) = parse_at_font_face(body) {
+                            self.font_faces.push(face);
+                        }
+                    }
+                } else {
                     let raw = &stripped[at_start..end];
                     if let Some(url) = parse_at_import(raw) {
                         self.imports.push(url);
@@ -1397,6 +1474,146 @@ fn parse_at_import(raw: &str) -> Option<String> {
         return None;
     }
     Some(url)
+}
+
+/// Parse one `@font-face { ... }` block body (just the `prop: value;`
+/// list inside the braces) per CSS Fonts L3 §4. Returns `None` only
+/// when the body has no recognisable descriptors at all (the parser
+/// is otherwise tolerant of malformed entries — matches the rest of
+/// `parse_block` and lets a downstream font-resolver decide what to
+/// do about partial info).
+fn parse_at_font_face(body: &str) -> Option<FontFace> {
+    let decls = parse_declarations(body);
+    if decls.is_empty() {
+        return None;
+    }
+    let mut face = FontFace::default();
+    for (name, value) in decls {
+        // `font-family` + `src` get the typed views; everything else
+        // (font-weight / font-style / font-stretch / unicode-range /
+        // font-display / …) is captured verbatim in `descriptors`.
+        match name.as_str() {
+            "font-family" => {
+                face.family = unquote(value.trim()).trim().to_string();
+            }
+            "src" => {
+                face.src = parse_font_src_list(&value);
+            }
+            _ => {}
+        }
+        face.descriptors.insert(name, value);
+    }
+    Some(face)
+}
+
+/// Parse the comma-separated value of `@font-face { src: ... }` per
+/// CSS Fonts L3 §4.3. Each entry is one of:
+///
+/// - `url(<url>) [format("<hint>")]`
+/// - `local(<name>)`
+///
+/// Quotes around URLs and names are stripped. Unrecognised entry
+/// shapes are still appended (with all `Option` fields `None`) so
+/// the typed list length matches the source list — callers that
+/// need byte-identical fidelity reach for `descriptors["src"]`.
+fn parse_font_src_list(s: &str) -> Vec<FontSource> {
+    let mut out: Vec<FontSource> = Vec::new();
+    // Comma-split must respect parens — `url(a,b)` shouldn't split.
+    let mut start = 0usize;
+    let mut depth = 0i32;
+    let bytes = s.as_bytes();
+    for (i, b) in bytes.iter().enumerate() {
+        match *b {
+            b'(' => depth += 1,
+            b')' => depth -= 1,
+            b',' if depth <= 0 => {
+                let piece = s[start..i].trim();
+                if !piece.is_empty() {
+                    out.push(parse_font_src_entry(piece));
+                }
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    let tail = s[start..].trim();
+    if !tail.is_empty() {
+        out.push(parse_font_src_entry(tail));
+    }
+    out
+}
+
+fn parse_font_src_entry(s: &str) -> FontSource {
+    let s = s.trim();
+    // `local(...)` — name may or may not be quoted per §4.3.
+    if let Some((inner, _tail)) = split_func_call(s, "local") {
+        let name = unquote(inner.trim()).trim().to_string();
+        return FontSource {
+            url: None,
+            format_hint: None,
+            local_name: if name.is_empty() { None } else { Some(name) },
+        };
+    }
+    // `url(...) [format(...)] [tech(...)]`. Only `url` and
+    // `format` are captured; future descriptors fall through to the
+    // raw `descriptors["src"]` blob.
+    if let Some((inner, tail)) = split_func_call(s, "url") {
+        let url = unquote(inner.trim()).trim().to_string();
+        let tail = tail.trim();
+        let format_hint = split_func_call(tail, "format")
+            .map(|(arg, _)| unquote(arg.trim()).trim().to_string())
+            .filter(|s| !s.is_empty());
+        return FontSource {
+            url: if url.is_empty() { None } else { Some(url) },
+            format_hint,
+            local_name: None,
+        };
+    }
+    // Bare quoted string is treated as a URL (some legacy CSS).
+    let bytes = s.as_bytes();
+    if !bytes.is_empty() && (bytes[0] == b'"' || bytes[0] == b'\'') {
+        let unq = unquote(s);
+        if !unq.is_empty() {
+            return FontSource {
+                url: Some(unq),
+                format_hint: None,
+                local_name: None,
+            };
+        }
+    }
+    FontSource::default()
+}
+
+/// If `s` starts with `name(`, return `(arg, tail)` where `arg` is
+/// the substring inside the matching parens and `tail` is everything
+/// after the closing paren. Case-insensitive on `name`. Returns
+/// `None` when `s` doesn't begin with `name(...)` or the parens are
+/// unbalanced. Tracks paren depth so a nested `(` inside the
+/// argument doesn't trip the matcher.
+fn split_func_call<'a>(s: &'a str, name: &str) -> Option<(&'a str, &'a str)> {
+    let s = s.trim_start();
+    let head = s.get(..name.len())?;
+    if !head.eq_ignore_ascii_case(name) {
+        return None;
+    }
+    let after = s[name.len()..].strip_prefix('(')?;
+    let bytes = after.as_bytes();
+    let mut depth = 1i32;
+    for (i, b) in bytes.iter().enumerate() {
+        match *b {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    let inner = &after[..i];
+                    let tail = &after[i + 1..];
+                    return Some((inner, tail));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Parse the argument of `:nth-child` etc. — `odd`, `even`, `An+B`,

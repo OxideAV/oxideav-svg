@@ -263,12 +263,46 @@
 //!   rules were inline. Cycle detection (visited-URL set) + an
 //!   8-hop depth cap (`IMPORT_DEPTH_CAP`) prevent runaway chains.
 //!
-//! # Deferred to round 14+
+//! # Round 14 additions
+//!
+//! * **`<symbol>` + `<use>` viewport mapping.** Round 3 instantiated
+//!   `<use href="#sym">` references but skipped the symbol's `viewBox`,
+//!   the use's `width` / `height`, and the symbol's
+//!   `preserveAspectRatio`. Round 14 wraps the symbol's children in
+//!   an inner `Group` carrying the SVG 2 §8.2 viewport transform
+//!   between the use's `transform=` / `x` / `y` / `opacity` and the
+//!   instantiated content. The use's `width` / `height` fall through
+//!   to the symbol's intrinsic `width` / `height` when omitted (per
+//!   §5.6). Symbols with no `viewBox` skip the wrap — the use's
+//!   `width` / `height` are ignored per spec, matching browser
+//!   behaviour. [`crate::defs::SymbolDef`] gains four new fields
+//!   (`view_box`, `preserve_aspect_ratio`, `intrinsic_width`,
+//!   `intrinsic_height`) populated by [`crate::element::parse_symbol_def`].
+//! * **`@font-face` block capture.** Round 11 + 13 routed `@import`
+//!   to [`crate::css::Stylesheet::imports`] but tagged every other
+//!   `@-rule` (including `@font-face`) for tolerant skip in
+//!   `parse_block`. Round 14 routes `@font-face { ... }` to a
+//!   dedicated parser that surfaces the descriptor list on the new
+//!   [`crate::css::Stylesheet::font_faces`]. Each
+//!   [`crate::css::FontFace`] carries a typed `family: String` +
+//!   `src: Vec<FontSource>` view plus a `descriptors: HashMap` for
+//!   the long tail (`font-weight`, `font-style`, `font-stretch`,
+//!   `unicode-range`, `font-display`, …). [`crate::css::FontSource`]
+//!   covers both the `url(...) [format(...)]` and `local(...)`
+//!   shapes per CSS Fonts L3 §4.3 — a downstream font-resolver can
+//!   iterate the list and register the user-supplied fonts before
+//!   the cascade matches a `font-family: ...` declaration.
+//!
+//! # Deferred to round 15+
 //!
 //! * Actual filter-primitive rasterisation (the typed graph is
 //!   pre-rasteriser plumbing; pixel evaluation is oxideav-raster work).
 //! * `<marker>` defs + `marker-start` / `marker-mid` / `marker-end`
 //!   (needs a `Marker` construct in `oxideav-core`).
+//! * `<text>` `textPath` (SVG 2 §11.3) — text-on-path layout via the
+//!   existing `oxideav-scribe` shaping path; touches scribe so
+//!   deferred from round 14 to keep the round in-crate.
+//! * `<image>` element with embedded data URIs / external href.
 //! * Live evaluation of pseudo-elements (`::before` / `::after`) into
 //!   synthesised boxes — also a renderer-side concern (oxideav-raster).
 

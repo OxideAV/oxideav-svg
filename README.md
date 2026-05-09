@@ -153,6 +153,34 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
+## Round 14 additions
+
+- **`<symbol>` + `<use>` viewport mapping.** Round 3 instantiated
+  `<use href="#sym">` references but skipped the symbol's `viewBox`,
+  the use's `width` / `height`, and the symbol's
+  `preserveAspectRatio`. Round 14 wraps the symbol's children in an
+  inner `Group` carrying the SVG 2 §8.2 viewport transform between
+  the use's `transform=` / `x` / `y` / `opacity` and the
+  instantiated content. The use's `width` / `height` fall through to
+  the symbol's intrinsic `width` / `height` when omitted (per §5.6);
+  symbols with no `viewBox` skip the wrap (the use's `width` /
+  `height` are ignored per spec). `SymbolDef` (in `crate::defs`)
+  gains four new fields (`view_box`, `preserve_aspect_ratio`,
+  `intrinsic_width`, `intrinsic_height`) populated by
+  `parse_symbol_def`.
+- **`@font-face` block capture.** Rounds 11 + 13 routed `@import` to
+  `Stylesheet::imports` but tagged every other `@-rule` (including
+  `@font-face`) for tolerant skip in `parse_block`. Round 14 routes
+  `@font-face { ... }` to a dedicated parser that surfaces the
+  descriptor list on the new `Stylesheet::font_faces`. Each
+  `FontFace` carries a typed `family: String` + `src: Vec<FontSource>`
+  view plus a `descriptors: HashMap` for the long tail (`font-weight`,
+  `font-style`, `font-stretch`, `unicode-range`, `font-display`, …).
+  `FontSource` covers both the `url(...) [format(...)]` and
+  `local(...)` shapes per CSS Fonts L3 §4.3 — a downstream
+  font-resolver can iterate the list and register the user-supplied
+  fonts before the cascade matches a `font-family: ...` declaration.
+
 ## Round 13 additions
 
 - **SMIL animation re-attachment.** Round 4–12 captured every
@@ -293,12 +321,15 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
     so the rasterizer can implement it directly. Defaults `dx=dy=2`,
     `stdDeviation=2 2`, `flood-color` opaque black, `flood-opacity=1`.
 
-## Deferred to round 14+
+## Deferred to round 15+
 
 - Actual filter-primitive rasterisation (the typed graph is
   pre-rasteriser plumbing; pixel evaluation is `oxideav-raster` work).
 - `<marker>` defs + `marker-start` / `marker-mid` / `marker-end`
   (needs a `Marker` construct in `oxideav-core`).
+- `<text>` `textPath` (SVG 2 §11.3) — text-on-path layout via the
+  existing `oxideav-scribe` shaping path.
+- `<image>` element with embedded data URIs / external href.
 - Live evaluation of pseudo-elements and stateful pseudo-classes (the
   selectors parse + survive the round-trip but a synthesised-box
   renderer is a separate oxideav-raster work-stream).
