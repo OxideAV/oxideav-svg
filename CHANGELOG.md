@@ -9,6 +9,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 12** — `<script>` graceful capture (HTML5-style raw-text
+  body) + `viewBox` / `preserveAspectRatio` viewport mapping baked
+  into `root.transform`.
+  - **`<script>` raw-text parsing.** When the parser opens a
+    `<script>` element it reads bytes verbatim until the matching
+    `</script>` close tag, ignoring any `<` characters inside the
+    body. Real-world SVGs frequently embed unescaped JS like
+    `if (a < b)` without CDATA wrapping; round 11 either errored
+    out or silently ate the trailing siblings. Round 12 captures
+    such bodies cleanly. The decoder NEVER executes scripts.
+  - **`PreservedExtras::scripts`** — new `Vec<Element>` field
+    capturing each `<script>` verbatim. The encoder re-emits each
+    captured `<script>` with a `<![CDATA[…]]>` wrapping so a
+    subsequent strict-XML round-trip succeeds without raw-text
+    mode being needed. A stray `]]>` in the body is split across
+    two CDATA sections defensively.
+  - **`viewBox` + `preserveAspectRatio` on the root `<svg>`.** SVG
+    2 §8.2 specifies how the canvas-vs-viewBox aspect-ratio
+    mismatch maps via the `preserveAspectRatio` align keyword
+    (`xMin/Mid/MaxYMin/Mid/Max` × `meet`/`slice`). The decoder
+    applies the spec algorithm (steps 5–14 of §8.2), computes the
+    equivalent translate+scale, and pre-multiplies it into
+    `frame.root.transform` — so a downstream rasteriser that
+    knows nothing about `preserveAspectRatio` (one that simply
+    stretches viewBox → canvas) still produces the spec-correct
+    visual result. `none` (and the aspect-match degenerate case)
+    skip the correction — the renderer's stretch IS the spec's
+    behaviour for those.
+  - **`PreservedExtras::root_preserve_aspect_ratio`** — new
+    `Option<String>` holding the original keyword pair verbatim
+    (e.g. `"xMinYMid slice"`) so the encoder re-emits the
+    attribute on round-trip.
+  - **`crate::filter::PreserveAspectRatio::from_str`** /
+    `PreserveAspectRatioAlign::from_str` /
+    `MeetOrSlice::from_str` — promoted to `pub` so the
+    root-viewport mapper in `crate::decoder` can reuse the same
+    parser used by `<feImage>`.
+
 - **Round 11** — `<feImage>` + `<feTile>` close the W3C Filter Effects
   §11 short-name set; CSS pseudo-elements parse to typed
   `PseudoElement`; `@import` URL capture per CSS 2.1 §6.3; stateful

@@ -153,6 +153,28 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
+## Round 12 additions
+
+- **`<script>` graceful capture** — HTML5-style "script data state":
+  the parser treats `<script>` content as raw text, so unescaped `<`
+  inside the body (e.g. `if (a < b)`) no longer poisons the rest of
+  the document. Each `<script>` is captured verbatim into
+  `PreservedExtras::scripts` and re-emitted with a `<![CDATA[…]]>`
+  wrapping on the encoder side so a subsequent strict-XML round-trip
+  still parses. **Scripts are NEVER executed** — oxideav has no JS
+  engine.
+- **`viewBox` + `preserveAspectRatio` on the root `<svg>`** — SVG 2
+  §8.2 specifies how the canvas-vs-viewBox aspect-ratio mismatch maps
+  via `preserveAspectRatio`. The decoder applies the spec's
+  algorithm (steps 5–14: scale, then `xMin/Mid/MaxYMin/Mid/Max` ×
+  `meet`/`slice`) and bakes the resulting translate+scale into
+  `frame.root.transform`. A downstream rasteriser that knows nothing
+  about `preserveAspectRatio` (one that simply stretches viewBox →
+  canvas) therefore still produces the spec-correct visual result.
+  `none` (and the aspect-match degenerate case) skip the correction.
+  The original keyword pair survives the round-trip via
+  `PreservedExtras::root_preserve_aspect_ratio`.
+
 ## Round 11 additions
 
 - **`<feImage>` + `<feTile>` close the §11 short-name set.** The
@@ -245,11 +267,10 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
     so the rasterizer can implement it directly. Defaults `dx=dy=2`,
     `stdDeviation=2 2`, `flood-color` opaque black, `flood-opacity=1`.
 
-## Deferred to round 12+
+## Deferred to round 13+
 
 - Actual filter-primitive rasterisation (the typed graph is
   pre-rasteriser plumbing; pixel evaluation is `oxideav-raster` work).
-- `<script>`.
 - `<marker>` defs + `marker-start` / `marker-mid` / `marker-end`
   (needs a `Marker` construct in `oxideav-core`).
 - Live evaluation of pseudo-elements and stateful pseudo-classes (the

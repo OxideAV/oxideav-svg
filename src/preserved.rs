@@ -57,6 +57,22 @@ pub struct PreservedExtras {
     /// renders them as an empty group on the rasterised side; this
     /// preserves the source so XHTML embeddings survive.
     pub foreign_objects: Vec<Element>,
+    /// `<script>` element bodies (JavaScript / ECMAScript source),
+    /// captured verbatim. Round 12 — the parser treats `<script>` as a
+    /// raw-text element (HTML5 "script data state") so unescaped `<`
+    /// inside the body doesn't poison the rest of the document; the
+    /// body is then stowed here for round-trip emission. The decoder
+    /// does NOT execute scripts (oxideav has no JS engine and SVG
+    /// produced via this crate is intended to be statically rendered).
+    pub scripts: Vec<Element>,
+    /// Round 12 — verbatim text of the root `<svg>` element's
+    /// `preserveAspectRatio` attribute (e.g. `"xMinYMid slice"`). The
+    /// decoder bakes the spec-mandated mapping into
+    /// [`oxideav_core::VectorFrame::root.transform`] so rasterisers
+    /// without aspect-ratio knowledge produce the correct visual
+    /// result; this side-channel preserves the original keyword pair
+    /// so the encoder can re-emit it verbatim.
+    pub root_preserve_aspect_ratio: Option<String>,
 }
 
 /// One captured animation child of a known-id parent element.
@@ -82,5 +98,7 @@ impl PreservedExtras {
             && self.filters.is_empty()
             && self.animations.is_empty()
             && self.foreign_objects.is_empty()
+            && self.scripts.is_empty()
+            && self.root_preserve_aspect_ratio.is_none()
     }
 }

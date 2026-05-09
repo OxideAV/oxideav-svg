@@ -424,7 +424,12 @@ impl Default for PreserveAspectRatio {
 }
 
 impl PreserveAspectRatio {
-    fn from_str(s: &str) -> Self {
+    /// Round-12 — exposed for the root-`<svg>` viewport mapper in
+    /// [`crate::decoder`]. Parses the `align [meetOrSlice]` keyword
+    /// pair per SVG 2 §8.7. Unknown align tokens fall back to
+    /// `xMidYMid`; missing meetOrSlice defaults to `meet`.
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Self {
         let mut parts = s.split_whitespace();
         let align = parts
             .next()
@@ -458,7 +463,10 @@ pub enum PreserveAspectRatioAlign {
 }
 
 impl PreserveAspectRatioAlign {
-    fn from_str(s: &str) -> Self {
+    /// Round-12 — exposed for [`PreserveAspectRatio::from_str`] callers
+    /// outside this module (the root-`<svg>` viewport mapper).
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Self {
         match s.trim() {
             "none" => Self::None,
             "xMinYMin" => Self::XMinYMin,
@@ -486,7 +494,10 @@ pub enum MeetOrSlice {
 }
 
 impl MeetOrSlice {
-    fn from_str(s: &str) -> Self {
+    /// Round-12 — exposed for [`PreserveAspectRatio::from_str`] callers
+    /// outside this module.
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Self {
         match s.trim() {
             "slice" => Self::Slice,
             _ => Self::Meet,

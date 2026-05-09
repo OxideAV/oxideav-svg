@@ -52,6 +52,13 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
             trim_float(vb.height)
         ));
     }
+    // Round-12: re-emit the root's `preserveAspectRatio` keyword pair
+    // verbatim from the side-channel extras (the decoder bakes the
+    // mapping into root.transform; this attribute is metadata so
+    // downstream tools see what the source intended).
+    if let Some(par) = &extras.root_preserve_aspect_ratio {
+        out.push_str(&format!(" preserveAspectRatio=\"{}\"", escape_attr(par)));
+    }
     out.push_str(">\n");
 
     // Collect every gradient referenced inside the tree (for round 1
@@ -102,6 +109,14 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
     for fo in &extras.foreign_objects {
         write_raw_element(&mut out, fo, 1);
     }
+    // Round-12: re-emit captured <script> elements. The body is
+    // wrapped in `<![CDATA[...]]>` so unescaped `<` characters
+    // (common in real-world JS) don't poison the XML on the next
+    // parse. The decoder strips CDATA on the way in, so this is a
+    // canonicalising round-trip rather than a literal byte mirror.
+    for script in &extras.scripts {
+        write_script_element(&mut out, script, 1);
+    }
     for anim in &extras.animations {
         // Wrap each animation in a comment carrying its parent id —
         // round 4 does not yet re-attach to the precise emit site.
@@ -149,6 +164,41 @@ fn write_raw_element(out: &mut String, el: &Element, depth: usize) {
     }
     out.push_str(&indent);
     out.push_str("</");
+    out.push_str(&el.name);
+    out.push_str(">\n");
+}
+
+/// Round 12 — emit a `<script>` element with a CDATA-wrapped body so
+/// unescaped `<` / `&` characters in the JavaScript don't trip the
+/// XML parser on a subsequent round-trip. Empty bodies emit
+/// self-closing.
+fn write_script_element(out: &mut String, el: &Element, depth: usize) {
+    let indent = "  ".repeat(depth);
+    out.push_str(&indent);
+    out.push('<');
+    out.push_str(&el.name);
+    for (k, v) in &el.attrs {
+        out.push(' ');
+        out.push_str(k);
+        out.push_str("=\"");
+        out.push_str(&escape_attr(v));
+        out.push('"');
+    }
+    let mut body = String::new();
+    for child in &el.children {
+        if let XmlNode::Text(t) = child {
+            body.push_str(t);
+        }
+    }
+    if body.trim().is_empty() {
+        out.push_str("/>\n");
+        return;
+    }
+    out.push_str("><![CDATA[");
+    // Defensively split a stray `]]>` inside the body across two
+    // CDATA sections so the inner ]]> doesn't terminate ours early.
+    out.push_str(&body.replace("]]>", "]]]]><![CDATA[>"));
+    out.push_str("]]></");
     out.push_str(&el.name);
     out.push_str(">\n");
 }

@@ -2,8 +2,8 @@
 //! pipeline-friendly [`Decoder`] adapter.
 
 use oxideav_core::{
-    CodecId, CodecParameters, Decoder, Error, Frame, Group, Packet, Result, TimeBase, VectorFrame,
-    ViewBox,
+    CodecId, CodecParameters, Decoder, Error, Frame, Group, Packet, Result, TimeBase, Transform2D,
+    VectorFrame, ViewBox,
 };
 
 use crate::css::MatchContext;
@@ -11,6 +11,7 @@ use crate::element::{
     parse_clip_path_def, parse_element_to_node_ctx, parse_filter_def, parse_mask_def, parse_number,
     parse_symbol_def, PaintState, ParseContext,
 };
+use crate::filter::{MeetOrSlice, PreserveAspectRatio, PreserveAspectRatioAlign};
 use crate::parser::{
     attr, decode_utf8_lossy_stripping_bom, inflate_gzip, is_gzip, parse_xml, tag_local, Element,
     Node as XmlNode,
@@ -73,6 +74,7 @@ pub fn parse_svg_with_extras(bytes: &[u8]) -> Result<(VectorFrame, PreservedExtr
         find_svg_root(&nodes).ok_or_else(|| Error::invalid("SVG: missing <svg> root element"))?;
     let mut extras = PreservedExtras::new();
     collect_extras(svg, &mut extras, None);
+    extras.root_preserve_aspect_ratio = attr(svg, "preserveAspectRatio").map(str::to_string);
     let frame = parse_svg_root(svg, 0.0)?;
     Ok((frame, extras))
 }
@@ -109,6 +111,11 @@ fn collect_extras(el: &Element, extras: &mut PreservedExtras, current_id: Option
                 parent_id: current_id.map(str::to_string),
                 element: el.clone(),
             });
+        }
+        "script" => {
+            // Round 12: capture <script> verbatim so the round-trip
+            // preserves it. The decoder NEVER executes the body.
+            extras.scripts.push(el.clone());
         }
         _ => {}
     }
@@ -193,6 +200,27 @@ fn parse_svg_root(svg: &Element, t_seconds: f32) -> Result<VectorFrame> {
         }
     }
 
+    // Round-12 — apply SVG 2 §8.2 viewport-mapping when the root has
+    // a viewBox, an explicit width/height, and a non-`none`
+    // preserveAspectRatio (or no preserveAspectRatio attribute, in
+    // which case the spec default `xMidYMid meet` applies). The
+    // raster's natural mapping
+    //   `scale(W/vb.w, H/vb.h) * translate(-vb.minX, -vb.minY)`
+    // implements the `none` (stretch) variant; we pre-multiply
+    // `root.transform` by a correction so the composed result is the
+    // spec-mandated translate+scale.
+    if let Some(vb) = view_box {
+        if vb.width > 0.0 && vb.height > 0.0 && width > 0.0 && height > 0.0 {
+            let par = match attr(svg, "preserveAspectRatio") {
+                Some(s) => PreserveAspectRatio::from_str(s),
+                None => PreserveAspectRatio::default(),
+            };
+            if let Some(correction) = viewport_correction_transform(width, height, vb, par) {
+                root.transform = correction.compose(&root.transform);
+            }
+        }
+    }
+
     Ok(VectorFrame {
         width,
         height,
@@ -201,6 +229,101 @@ fn parse_svg_root(svg: &Element, t_seconds: f32) -> Result<VectorFrame> {
         pts: None,
         time_base: TimeBase::new(1, 1),
     })
+}
+
+/// Round-12 — given the root viewport (`width` × `height`), the source
+/// `viewBox`, and the parsed `preserveAspectRatio`, return the
+/// transform `correction` such that
+///   `natural ∘ correction == spec_correct`
+/// where `natural = scale(W/vb.w, H/vb.h) * translate(-vb.minX, -vb.minY)`
+/// and `spec_correct = translate(tx, ty) * scale(sx, sy) * translate(-vb.minX, -vb.minY)`
+/// per SVG 2 §8.2.
+///
+/// Returns `None` when no correction is needed (the natural mapping
+/// already matches the spec — happens when align is `none`, or the
+/// viewport already has the same aspect ratio as the viewBox).
+fn viewport_correction_transform(
+    width: f32,
+    height: f32,
+    vb: ViewBox,
+    par: PreserveAspectRatio,
+) -> Option<Transform2D> {
+    if matches!(par.align, PreserveAspectRatioAlign::None) {
+        // `none` matches the renderer's default — no correction.
+        return None;
+    }
+    let nat_sx = width / vb.width;
+    let nat_sy = height / vb.height;
+    // Spec algorithm 8.2 steps 5–8.
+    let (mut sx, mut sy) = (nat_sx, nat_sy);
+    match par.meet_or_slice {
+        MeetOrSlice::Meet => {
+            // Set the larger of (sx, sy) to the smaller.
+            let s = sx.min(sy);
+            sx = s;
+            sy = s;
+        }
+        MeetOrSlice::Slice => {
+            let s = sx.max(sy);
+            sx = s;
+            sy = s;
+        }
+    }
+    if (sx - nat_sx).abs() < 1e-6 && (sy - nat_sy).abs() < 1e-6 {
+        // Aspects match — translate-x / translate-y both fall to the
+        // raster's default of `-vb.min_* * scale_*`. No correction
+        // beyond what the natural mapping already does.
+        return None;
+    }
+    // Spec steps 9–14: translate.
+    let mut tx = -vb.min_x * sx;
+    let mut ty = -vb.min_y * sy;
+    let dx = width - vb.width * sx;
+    let dy = height - vb.height * sy;
+    let x_mid = matches!(
+        par.align,
+        PreserveAspectRatioAlign::XMidYMin
+            | PreserveAspectRatioAlign::XMidYMid
+            | PreserveAspectRatioAlign::XMidYMax
+    );
+    let x_max = matches!(
+        par.align,
+        PreserveAspectRatioAlign::XMaxYMin
+            | PreserveAspectRatioAlign::XMaxYMid
+            | PreserveAspectRatioAlign::XMaxYMax
+    );
+    let y_mid = matches!(
+        par.align,
+        PreserveAspectRatioAlign::XMinYMid
+            | PreserveAspectRatioAlign::XMidYMid
+            | PreserveAspectRatioAlign::XMaxYMid
+    );
+    let y_max = matches!(
+        par.align,
+        PreserveAspectRatioAlign::XMinYMax
+            | PreserveAspectRatioAlign::XMidYMax
+            | PreserveAspectRatioAlign::XMaxYMax
+    );
+    if x_mid {
+        tx += dx / 2.0;
+    } else if x_max {
+        tx += dx;
+    }
+    if y_mid {
+        ty += dy / 2.0;
+    } else if y_max {
+        ty += dy;
+    }
+    // spec_correct = translate(tx, ty) * scale(sx, sy) * translate(-vb.min_x, -vb.min_y)
+    let spec = Transform2D::translate(tx, ty)
+        .compose(&Transform2D::scale(sx, sy))
+        .compose(&Transform2D::translate(-vb.min_x, -vb.min_y));
+    // natural^{-1} = translate(vb.min_x, vb.min_y) * scale(vb.width/W, vb.height/H)
+    let natural_inv = Transform2D::translate(vb.min_x, vb.min_y)
+        .compose(&Transform2D::scale(vb.width / width, vb.height / height));
+    // correction = natural^{-1} * spec
+    let correction = natural_inv.compose(&spec);
+    Some(correction)
 }
 
 fn register_all_defs(el: &Element, ctx: &mut ParseContext) -> Result<()> {

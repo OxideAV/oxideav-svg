@@ -205,11 +205,42 @@
 //!   where `.x:hover` collapsed to `.x` because the `:hover` was
 //!   silently dropped.
 //!
-//! # Deferred to round 12+
+//! # Round 12 additions
+//!
+//! * **`<script>` graceful capture.** Per HTML5 / SVG 2 §16.2.1,
+//!   `<script>` content is raw text — `<` characters in the body
+//!   must NOT be parsed as markup. Real-world SVGs frequently embed
+//!   unescaped JS like `if (a < b)` without CDATA wrapping; the
+//!   round-11 strict-XML parser would either error out or eat the
+//!   trailing siblings. Round 12 adds an HTML5-style "script data
+//!   state": when the parser opens a `<script>` element it reads raw
+//!   bytes until the matching `</script>` close tag, captures the
+//!   body verbatim, and stows it on
+//!   [`crate::preserved::PreservedExtras::scripts`]. The encoder
+//!   re-emits each captured `<script>` with a `<![CDATA[…]]>`
+//!   wrapping so a subsequent strict-XML round-trip succeeds without
+//!   raw-text mode being needed. **The decoder NEVER executes
+//!   scripts** — oxideav has no JS engine.
+//! * **`viewBox` + non-uniform `preserveAspectRatio` on the root
+//!   `<svg>`.** SVG 2 §8.2 specifies how the canvas-vs-viewBox
+//!   aspect-ratio mismatch maps via the `preserveAspectRatio` align
+//!   keyword (`xMin/Mid/MaxYMin/Mid/Max` × `meet`/`slice`). The
+//!   decoder applies the spec's algorithm (steps 5–14 of §8.2),
+//!   computes the equivalent translate+scale, and pre-multiplies it
+//!   into [`oxideav_core::VectorFrame::root.transform`] — so a
+//!   downstream rasteriser that knows nothing about
+//!   `preserveAspectRatio` (one that simply stretches viewBox →
+//!   canvas) still produces the spec-correct visual result. The
+//!   original keyword pair is preserved verbatim in
+//!   [`crate::preserved::PreservedExtras::root_preserve_aspect_ratio`]
+//!   so the encoder re-emits it on round-trip. `none` (and the
+//!   aspect-match degenerate case) skip the correction — the
+//!   renderer's stretch IS the spec's behaviour for those.
+//!
+//! # Deferred to round 13+
 //!
 //! * Actual filter-primitive rasterisation (the typed graph is
 //!   pre-rasteriser plumbing; pixel evaluation is oxideav-raster work).
-//! * `<script>`.
 //! * `<marker>` defs + `marker-start` / `marker-mid` / `marker-end`
 //!   (needs a `Marker` construct in `oxideav-core`).
 

@@ -167,7 +167,19 @@ impl<'a> XmlParser<'a> {
             let b = self.src[self.pos];
             if b == b'>' {
                 self.pos += 1;
-                let children = self.parse_children(&name)?;
+                // Per HTML/SVG, <script> (and <style>) bodies are raw
+                // text — `<` inside them must NOT be parsed as markup.
+                // Real-world SVGs frequently embed unescaped JS like
+                // `if (a < b)` without CDATA wrapping; treating the
+                // body as XML would either error out or eat the rest
+                // of the document. Round-12 captures the body verbatim
+                // as a single Text child so the round-trip preserves
+                // the script and the rest of the document still parses.
+                let children = if is_raw_text_element(&name) {
+                    self.parse_raw_text_until_close(&name)?
+                } else {
+                    self.parse_children(&name)?
+                };
                 return Ok(Element {
                     name,
                     attrs,
@@ -246,6 +258,54 @@ impl<'a> XmlParser<'a> {
         Err(Error::invalid("XML: truncated element"))
     }
 
+    /// Round-12: read raw bytes until the matching `</name>` close tag
+    /// (case-insensitive match on the local name). Used for `<script>`
+    /// where the body is raw text per HTML/SVG and may legally contain
+    /// unescaped `<` (e.g. `if (a < b)`). The body is wrapped in CDATA
+    /// markers it had on the way in (we strip a single leading
+    /// `<![CDATA[` / trailing `]]>` pair to keep the inner text clean
+    /// — the encoder re-wraps in CDATA on emit).
+    fn parse_raw_text_until_close(&mut self, name: &str) -> Result<Vec<Node>> {
+        let start = self.pos;
+        // Walk byte-by-byte until we find `</name` (case-insensitive on
+        // the local name). Tolerate prefixes like `</foo:script>` only
+        // when our element's local matches.
+        let local_lc = tag_local(name);
+        loop {
+            if self.pos + 2 > self.src.len() {
+                // Truncated input — emit whatever we have as text.
+                let raw = std::str::from_utf8(&self.src[start..self.src.len()])
+                    .map_err(|_| Error::invalid("XML: bad UTF-8 in raw-text body"))?;
+                self.pos = self.src.len();
+                return Ok(strip_cdata_wrapper(raw));
+            }
+            if self.src[self.pos] == b'<' && self.src[self.pos + 1] == b'/' {
+                // Look ahead at the close-tag name.
+                let after_slash = self.pos + 2;
+                let mut q = after_slash;
+                while q < self.src.len()
+                    && !matches!(self.src[q], b' ' | b'\t' | b'\n' | b'\r' | b'>' | b'/')
+                {
+                    q += 1;
+                }
+                if let Ok(close_name) = std::str::from_utf8(&self.src[after_slash..q]) {
+                    if tag_local(close_name) == local_lc {
+                        let body_end = self.pos;
+                        let raw = std::str::from_utf8(&self.src[start..body_end])
+                            .map_err(|_| Error::invalid("XML: bad UTF-8 in raw-text body"))?;
+                        // Advance past `</name ... >`.
+                        let close_end = find_seq(self.src, q, b">")
+                            .map(|e| e + 1)
+                            .unwrap_or(self.src.len());
+                        self.pos = close_end;
+                        return Ok(strip_cdata_wrapper(raw));
+                    }
+                }
+            }
+            self.pos += 1;
+        }
+    }
+
     fn parse_children(&mut self, name: &str) -> Result<Vec<Node>> {
         let mut children: Vec<Node> = Vec::new();
         while self.pos < self.src.len() {
@@ -270,6 +330,37 @@ impl<'a> XmlParser<'a> {
             }
         }
         Ok(children)
+    }
+}
+
+/// Round-12: which element local-names should be parsed with raw-text
+/// body semantics (HTML5 "script data state"). SVG 2 §16.2.1 inherits
+/// HTML's rule for `<script>`. `<style>` would also benefit, but the
+/// existing CSS pipeline already expects styled-text and works through
+/// CDATA markers, so we keep it on the strict-XML path for now.
+fn is_raw_text_element(name: &str) -> bool {
+    tag_local(name) == "script"
+}
+
+/// If `s` begins with `<![CDATA[` and ends with `]]>`, return the inner
+/// text only. Otherwise return `s` verbatim (after entity decoding for
+/// the non-CDATA path). Used by `parse_raw_text_until_close` so a
+/// `<script>` body wrapped in CDATA round-trips without the markers
+/// themselves being part of the captured text.
+fn strip_cdata_wrapper(s: &str) -> Vec<Node> {
+    let trimmed = s.trim_matches(|c: char| matches!(c, ' ' | '\t' | '\n' | '\r'));
+    if let Some(inner) = trimmed
+        .strip_prefix("<![CDATA[")
+        .and_then(|x| x.strip_suffix("]]>"))
+    {
+        return vec![Node::Text(inner.to_string())];
+    }
+    // Raw script body — entities are NOT decoded here (the spec says
+    // script bodies are opaque text). Keep the bytes verbatim.
+    if s.is_empty() {
+        Vec::new()
+    } else {
+        vec![Node::Text(s.to_string())]
     }
 }
 
