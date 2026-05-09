@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 17** — CSS `@supports` block parse + evaluation per CSS
+  Conditional Rules L3, plus CSS Animations L1 long tail
+  (`animation-timing-function`, multi-name `animation-name`,
+  `animation-direction`, `animation-fill-mode`).
+  - **`@supports (cond) { ... }` blocks** are routed to the new
+    `crate::css::SupportsRule { condition, rules }`. The prelude
+    parses into `SupportsCondition::{Property, Not, And, Or, Always}`
+    — a leaf `(prop: value)` test or a boolean combination thereof.
+    New `Stylesheet::resolve_for_supports_context(supported)` walks
+    the captured rules against a runtime-supplied
+    `HashSet<(String, String)>` of supported (property, value) pairs
+    and returns the merged cascade — symmetric to round 16's
+    `@media` evaluation.
+  - **`animation-timing-function`** — `linear` / `ease` / `ease-in`
+    / `ease-out` / `ease-in-out` / `cubic-bezier(x1,y1,x2,y2)` /
+    `steps(N, start|end)` per CSS Easing Functions L1 §3 / §4. The
+    new `crate::keyframe::TimingFunction` enum carries a
+    `compute_progress(t) -> f32` solver: cubic-bezier solves the
+    parametric curve via bisection (sub-1e-5 absolute error in <16
+    iterations); steps buckets per L1 §4. Default is `ease` per
+    L1 §3.4 (round 16 was effectively `linear`).
+  - **multi-name `animation-name`** — `animation-name: a, b, c`
+    evaluates each animation independently per L1 §6 with mod-indexed
+    pairing on every other longhand list. Later animations override
+    earlier ones on shared properties (the L1 §6 cascade).
+  - **`animation-direction`** (`normal` / `reverse` / `alternate` /
+    `alternate-reverse` per §4.4) flips the per-iteration direction
+    on the keyframe timeline.
+  - **`animation-fill-mode`** (`none` / `forwards` / `backwards` /
+    `both` per §4.7) pins the start or end keyframe outside the
+    active interval.
+
 - **Round 16** — CSS `@media` block parse + evaluation per CSS Media
   Queries L4, plus CSS `@keyframes` evaluation at runtime
   `t_seconds` per CSS Animations L1 §3.

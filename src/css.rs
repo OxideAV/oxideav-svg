@@ -669,6 +669,14 @@ pub struct Stylesheet {
     /// [`Self::resolve_for_media_context`] to evaluate the condition
     /// against a concrete viewport and pull the matching rule list.
     pub media_rules: Vec<MediaRule>,
+    /// **Round 17** — every `@supports (cond) { ... rules ... }` block
+    /// per CSS Conditional Rules L3. Captured in source order; the
+    /// inner `rules` are NOT folded into [`Self::rules`] (they're
+    /// conditional on the runtime feature-detection result, which the
+    /// parser doesn't know). Use [`Self::resolve_for_supports_context`]
+    /// to evaluate the condition against a concrete supported-property
+    /// set and pull the matching rule list.
+    pub supports_rules: Vec<SupportsRule>,
 }
 
 /// One captured `@media (condition) { ... rules ... }` block per CSS
@@ -779,6 +787,52 @@ pub enum MediaValue {
 pub enum Orientation {
     Portrait,
     Landscape,
+}
+
+/// One captured `@supports (condition) { ... rules ... }` block per CSS
+/// Conditional Rules L3 §2.
+///
+/// Each rule has a [`SupportsCondition`] (a property/value declaration
+/// or boolean combination thereof) and a list of inner [`Rule`]s that
+/// apply when the condition matches the runtime supported-property
+/// set. Rules inside a non-matching `@supports` block do NOT
+/// participate in the cascade — the parser surfaces both halves so the
+/// consumer can decide.
+#[derive(Clone, Debug, Default)]
+pub struct SupportsRule {
+    /// Parsed support condition.
+    pub condition: SupportsCondition,
+    /// Style rules nested inside the `@supports` block, in source
+    /// order.
+    pub rules: Vec<Rule>,
+}
+
+/// One support condition — either a leaf `(prop: value)` declaration
+/// test or a boolean combination of nested conditions per CSS
+/// Conditional Rules L3 §3.1.
+///
+/// Round 17 supports the complete grammar surface: leaf
+/// `(property: value)`, `not (...)`, `(...) and (...)`, and
+/// `(...) or (...)`. Nested combinations are honoured via the boxed
+/// recursion on [`SupportsCondition::Not`] and the `Vec` arms.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum SupportsCondition {
+    /// Leaf `(prop: value)` test. Matches when the runtime supplies
+    /// the (lowercased property name, value) pair in
+    /// [`Stylesheet::resolve_for_supports_context`].
+    Property { name: String, value: String },
+    /// `not (cond)` — overall match negates the inner expression.
+    Not(Box<SupportsCondition>),
+    /// `(a) and (b) and (c)` — every entry must match.
+    And(Vec<SupportsCondition>),
+    /// `(a) or (b) or (c)` — at least one entry must match.
+    Or(Vec<SupportsCondition>),
+    /// Empty / always-matches condition (returned for an empty
+    /// `@supports` prelude — a defensive fallback; an `@supports`
+    /// rule without a condition is malformed per L3 §2.4 but we keep
+    /// the rule so it round-trips).
+    #[default]
+    Always,
 }
 
 /// One captured `@keyframes <name> { ... }` block per CSS Animations
@@ -948,9 +1002,9 @@ impl Stylesheet {
                 }
                 if had_block {
                     // Block-style @-rule. Route `@font-face`,
-                    // `@keyframes`, and `@media` to dedicated parsers;
-                    // skip everything else (`@supports` is the next
-                    // round-17 candidate).
+                    // `@keyframes`, `@media`, and `@supports` to
+                    // dedicated parsers; skip everything else
+                    // (`@page`, vendor-specific rules, …).
                     let prelude_end = block_body_start.saturating_sub(1).min(stripped.len());
                     let prelude = stripped[at_start..prelude_end].trim();
                     let name = prelude
@@ -973,6 +1027,11 @@ impl Stylesheet {
                         let body = &stripped[block_body_start..block_body_end];
                         if let Some(media_rule) = parse_at_media(prelude, body) {
                             self.media_rules.push(media_rule);
+                        }
+                    } else if name.eq_ignore_ascii_case("supports") {
+                        let body = &stripped[block_body_start..block_body_end];
+                        if let Some(sup_rule) = parse_at_supports(prelude, body) {
+                            self.supports_rules.push(sup_rule);
                         }
                     }
                 } else {
@@ -1156,6 +1215,44 @@ impl Stylesheet {
         for mr in &self.media_rules {
             if mr.condition.matches(viewport_w, viewport_h, orientation) {
                 out.extend(mr.rules.iter());
+            }
+        }
+        out
+    }
+
+    /// **Round 17** — return the cascade as if every matching
+    /// `@supports` block were inlined alongside the unconditional
+    /// rules.
+    ///
+    /// Per CSS Conditional Rules L3 §2, an `@supports` block's inner
+    /// rules participate in the cascade only when the runtime asserts
+    /// support for every leaf `(prop: value)` declaration the
+    /// condition requires. The parser has no opinion on what a given
+    /// runtime supports; the caller passes a [`std::collections::HashSet`]
+    /// of `(lowercase property name, value)` pairs that the runtime
+    /// claims to handle, and this method walks each captured rule,
+    /// evaluates its condition, and returns the merged rule list in
+    /// source order — first the unconditional rules, then each
+    /// matching `@supports` block's inner rules.
+    ///
+    /// Property name is compared case-insensitively (CSS property
+    /// names are ASCII-case-insensitive per CSS Syntax L3 §4.2);
+    /// value is compared verbatim after both sides are
+    /// whitespace-trimmed by the caller (callers SHOULD pre-normalise
+    /// to e.g. `" rotate(45deg) "` → `"rotate(45deg)"`). For
+    /// "do you support this property at all?" tests, callers may pass
+    /// the empty string as the value and a leaf
+    /// [`SupportsCondition::Property`] with the same empty value will
+    /// match — but condition leaves with the empty value are not
+    /// emitted by the parser (CSS L3 §3 grammar requires both halves).
+    pub fn resolve_for_supports_context(
+        &self,
+        supported: &std::collections::HashSet<(String, String)>,
+    ) -> Vec<&Rule> {
+        let mut out: Vec<&Rule> = self.rules.iter().collect();
+        for sr in &self.supports_rules {
+            if sr.condition.matches(supported) {
+                out.extend(sr.rules.iter());
             }
         }
         out
@@ -2005,6 +2102,192 @@ fn strip_min_max(name: &str) -> (&str, ComparisonRange) {
         return (rest, ComparisonRange::Max);
     }
     (name, ComparisonRange::Exact)
+}
+
+impl SupportsCondition {
+    /// Return `true` when this condition matches the supplied
+    /// runtime supported-property set per CSS Conditional Rules L3
+    /// §3. Property names are compared case-insensitively; values
+    /// are compared verbatim (callers should pre-normalise
+    /// whitespace).
+    pub fn matches(&self, supported: &std::collections::HashSet<(String, String)>) -> bool {
+        match self {
+            SupportsCondition::Always => true,
+            SupportsCondition::Property { name, value } => {
+                let key = (name.to_ascii_lowercase(), value.trim().to_string());
+                supported.contains(&key)
+            }
+            SupportsCondition::Not(inner) => !inner.matches(supported),
+            SupportsCondition::And(items) => items.iter().all(|c| c.matches(supported)),
+            SupportsCondition::Or(items) => items.iter().any(|c| c.matches(supported)),
+        }
+    }
+}
+
+/// Parse `@supports <prelude> { <inner-rules> }` per CSS Conditional
+/// Rules L3 §2. Returns `None` when the body has no usable inner rules
+/// (matches the rest of the parser's tolerance).
+fn parse_at_supports(prelude: &str, body: &str) -> Option<SupportsRule> {
+    let after_at = prelude.trim().strip_prefix('@')?;
+    let mut iter = after_at.splitn(2, char::is_whitespace);
+    let kw = iter.next()?;
+    if !kw.eq_ignore_ascii_case("supports") {
+        return None;
+    }
+    let condition_text = iter.next().unwrap_or("").trim();
+    let condition = parse_supports_condition(condition_text).unwrap_or(SupportsCondition::Always);
+
+    let mut nested = Stylesheet::new();
+    nested.parse_block(body);
+    if nested.rules.is_empty() {
+        return None;
+    }
+    Some(SupportsRule {
+        condition,
+        rules: nested.rules,
+    })
+}
+
+/// Parse a `<supports-condition>` per CSS Conditional Rules L3 §3.1.
+///
+/// Grammar (informal):
+/// ```text
+/// supports-condition  := not <supports-in-parens>
+///                      | <supports-in-parens> [ ( and|or <supports-in-parens> )* ]
+/// supports-in-parens  := ( <supports-condition> )
+///                      | <supports-feature>
+/// supports-feature    := <prop> : <value>
+/// ```
+/// Mixing `and` / `or` at the same level without explicit grouping is
+/// forbidden by the spec; this parser accepts the leftmost operator
+/// for the whole sequence and folds the rest into the same arm
+/// (matches every browser's lenient behaviour).
+fn parse_supports_condition(s: &str) -> Option<SupportsCondition> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    // `not (...)` form — the outer keyword.
+    if let Some(rest) = s.strip_prefix_ci("not") {
+        let rest = rest.trim_start();
+        if rest.starts_with('(') {
+            let inner = parse_supports_in_parens(rest)?;
+            return Some(SupportsCondition::Not(Box::new(inner.0)));
+        }
+    }
+    // Otherwise: a `(...)` clause optionally followed by `and (...)`
+    // or `or (...)` repetitions.
+    let mut cur = s;
+    let mut items: Vec<SupportsCondition> = Vec::new();
+    let (first, mut tail) = parse_supports_in_parens(cur)?;
+    items.push(first);
+    cur = tail.trim_start();
+    let mut combinator: Option<&str> = None;
+    while !cur.is_empty() {
+        // Expect `and` / `or`.
+        let combo = if let Some(rest) = cur.strip_prefix_ci("and") {
+            cur = rest.trim_start();
+            "and"
+        } else if let Some(rest) = cur.strip_prefix_ci("or") {
+            cur = rest.trim_start();
+            "or"
+        } else {
+            break;
+        };
+        if let Some(prev) = combinator {
+            if prev != combo {
+                // Mixing — bail and use what we have.
+                break;
+            }
+        }
+        combinator = Some(combo);
+        let (next, t) = parse_supports_in_parens(cur)?;
+        items.push(next);
+        tail = t;
+        cur = tail.trim_start();
+    }
+    if items.len() == 1 {
+        return Some(items.into_iter().next().unwrap());
+    }
+    match combinator {
+        Some("and") => Some(SupportsCondition::And(items)),
+        Some("or") => Some(SupportsCondition::Or(items)),
+        _ => Some(items.into_iter().next().unwrap()),
+    }
+}
+
+/// Parse a `(supports-in-parens)` chunk and return the parsed
+/// condition plus the remaining input slice past the closing paren.
+fn parse_supports_in_parens(s: &str) -> Option<(SupportsCondition, &str)> {
+    let s = s.trim_start();
+    if !s.starts_with('(') {
+        return None;
+    }
+    let bytes = s.as_bytes();
+    let mut depth = 0i32;
+    let mut close = None;
+    for (i, b) in bytes.iter().enumerate() {
+        match *b {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    close = Some(i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let close = close?;
+    let inner = &s[1..close];
+    let tail = &s[close + 1..];
+    // Inner is either a nested `<supports-condition>` (recognised by
+    // `not` or another `(`) or a `<supports-feature>` leaf.
+    let inner_trim = inner.trim();
+    if inner_trim.starts_with('(')
+        || inner_trim
+            .strip_prefix_ci("not")
+            .map(|r| r.trim_start().starts_with('('))
+            .unwrap_or(false)
+    {
+        if let Some(c) = parse_supports_condition(inner_trim) {
+            return Some((c, tail));
+        }
+    }
+    if let Some(c) = parse_supports_feature(inner_trim) {
+        return Some((c, tail));
+    }
+    None
+}
+
+/// Parse one `<supports-feature>` — `prop: value` per L3 §3.
+fn parse_supports_feature(s: &str) -> Option<SupportsCondition> {
+    let colon = s.find(':')?;
+    let name = s[..colon].trim().to_ascii_lowercase();
+    let value = s[colon + 1..].trim().to_string();
+    if name.is_empty() || value.is_empty() {
+        return None;
+    }
+    Some(SupportsCondition::Property { name, value })
+}
+
+trait StripPrefixCi {
+    fn strip_prefix_ci<'a>(&'a self, prefix: &str) -> Option<&'a str>;
+}
+
+impl StripPrefixCi for str {
+    fn strip_prefix_ci<'a>(&'a self, prefix: &str) -> Option<&'a str> {
+        if self.len() < prefix.len() {
+            return None;
+        }
+        let head = &self[..prefix.len()];
+        if head.eq_ignore_ascii_case(prefix) {
+            Some(&self[prefix.len()..])
+        } else {
+            None
+        }
+    }
 }
 
 /// Parse `@media <prelude> { <inner-rules> }` per CSS Media Queries L4
@@ -2903,6 +3186,115 @@ mod tests {
         assert_eq!(decls.len(), 1);
         assert_eq!(decls[0].0, "stroke");
         assert_eq!(decls[0].1, "blue");
+    }
+
+    // ----- Round 17: @supports parsing + evaluation tests -------------
+
+    fn supported(set: &[(&str, &str)]) -> std::collections::HashSet<(String, String)> {
+        set.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn parse_at_supports_captures_block() {
+        let mut s = Stylesheet::new();
+        s.parse_block(
+            "@supports (transform: rotate(45deg)) { rect { fill: red } } .x { stroke: blue }",
+        );
+        // Inner rule is conditional and stays out of the unconditional set.
+        assert_eq!(s.rules.len(), 1, "only .x is unconditional");
+        assert_eq!(s.supports_rules.len(), 1);
+        let sr = &s.supports_rules[0];
+        match &sr.condition {
+            SupportsCondition::Property { name, value } => {
+                assert_eq!(name, "transform");
+                assert_eq!(value, "rotate(45deg)");
+            }
+            other => panic!("expected Property leaf, got {other:?}"),
+        }
+        assert_eq!(sr.rules.len(), 1);
+    }
+
+    #[test]
+    fn supports_resolution_includes_only_matching_rules() {
+        let mut s = Stylesheet::new();
+        s.parse_block(
+            r#"
+            @supports (transform: rotate(45deg)) { rect { fill: red } }
+            @supports (display: grid) { circle { fill: green } }
+            .x { stroke: blue }
+            "#,
+        );
+        let supported_set = supported(&[("transform", "rotate(45deg)")]);
+        let merged = s.resolve_for_supports_context(&supported_set);
+        // Unconditional `.x` plus the matching `rect` rule (but not `circle`).
+        assert_eq!(merged.len(), 2);
+        // The unconditional rules are first, then the matching @supports.
+        assert!(merged[0].selectors[0].head.classes.contains(&"x".into()));
+        assert_eq!(merged[1].selectors[0].head.tag.as_deref(), Some("rect"));
+    }
+
+    #[test]
+    fn supports_not_negates_inner_condition() {
+        let mut s = Stylesheet::new();
+        s.parse_block("@supports not (display: grid) { .legacy { fill: red } }");
+        assert_eq!(s.supports_rules.len(), 1);
+        match &s.supports_rules[0].condition {
+            SupportsCondition::Not(inner) => match &**inner {
+                SupportsCondition::Property { name, value } => {
+                    assert_eq!(name, "display");
+                    assert_eq!(value, "grid");
+                }
+                other => panic!("expected Property inside Not, got {other:?}"),
+            },
+            other => panic!("expected Not, got {other:?}"),
+        }
+        // With grid supported → does NOT match.
+        let supported_set = supported(&[("display", "grid")]);
+        let merged = s.resolve_for_supports_context(&supported_set);
+        assert_eq!(merged.len(), 0);
+        // Without grid → matches.
+        let supported_set = supported(&[]);
+        let merged = s.resolve_for_supports_context(&supported_set);
+        assert_eq!(merged.len(), 1);
+    }
+
+    #[test]
+    fn supports_and_combinator_requires_all() {
+        let mut s = Stylesheet::new();
+        s.parse_block("@supports (display: grid) and (gap: 1px) { .modern { fill: red } }");
+        assert_eq!(s.supports_rules.len(), 1);
+        match &s.supports_rules[0].condition {
+            SupportsCondition::And(items) => assert_eq!(items.len(), 2),
+            other => panic!("expected And, got {other:?}"),
+        }
+        let both = supported(&[("display", "grid"), ("gap", "1px")]);
+        assert_eq!(s.resolve_for_supports_context(&both).len(), 1);
+        let one = supported(&[("display", "grid")]);
+        assert_eq!(s.resolve_for_supports_context(&one).len(), 0);
+    }
+
+    #[test]
+    fn supports_or_combinator_requires_any() {
+        let mut s = Stylesheet::new();
+        s.parse_block("@supports (display: grid) or (display: flex) { .modern { fill: red } }");
+        match &s.supports_rules[0].condition {
+            SupportsCondition::Or(items) => assert_eq!(items.len(), 2),
+            other => panic!("expected Or, got {other:?}"),
+        }
+        let flex_only = supported(&[("display", "flex")]);
+        assert_eq!(s.resolve_for_supports_context(&flex_only).len(), 1);
+        let neither = supported(&[]);
+        assert_eq!(s.resolve_for_supports_context(&neither).len(), 0);
+    }
+
+    #[test]
+    fn supports_property_match_is_case_insensitive_on_name() {
+        let mut s = Stylesheet::new();
+        s.parse_block("@supports (Transform: rotate(45deg)) { .x { fill: red } }");
+        let set = supported(&[("transform", "rotate(45deg)")]);
+        assert_eq!(s.resolve_for_supports_context(&set).len(), 1);
     }
 
     #[test]

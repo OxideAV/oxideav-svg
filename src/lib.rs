@@ -361,7 +361,35 @@
 //!   / `%`) parse and are dropped (round 16 still treats every length
 //!   as user units).
 //!
-//! # Deferred to round 17+
+//! # Round 17 additions
+//!
+//! * **CSS `@supports (cond) { ... }`** per CSS Conditional Rules L3.
+//!   Round 11–16 silently dropped `@supports` blocks; round 17 routes
+//!   them to the new [`crate::css::SupportsRule`] which carries the
+//!   parsed [`crate::css::SupportsCondition`] (a leaf
+//!   `(property: value)` test or a boolean combination — `not (…)`,
+//!   `(…) and (…)`, `(…) or (…)`) plus the inner rules.
+//!   [`crate::css::Stylesheet::resolve_for_supports_context`]
+//!   evaluates each captured rule against a runtime-supplied
+//!   [`std::collections::HashSet`] of `(property, value)` pairs and
+//!   returns the merged cascade in source order — symmetric to
+//!   round 16's `@media` evaluation.
+//! * **CSS Animations L1 long tail** — `animation-timing-function`
+//!   (`linear` / `ease` / `ease-in` / `ease-out` / `ease-in-out` /
+//!   `cubic-bezier(x1,y1,x2,y2)` / `steps(N, start|end)` per CSS
+//!   Easing Functions L1 §3 / §4), **multi-name `animation-name`**
+//!   (each comma-separated entry evaluates independently per L1 §6
+//!   with mod-indexed pairing on every other longhand list),
+//!   `animation-direction` (`normal` / `reverse` / `alternate` /
+//!   `alternate-reverse` per §4.4 — flips the per-iteration
+//!   direction on the keyframe timeline), and `animation-fill-mode`
+//!   (`none` / `forwards` / `backwards` / `both` per §4.7 — pins
+//!   the start or end keyframe outside the active interval). The
+//!   default timing function is now `ease` per L1 §3.4 (round 16
+//!   was effectively `linear`); round-16 tests have been updated to
+//!   opt into `linear` explicitly when the curve mattered.
+//!
+//! # Deferred to round 18+
 //!
 //! * Actual filter-primitive rasterisation (the typed graph is
 //!   pre-rasteriser plumbing; pixel evaluation is oxideav-raster work).
@@ -369,17 +397,11 @@
 //!   (needs a `Marker` construct in `oxideav-core`).
 //! * `<text>` `textPath` (SVG 2 §11.3) — text-on-path layout via the
 //!   existing `oxideav-scribe` shaping path; touches scribe so
-//!   deferred from round 14 to keep the round in-crate.
+//!   deferred to keep the round in-crate.
 //! * Live evaluation of pseudo-elements (`::before` / `::after`) into
 //!   synthesised boxes — also a renderer-side concern (oxideav-raster).
-//! * CSS `@supports (cond) { ... }` (round 16 follow-up — the parser
-//!   surface mirrors `@media` once we model `(prop: value)` support
-//!   detection).
-//! * CSS Animations L1 long tail — `animation-timing-function`
-//!   (cubic-bezier / steps), multi-name `animation-name`,
-//!   `animation-direction` (`reverse` / `alternate`),
-//!   `animation-fill-mode` (`forwards` / `backwards` / `both` —
-//!   round 16 currently freezes on the final keyframe).
+//! * Length-unit aware coordinates (CSS Values L4 — `em`, `%`, `vw`,
+//!   `vh`, etc. fold to user units today).
 
 pub mod animation;
 pub mod color;

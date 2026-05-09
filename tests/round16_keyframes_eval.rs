@@ -48,7 +48,7 @@ fn rotate_keyframe_at_half_duration_yields_180_degrees() {
       from { transform: rotate(0deg) }
       to { transform: rotate(360deg) }
     }
-    .a { animation-name: spin; animation-duration: 1s; }
+    .a { animation-name: spin; animation-duration: 1s; animation-timing-function: linear; animation-fill-mode: forwards; }
   </style>
   <g class="a">
     <rect x="10" y="10" width="80" height="80" fill="red"/>
@@ -80,7 +80,7 @@ fn rotate_at_t0_keeps_initial_orientation() {
       from { transform: rotate(0deg) }
       to { transform: rotate(360deg) }
     }
-    .a { animation-name: spin; animation-duration: 1s; }
+    .a { animation-name: spin; animation-duration: 1s; animation-timing-function: linear; animation-fill-mode: forwards; }
   </style>
   <g class="a">
     <rect x="10" y="10" width="80" height="80" fill="red"/>
@@ -105,7 +105,7 @@ fn rotate_at_t1_freezes_at_360_equivalent() {
       from { transform: rotate(0deg) }
       to { transform: rotate(360deg) }
     }
-    .a { animation-name: spin; animation-duration: 1s; }
+    .a { animation-name: spin; animation-duration: 1s; animation-timing-function: linear; animation-fill-mode: forwards; }
   </style>
   <g class="a">
     <rect x="10" y="10" width="80" height="80" fill="red"/>
@@ -131,7 +131,7 @@ fn opacity_keyframe_lerps_at_runtime_t() {
       from { opacity: 0 }
       to { opacity: 1 }
     }
-    .a { animation-name: fade; animation-duration: 4s; }
+    .a { animation-name: fade; animation-duration: 4s; animation-timing-function: linear; }
   </style>
   <g class="a">
     <rect x="10" y="10" width="80" height="80" fill="blue"/>
