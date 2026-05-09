@@ -737,7 +737,14 @@ pub fn parse_element_to_node_ctx(
     // ParseContext so `parse_svg_at(bytes, t)` produces a stable
     // snapshot at any point on the timeline.
     let with_anim = apply_animation_overrides(el, ctx.animation_t);
-    let el = with_anim.as_ref().unwrap_or(el);
+    // Round 16: also fold any CSS `@keyframes`-driven animation that
+    // targets this element. The SMIL pass above handles `<animate>` /
+    // `<set>`; the keyframe pass below handles `animation-name: <kf>;
+    // animation-duration: <s>` declarations resolved from inline
+    // `style=` or matched CSS rules.
+    let after_smil = with_anim.as_ref().unwrap_or(el);
+    let with_kf = apply_keyframe_overrides(after_smil, mctx, &ctx.stylesheet, ctx.animation_t);
+    let el = with_kf.as_ref().unwrap_or(after_smil);
     // If we cloned the element to fold animation values in, the
     // MatchContext still references the *original* element (its
     // tag/class/id/attrs are byte-identical post-clone, plus the
@@ -1432,6 +1439,85 @@ fn symbol_viewport_transform(
 // hard-coded `t=0` shortcut). Delegates to `crate::animation` for the
 // SMIL timing model.
 // ---------------------------------------------------------------------------
+
+/// **Round 16** — evaluate every CSS `@keyframes`-driven animation
+/// targeting `el` at `t_seconds` and fold the lerped property values
+/// into a clone of `el`'s `style=` attribute so the cascade picks them
+/// up via the existing [`PaintState::merged_with_mctx`] code path.
+///
+/// Returns `None` when no keyframe overrides apply (so the caller can
+/// keep the original `el` by reference — the common case).
+fn apply_keyframe_overrides(
+    el: &Element,
+    mctx: &MatchContext<'_>,
+    sheet: &Stylesheet,
+    t_seconds: f32,
+) -> Option<Element> {
+    // Build a temp MatchContext that points at `el` (it might be the
+    // SMIL-folded clone, in which case the original `mctx.el` would
+    // miss any animation-* attrs spliced in by the SMIL pass).
+    let mctx_local = MatchContext { el, ..*mctx };
+    let overrides = crate::keyframe::evaluate_at(&mctx_local, sheet, t_seconds);
+    if overrides.is_empty() {
+        return None;
+    }
+    // Splice the resolved declarations into `style=` so the existing
+    // declarations_for() pipeline picks them up at the highest
+    // precedence (inline-style wins over matched-CSS rules per the
+    // round-4 cascade). The `transform` property additionally lands in
+    // the `transform=` attribute because the `<g>` / shape parsers
+    // read `parse_transform(attr(el, "transform"))` directly — going
+    // through the CSS cascade isn't enough.
+    let mut clone = el.clone();
+    let mut style_overrides: Vec<&(String, String)> = Vec::new();
+    for entry in &overrides {
+        let lower = entry.0.to_ascii_lowercase();
+        if lower == "transform" {
+            // Write straight to the `transform=` attribute slot.
+            let mut replaced = false;
+            for (k, v) in clone.attrs.iter_mut() {
+                if k.eq_ignore_ascii_case("transform") {
+                    *v = entry.1.clone();
+                    replaced = true;
+                    break;
+                }
+            }
+            if !replaced {
+                clone.attrs.push(("transform".into(), entry.1.clone()));
+            }
+        } else {
+            style_overrides.push(entry);
+        }
+    }
+    if !style_overrides.is_empty() {
+        let mut existing = String::new();
+        let mut style_idx: Option<usize> = None;
+        for (i, (k, v)) in clone.attrs.iter().enumerate() {
+            if k.eq_ignore_ascii_case("style") {
+                existing = v.clone();
+                style_idx = Some(i);
+                break;
+            }
+        }
+        let mut composed = existing.trim().trim_end_matches(';').to_string();
+        if !composed.is_empty() {
+            composed.push(';');
+        }
+        for (i, entry) in style_overrides.iter().enumerate() {
+            if i > 0 {
+                composed.push(';');
+            }
+            composed.push_str(&entry.0);
+            composed.push(':');
+            composed.push_str(&entry.1);
+        }
+        match style_idx {
+            Some(i) => clone.attrs[i].1 = composed,
+            None => clone.attrs.push(("style".into(), composed)),
+        }
+    }
+    Some(clone)
+}
 
 /// Walk `el`'s children for `<animate>` / `<set>` / `<animateTransform>`
 /// tags, evaluate each at `t_seconds`, and return a clone of `el` with

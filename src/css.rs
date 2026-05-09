@@ -662,6 +662,123 @@ pub struct Stylesheet {
     /// Loading these into a real animation timeline is left to the
     /// caller; the parser only collects the structure.
     pub keyframes: Vec<KeyframesRule>,
+    /// **Round 16** — every `@media (cond) { ... rules ... }` block per
+    /// CSS Media Queries L4. Captured in source order; the inner
+    /// `rules` are NOT folded into [`Self::rules`] (they're conditional
+    /// on the runtime viewport, which the parser doesn't know). Use
+    /// [`Self::resolve_for_media_context`] to evaluate the condition
+    /// against a concrete viewport and pull the matching rule list.
+    pub media_rules: Vec<MediaRule>,
+}
+
+/// One captured `@media (condition) { ... rules ... }` block per CSS
+/// Media Queries L4.
+///
+/// Each rule has a [`MediaCondition`] (the `(feature: value)` clauses
+/// joined by an operator) and a list of inner [`Rule`]s that apply
+/// when the condition matches the current viewport. Rules inside a
+/// non-matching `@media` block do NOT participate in the cascade — the
+/// parser surfaces both halves so the consumer can decide.
+#[derive(Clone, Debug, Default)]
+pub struct MediaRule {
+    /// Parsed media-condition prelude.
+    pub condition: MediaCondition,
+    /// Style rules nested inside the `@media` block, in source order.
+    pub rules: Vec<Rule>,
+}
+
+/// One media-query condition — a list of `(feature: value)` clauses
+/// joined by [`MediaOperator`].
+///
+/// Round 16 supports `width`, `height`, and `orientation` features
+/// (with optional `min-` / `max-` prefixes per CSS Media Queries L4
+/// §4); `color-gamut` / `prefers-*` / `hover` etc. are deferred.
+/// Unrecognised features are kept verbatim in the [`MediaFeature`]
+/// list but never match (so the rule body is dormant).
+#[derive(Clone, Debug, Default)]
+pub struct MediaCondition {
+    /// Comma-separated `media_query_list` per CSS Media Queries L4 §3:
+    /// each entry is one media query that ORs into the overall match.
+    /// Empty list (no condition at all) → always matches (the spec's
+    /// implicit `all` media type).
+    pub queries: Vec<MediaQuery>,
+}
+
+/// One leaf media query — an optional `not | only` modifier plus a
+/// list of feature clauses joined by `and`.
+#[derive(Clone, Debug, Default)]
+pub struct MediaQuery {
+    /// Optional leading `not` / `only` modifier. `Only` is a
+    /// browser-compat hint per CSS Media Queries L4 §3.1 — it parses
+    /// like the absence of any modifier (we honour it as a passthrough).
+    pub modifier: Option<MediaOperator>,
+    /// Optional media type (`screen` / `print` / `all`). `None` is
+    /// equivalent to `all` per §3.
+    pub media_type: Option<String>,
+    /// Feature clauses joined by `and`.
+    pub features: Vec<MediaFeature>,
+}
+
+/// Boolean operator joining clauses inside a [`MediaCondition`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MediaOperator {
+    /// `not (feature)` — overall match negates the inner expression.
+    Not,
+    /// `only` — browser-compat hint (CSS Media Queries L4 §3.1); we
+    /// treat it as a no-op for matching purposes.
+    Only,
+}
+
+/// One `(name: value)` clause inside a media query.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MediaFeature {
+    /// Lowercased feature name (e.g. `"width"`, `"min-width"`,
+    /// `"orientation"`).
+    pub name: String,
+    /// Comparison the value uses against the runtime viewport — `Eq`
+    /// for plain `(width: 800px)`, `MinEq` / `MaxEq` for the
+    /// `min-` / `max-` shorthand prefixes per §4.
+    pub op: ComparisonOp,
+    /// Expected value (parsed; for unrecognised features
+    /// [`MediaValue::Raw`] preserves the source text).
+    pub value: MediaValue,
+}
+
+/// Comparison kind for a [`MediaFeature`] against the runtime
+/// viewport.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ComparisonOp {
+    /// Exact match — used by plain `(name: value)` form.
+    Eq,
+    /// `>=` — used by `(min-name: value)` shorthand per §4.
+    MinEq,
+    /// `<=` — used by `(max-name: value)` shorthand per §4.
+    MaxEq,
+}
+
+/// Parsed value of a [`MediaFeature`].
+///
+/// Round 16 typed variants cover the three features used in practice;
+/// everything else falls through to [`MediaValue::Raw`] for round-trip
+/// fidelity.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MediaValue {
+    /// Numeric length (px / pt / em / etc.). Round 16 treats every
+    /// unit as user units (matches `parse_number`'s SVG behaviour);
+    /// `1em != 16px` is a future refinement.
+    Length(f32),
+    /// `(orientation: portrait | landscape)` per §4.
+    Orientation(Orientation),
+    /// Raw value text for unrecognised features (so the rule round-
+    /// trips even if it never matches).
+    Raw(String),
+}
+
+/// Orientation value for `@media (orientation: ...)`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Orientation {
+    Portrait,
+    Landscape,
 }
 
 /// One captured `@keyframes <name> { ... }` block per CSS Animations
@@ -830,10 +947,10 @@ impl Stylesheet {
                     i += 1;
                 }
                 if had_block {
-                    // Block-style @-rule. Route `@font-face` and
-                    // `@keyframes` to dedicated parsers; skip
-                    // everything else (including `@media` /
-                    // `@supports` — round 16 candidates).
+                    // Block-style @-rule. Route `@font-face`,
+                    // `@keyframes`, and `@media` to dedicated parsers;
+                    // skip everything else (`@supports` is the next
+                    // round-17 candidate).
                     let prelude_end = block_body_start.saturating_sub(1).min(stripped.len());
                     let prelude = stripped[at_start..prelude_end].trim();
                     let name = prelude
@@ -851,6 +968,11 @@ impl Stylesheet {
                         let body = &stripped[block_body_start..block_body_end];
                         if let Some(rule) = parse_at_keyframes(prelude, body) {
                             self.keyframes.push(rule);
+                        }
+                    } else if name.eq_ignore_ascii_case("media") {
+                        let body = &stripped[block_body_start..block_body_end];
+                        if let Some(media_rule) = parse_at_media(prelude, body) {
+                            self.media_rules.push(media_rule);
                         }
                     }
                 } else {
@@ -1001,6 +1123,42 @@ impl Stylesheet {
         for nested_url in &nested.imports {
             self.resolve_import_recursive(nested_url, fetcher, visited, depth + 1);
         }
+    }
+
+    /// **Round 16** — return the cascade as if every matching `@media`
+    /// block were inlined alongside the unconditional rules.
+    ///
+    /// Per CSS Media Queries L4 §5, an `@media` block's inner rules
+    /// participate in the cascade only when the condition matches the
+    /// runtime viewport. The parser captures both halves separately
+    /// (unconditional rules in [`Self::rules`], conditional groups in
+    /// [`Self::media_rules`]); this method walks both, evaluates each
+    /// `@media` condition against `(viewport_w, viewport_h,
+    /// orientation)`, and returns the merged rule list in source
+    /// order — first the unconditional rules, then each matching
+    /// `@media` block's inner rules in source order. Source order is
+    /// preserved so the existing specificity / source-order tie-break
+    /// in [`Self::matched_declarations`] still resolves correctly.
+    ///
+    /// Callers that want the matched declarations against a specific
+    /// element + viewport should clone this sheet, append the matching
+    /// media rules to `rules` (or build a synthetic sheet around the
+    /// returned slice), and call [`Self::matched_declarations`]; the
+    /// API surface deliberately stays decoupled from the cascade so
+    /// tests can introspect the selection without needing an element.
+    pub fn resolve_for_media_context(
+        &self,
+        viewport_w: f32,
+        viewport_h: f32,
+        orientation: Orientation,
+    ) -> Vec<&Rule> {
+        let mut out: Vec<&Rule> = self.rules.iter().collect();
+        for mr in &self.media_rules {
+            if mr.condition.matches(viewport_w, viewport_h, orientation) {
+                out.extend(mr.rules.iter());
+            }
+        }
+        out
     }
 
     /// Maximum `@import` recursion depth. Eight matches what major
@@ -1750,6 +1908,316 @@ fn parse_at_keyframes(prelude: &str, body: &str) -> Option<KeyframesRule> {
         return None;
     }
     Some(KeyframesRule { name, selectors })
+}
+
+impl MediaCondition {
+    /// Return `true` when at least one of the contained queries matches
+    /// the supplied runtime context. An empty query list (no `@media`
+    /// prelude) matches per CSS Media Queries L4 §3 — equivalent to
+    /// the implicit `all` media type.
+    pub fn matches(&self, viewport_w: f32, viewport_h: f32, orientation: Orientation) -> bool {
+        if self.queries.is_empty() {
+            return true;
+        }
+        self.queries
+            .iter()
+            .any(|q| q.matches(viewport_w, viewport_h, orientation))
+    }
+}
+
+impl MediaQuery {
+    /// Evaluate one media query against the runtime viewport. Per CSS
+    /// Media Queries L4 §3, a query matches when:
+    ///
+    /// - the (optional) media type matches `screen` / `all`, AND
+    /// - every feature clause matches, AND
+    /// - the leading `not` modifier (if any) inverts the result.
+    ///
+    /// Unrecognised features ([`MediaValue::Raw`]) never match — the
+    /// query containing them is dormant. `only` is honoured as a
+    /// passthrough modifier per the spec's compat note.
+    pub fn matches(&self, viewport_w: f32, viewport_h: f32, orientation: Orientation) -> bool {
+        // Media type: only `screen`, `all` or omitted are accepted as
+        // "this is a screen-style runtime". `print` never matches the
+        // viewport-driven path.
+        if let Some(t) = self.media_type.as_deref() {
+            let lower = t.to_ascii_lowercase();
+            if lower != "screen" && lower != "all" {
+                return matches!(self.modifier, Some(MediaOperator::Not));
+            }
+        }
+        let inner = self
+            .features
+            .iter()
+            .all(|f| feature_matches(f, viewport_w, viewport_h, orientation));
+        match self.modifier {
+            Some(MediaOperator::Not) => !inner,
+            _ => inner,
+        }
+    }
+}
+
+fn feature_matches(
+    f: &MediaFeature,
+    viewport_w: f32,
+    viewport_h: f32,
+    orientation: Orientation,
+) -> bool {
+    let name = f.name.as_str();
+    let (base, range) = strip_min_max(name);
+    let target = match base {
+        "width" => viewport_w,
+        "height" => viewport_h,
+        "orientation" => {
+            return match &f.value {
+                MediaValue::Orientation(o) => *o == orientation,
+                _ => false,
+            };
+        }
+        _ => return false,
+    };
+    let v = match &f.value {
+        MediaValue::Length(n) => *n,
+        _ => return false,
+    };
+    // Honour the explicit `op` first (lets a hand-built `MediaFeature`
+    // pick `MinEq` even with the bare name) and fall back to the
+    // attribute-prefix-derived range when `op == Eq`.
+    match (f.op, range) {
+        (ComparisonOp::MinEq, _) | (ComparisonOp::Eq, ComparisonRange::Min) => target >= v,
+        (ComparisonOp::MaxEq, _) | (ComparisonOp::Eq, ComparisonRange::Max) => target <= v,
+        (ComparisonOp::Eq, ComparisonRange::Exact) => (target - v).abs() < 0.5,
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ComparisonRange {
+    Exact,
+    Min,
+    Max,
+}
+
+fn strip_min_max(name: &str) -> (&str, ComparisonRange) {
+    if let Some(rest) = name.strip_prefix("min-") {
+        return (rest, ComparisonRange::Min);
+    }
+    if let Some(rest) = name.strip_prefix("max-") {
+        return (rest, ComparisonRange::Max);
+    }
+    (name, ComparisonRange::Exact)
+}
+
+/// Parse `@media <prelude> { <inner-rules> }` per CSS Media Queries L4
+/// §2 / §3. Returns `None` when the body has no usable inner rules
+/// (matches the rest of the parser's tolerance).
+fn parse_at_media(prelude: &str, body: &str) -> Option<MediaRule> {
+    let after_at = prelude.trim().strip_prefix('@')?;
+    // Strip the leading `media` keyword (case-insensitive).
+    let mut iter = after_at.splitn(2, char::is_whitespace);
+    let kw = iter.next()?;
+    if !kw.eq_ignore_ascii_case("media") {
+        return None;
+    }
+    let condition_text = iter.next().unwrap_or("").trim();
+    let condition = parse_media_condition(condition_text);
+
+    // Parse the inner block as a fresh stylesheet, then take its
+    // unconditional `rules`. Nested at-rules inside `@media` are
+    // tolerated — Media Queries L4 §2 disallows `@media` nesting in
+    // CSS 2.1 but L4 lifts that — we drop any nested at-rules to keep
+    // the surface small.
+    let mut nested = Stylesheet::new();
+    nested.parse_block(body);
+    if nested.rules.is_empty() {
+        return None;
+    }
+    Some(MediaRule {
+        condition,
+        rules: nested.rules,
+    })
+}
+
+/// Parse a media-condition prelude into typed [`MediaQuery`] entries.
+/// An empty prelude returns an empty query list (which matches per the
+/// `MediaCondition::matches` implicit-`all` rule).
+fn parse_media_condition(s: &str) -> MediaCondition {
+    let s = s.trim();
+    if s.is_empty() {
+        return MediaCondition::default();
+    }
+    let mut queries: Vec<MediaQuery> = Vec::new();
+    for piece in split_media_queries(s) {
+        if let Some(q) = parse_one_media_query(piece.trim()) {
+            queries.push(q);
+        }
+    }
+    MediaCondition { queries }
+}
+
+/// Split the media-query-list on top-level commas (commas inside
+/// `(...)` parens are kept inside the clause they belong to).
+fn split_media_queries(s: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut depth: i32 = 0;
+    let mut start = 0usize;
+    let bytes = s.as_bytes();
+    for (i, b) in bytes.iter().enumerate() {
+        match *b {
+            b'(' => depth += 1,
+            b')' if depth > 0 => depth -= 1,
+            b',' if depth == 0 => {
+                out.push(s[start..i].to_string());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    let tail = &s[start..];
+    if !tail.trim().is_empty() {
+        out.push(tail.to_string());
+    }
+    out
+}
+
+fn parse_one_media_query(s: &str) -> Option<MediaQuery> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let mut q = MediaQuery::default();
+    // Scan tokens left to right, picking up `not` / `only` / a media
+    // type, then the `and (feature: value)` clauses.
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    let mut saw_modifier_or_type = false;
+    while i < bytes.len() {
+        // Skip whitespace.
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            break;
+        }
+        // Feature clause `(name : value)` or bare `(name)`.
+        if bytes[i] == b'(' {
+            let close = memchr_close_paren(bytes, i + 1)?;
+            let inner = &s[i + 1..close];
+            if let Some(feat) = parse_media_feature(inner) {
+                q.features.push(feat);
+            } else {
+                // Unrecognised feature shape — keep the raw text so the
+                // query is dormant (never matches) instead of dropping
+                // the whole `@media` block.
+                q.features.push(MediaFeature {
+                    name: inner.trim().to_ascii_lowercase(),
+                    op: ComparisonOp::Eq,
+                    value: MediaValue::Raw(String::new()),
+                });
+            }
+            i = close + 1;
+            continue;
+        }
+        // Otherwise it's a keyword: `not` / `only` / a media type, or
+        // the `and` glue between features.
+        let word_start = i;
+        while i < bytes.len()
+            && !bytes[i].is_ascii_whitespace()
+            && bytes[i] != b'('
+            && bytes[i] != b','
+        {
+            i += 1;
+        }
+        let word = &s[word_start..i];
+        let lower = word.to_ascii_lowercase();
+        match lower.as_str() {
+            "and" => continue,
+            "not" if !saw_modifier_or_type => {
+                q.modifier = Some(MediaOperator::Not);
+                saw_modifier_or_type = true;
+            }
+            "only" if !saw_modifier_or_type => {
+                q.modifier = Some(MediaOperator::Only);
+                saw_modifier_or_type = true;
+            }
+            _ => {
+                if !saw_modifier_or_type && q.media_type.is_none() {
+                    q.media_type = Some(lower);
+                    saw_modifier_or_type = true;
+                }
+                // Otherwise drop the unrecognised token — the parser is
+                // tolerant of malformed input per the rest of `css.rs`.
+            }
+        }
+    }
+    Some(q)
+}
+
+fn parse_media_feature(s: &str) -> Option<MediaFeature> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    // Bare `(feature)` form — not used by width/height/orientation but
+    // tolerated for forward compat.
+    let (name_raw, value_raw) = match s.find(':') {
+        Some(c) => (s[..c].trim(), s[c + 1..].trim()),
+        None => (s, ""),
+    };
+    let name = name_raw.to_ascii_lowercase();
+    if name.is_empty() {
+        return None;
+    }
+    let (base, range) = strip_min_max(&name);
+    let op = match range {
+        ComparisonRange::Exact => ComparisonOp::Eq,
+        ComparisonRange::Min => ComparisonOp::MinEq,
+        ComparisonRange::Max => ComparisonOp::MaxEq,
+    };
+    let value = match base {
+        "orientation" => match value_raw.to_ascii_lowercase().as_str() {
+            "portrait" => MediaValue::Orientation(Orientation::Portrait),
+            "landscape" => MediaValue::Orientation(Orientation::Landscape),
+            _ => MediaValue::Raw(value_raw.to_string()),
+        },
+        "width" | "height" => match parse_media_length(value_raw) {
+            Some(n) => MediaValue::Length(n),
+            None => MediaValue::Raw(value_raw.to_string()),
+        },
+        _ => MediaValue::Raw(value_raw.to_string()),
+    };
+    Some(MediaFeature { name, op, value })
+}
+
+/// Parse a `<length>` per CSS Values L4 — a number plus an optional
+/// unit. Round 16 treats every unit as user units (matches the rest of
+/// the SVG-side number parser); pixel-perfect unit conversion is
+/// future work.
+fn parse_media_length(s: &str) -> Option<f32> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    if i < bytes.len() && (bytes[i] == b'+' || bytes[i] == b'-') {
+        i += 1;
+    }
+    let mut saw_digit = false;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+        saw_digit = true;
+    }
+    if i < bytes.len() && bytes[i] == b'.' {
+        i += 1;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+            saw_digit = true;
+        }
+    }
+    if !saw_digit {
+        return None;
+    }
+    s[..i].parse::<f32>().ok()
 }
 
 /// Parse one keyframe offset — `from`, `to`, or `<percent>%`.

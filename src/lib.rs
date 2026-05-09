@@ -321,7 +321,47 @@
 //!   animation engine (or the rasteriser's own SMIL-via-`@keyframes`
 //!   bridge) can iterate the list without re-parsing the source.
 //!
-//! # Deferred to round 16+
+//! # Round 16 additions
+//!
+//! * **CSS `@media` block parse + evaluation** per CSS Media Queries L4.
+//!   Round 11–15 silently dropped `@media` blocks; round 16 routes them
+//!   to the new [`crate::css::MediaRule`] which carries the parsed
+//!   prelude ([`crate::css::MediaCondition`] = a list of
+//!   [`crate::css::MediaQuery`]s ORed together, each one a list of
+//!   [`crate::css::MediaFeature`]s ANDed together with optional
+//!   `not` / `only` modifier and optional media type) plus the inner
+//!   rules.  [`crate::css::Stylesheet::resolve_for_media_context`]
+//!   evaluates the conditions against `(viewport_w, viewport_h,
+//!   orientation)` and returns the merged cascade in source order so
+//!   the existing specificity / source-order tie-break still
+//!   resolves correctly. Width / height (with `min-` / `max-` prefixes
+//!   per §4) and `orientation: portrait | landscape` are honoured;
+//!   unrecognised features (`prefers-color-scheme`, `color-gamut`,
+//!   etc.) round-trip as [`crate::css::MediaValue::Raw`] but never
+//!   match (the rule is dormant).
+//! * **CSS `@keyframes` evaluation at runtime `t_seconds`** per CSS
+//!   Animations L1 §3. Round 15 captured `@keyframes` blocks but never
+//!   applied them to the rendered scene. Round 16 closes the gap via
+//!   the new [`crate::keyframe`] module: an element whose CSS cascade
+//!   resolves to `animation-name: <kf>` + `animation-duration: <s>`
+//!   has the bracketing keyframe pair lerped at the runtime
+//!   `t_seconds`, and the resulting property values folded into the
+//!   element's effective property map (transform values land in the
+//!   `transform=` attribute slot; everything else lands in `style=`).
+//!   Honoured longhands: `animation-name`, `animation-duration`
+//!   (`s` / `ms`), `animation-iteration-count` (numeric or
+//!   `infinite`), `animation-delay`. Lerp coverage: `transform:
+//!   rotate|translate|scale(...)`, `opacity` / `fill-opacity` /
+//!   `stroke-opacity` / `stroke-width`, colour properties via the
+//!   shared SMIL `lerp_string` path.
+//! * **Transform parser accepts CSS unit suffixes.** SVG 2 / CSS
+//!   Transforms L1 — `rotate(180deg)` / `rotate(0.5turn)` /
+//!   `translate(10px, 20px)`. Angle units (`deg` / `rad` / `grad` /
+//!   `turn`) convert to canonical degrees; length units (`px` / `em`
+//!   / `%`) parse and are dropped (round 16 still treats every length
+//!   as user units).
+//!
+//! # Deferred to round 17+
 //!
 //! * Actual filter-primitive rasterisation (the typed graph is
 //!   pre-rasteriser plumbing; pixel evaluation is oxideav-raster work).
@@ -332,8 +372,14 @@
 //!   deferred from round 14 to keep the round in-crate.
 //! * Live evaluation of pseudo-elements (`::before` / `::after`) into
 //!   synthesised boxes — also a renderer-side concern (oxideav-raster).
-//! * CSS `@media` block honoured (currently the entire block is
-//!   skipped; round 16 candidate alongside `@supports`).
+//! * CSS `@supports (cond) { ... }` (round 16 follow-up — the parser
+//!   surface mirrors `@media` once we model `(prop: value)` support
+//!   detection).
+//! * CSS Animations L1 long tail — `animation-timing-function`
+//!   (cubic-bezier / steps), multi-name `animation-name`,
+//!   `animation-direction` (`reverse` / `alternate`),
+//!   `animation-fill-mode` (`forwards` / `backwards` / `both` —
+//!   round 16 currently freezes on the final keyframe).
 
 pub mod animation;
 pub mod color;
@@ -345,6 +391,7 @@ pub mod element;
 pub mod encoder;
 pub mod filter;
 pub mod image;
+pub mod keyframe;
 pub mod parser;
 pub mod path_data;
 pub mod preserved;

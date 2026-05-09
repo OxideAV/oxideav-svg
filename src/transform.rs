@@ -166,11 +166,47 @@ fn read_args(bytes: &[u8], pos: &mut usize) -> Result<Vec<f32>> {
         if !saw_digit {
             return Err(Error::invalid("SVG transform: expected number"));
         }
-        let s = std::str::from_utf8(&bytes[start..*pos])
+        let num_end = *pos;
+        // SVG 2 / CSS Transforms L1 — `rotate(180deg)`,
+        // `translate(10px, 20px)` and friends carry an optional unit
+        // suffix. Round 16 honours the unit for `deg` (degrees → keep
+        // as-is) / `rad` (radians → convert to degrees so the
+        // downstream `build_transform` for `rotate` reads a single
+        // canonical scale) / `grad` (200grad = π rad) / `turn` (1turn
+        // = 360deg). All other units (`px` / `em` / `%` / etc.) are
+        // dropped — round 16 treats every length as user units, which
+        // matches the existing SVG-side number parser.
+        let mut unit_end = *pos;
+        while unit_end < bytes.len() && (bytes[unit_end] as char).is_ascii_alphabetic() {
+            unit_end += 1;
+        }
+        // Check for `%` separately (it isn't alphabetic).
+        if unit_end < bytes.len() && bytes[unit_end] == b'%' {
+            unit_end += 1;
+        }
+        let unit = if unit_end > num_end {
+            std::str::from_utf8(&bytes[num_end..unit_end])
+                .map_err(|_| Error::invalid("SVG transform: bad UTF-8 in unit"))?
+                .to_ascii_lowercase()
+        } else {
+            String::new()
+        };
+        *pos = unit_end;
+        let s = std::str::from_utf8(&bytes[start..num_end])
             .map_err(|_| Error::invalid("SVG transform: bad UTF-8 in number"))?;
-        let v = s
+        let mut v = s
             .parse::<f32>()
             .map_err(|_| Error::invalid("SVG transform: malformed number"))?;
+        match unit.as_str() {
+            "deg" | "" => {} // canonical for rotate; identity for plain numbers
+            "rad" => v = v.to_degrees(),
+            "grad" => v *= 0.9, // 400grad = 360deg
+            "turn" => v *= 360.0,
+            // Length / dimensionless suffixes (`px` / `em` / `pt` /
+            // `%` / …) are accepted but ignored — round 16 has no
+            // unit-aware coordinate space yet.
+            _ => {}
+        }
         out.push(v);
     }
 }

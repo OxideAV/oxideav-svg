@@ -153,6 +153,45 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
+## Round 16 additions
+
+- **CSS `@media` block parse + evaluation** per CSS Media Queries L4.
+  Round 11–15 silently dropped `@media` blocks; round 16 routes them
+  to the new `Stylesheet::media_rules: Vec<MediaRule>`. Each
+  `MediaRule` carries the parsed `MediaCondition` (a list of
+  `MediaQuery`s ORed via comma-separated lists; each query carries an
+  optional `not` / `only` modifier, an optional media type, and a
+  list of `MediaFeature`s ANDed together) plus the inner rules. The
+  new `Stylesheet::resolve_for_media_context(viewport_w, viewport_h,
+  orientation)` evaluates each captured query and returns the merged
+  cascade in source order so `matched_declarations` still resolves
+  specificity / source-order ties correctly. Width / height (with
+  `min-` / `max-` prefixes per §4) and `orientation: portrait |
+  landscape` are honoured; unrecognised features
+  (`prefers-color-scheme`, `color-gamut`, etc.) round-trip as
+  `MediaValue::Raw` but never match (the rule is dormant).
+- **CSS `@keyframes` evaluation at runtime `t_seconds`** per CSS
+  Animations L1 §3 via the new `crate::keyframe` module. An element
+  whose CSS cascade resolves to `animation-name: <kf>` +
+  `animation-duration: <s>` has the bracketing keyframe pair lerped
+  at `t_seconds`, and the resulting property values folded into the
+  element's effective property map (transform values land in the
+  `transform=` attribute slot; everything else lands in `style=`).
+  Honoured longhands: `animation-name`, `animation-duration` (`s` /
+  `ms`), `animation-iteration-count` (numeric or `infinite`),
+  `animation-delay`. Lerp coverage: `transform: rotate | translate |
+  scale(...)`, `opacity` / `fill-opacity` / `stroke-opacity` /
+  `stroke-width`, colour properties via the shared SMIL
+  `lerp_string` path. Wired into `parse_svg_at(t_seconds)` so a
+  single `transform: rotate(180deg)` renders correctly at `t = 0.5s`
+  of a 1-second `from rotate(0deg) → to rotate(360deg)` animation.
+- **Transform parser accepts CSS unit suffixes** per SVG 2 / CSS
+  Transforms L1 — `rotate(180deg)` / `rotate(0.5turn)` /
+  `translate(10px, 20px)`. Angle units (`deg` / `rad` / `grad` /
+  `turn`) convert to canonical degrees; length units (`px` / `em` /
+  `%`) parse and are dropped (round 16 still treats every length as
+  user units).
+
 ## Round 15 additions
 
 - **`<image>` element capture (SVG 2 §6).** Inline

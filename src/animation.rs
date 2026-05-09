@@ -495,6 +495,14 @@ fn paced_distance(a: &str, b: &str) -> f32 {
     0.0
 }
 
+/// Public wrapper for [`lerp_string`] so the round-16 keyframe
+/// evaluator can reuse the same colour + scalar interpolation rules
+/// without duplicating the parser. Crate-public to keep the surface
+/// area small.
+pub(crate) fn lerp_string_public(a: &str, b: &str, t: f32) -> String {
+    lerp_string(a, b, t)
+}
+
 /// Linearly interpolate two values. Tries colour, then scalar, else
 /// returns `a` (discrete fallback).
 fn lerp_string(a: &str, b: &str, t: f32) -> String {
