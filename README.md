@@ -153,6 +153,38 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
+## Round 15 additions
+
+- **`<image>` element capture (SVG 2 §6).** Inline
+  `data:image/<mime>;base64,…` URIs are base64-decoded into
+  `crate::image::ImageHref::DataUri { mime, bytes }`; external
+  `href="logo.png"` (and legacy `xlink:href`) is captured verbatim
+  into `crate::image::ImageHref::External(String)` for caller-side
+  fetching. The new typed `crate::image::SvgImage` carries
+  `(x, y, width, height, transform, id, parent_id,
+  preserve_aspect_ratio)`. Each captured image lives on the new
+  `PreservedExtras::images: Vec<SvgImage>`; the encoder re-emits
+  them at the trailing edge with a faithful round-trip (data URIs
+  re-encode from the decoded bytes; external URLs are preserved
+  as-is). `oxideav_core::Node::Image` requires a fully-decoded
+  `VideoFrame`, so round 15 deliberately keeps the raster bytes
+  opaque on the SVG side — the renderer (or a caller that owns a
+  PNG / JPEG decoder) decodes them lazily, avoiding a fan-out of
+  image-format crate dependencies into oxideav-svg.
+- **CSS `@keyframes` block capture (CSS Animations L1 §3).** Round
+  11 + 14 routed `@import` and `@font-face` to dedicated parsers
+  but silently dropped `@keyframes`. Round 15 routes
+  `@keyframes <name> { sel { ... } sel { ... } }` (and the
+  `-webkit-` prefix variant) to a dedicated parser that surfaces
+  each rule on the new `Stylesheet::keyframes: Vec<KeyframesRule>`.
+  `KeyframesRule` carries the animation name + a list of
+  `KeyframeSelector`s (each with an `offset: KeyframeOffset` —
+  `From` / `To` / `Percent(f32)` — and the declarations to apply at
+  that timeline point). Comma-separated selector lists
+  (`0%, 100% { ... }`) expand to one `KeyframeSelector` entry per
+  offset so a downstream animation engine can iterate without
+  re-parsing.
+
 ## Round 14 additions
 
 - **`<symbol>` + `<use>` viewport mapping.** Round 3 instantiated
