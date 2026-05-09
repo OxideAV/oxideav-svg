@@ -153,6 +153,48 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
+## Round 18 additions
+
+- **CSS Values L4 length-unit aware coordinate parsing** via the new
+  `crate::length` module. `Length { value, unit }` carries every CSS
+  Values L4 §6 unit (`Px`, `Em`, `Rem`, `Percent`, `Vw`, `Vh`, `Vmin`,
+  `Vmax`, `Pt`, `Cm`, `Mm`, `In`, `Pc`, `Q`, plus `UserUnit` for
+  bare-number SVG attributes). `parse_length(s)` recognises every
+  suffix (case-insensitive); `Length::resolve(ctx)` returns the px
+  value given a `ResolveContext` (current font-size, root font-size,
+  viewport dimensions, percentage basis). The legacy `parse_number`
+  path stays unchanged — bare numeric coordinates parse to
+  `LengthUnit::UserUnit` and resolve bit-for-bit identically to a raw
+  `f32::from_str`, so existing fixtures round-trip without drift.
+- **CSS Easing Functions L2 `linear()` function** —
+  `crate::keyframe::TimingFunction` gains a `LinearStops { stops }`
+  variant with the L2 §3.1 missing-input fill-in algorithm (first
+  stop → 0%, last → max(prev, 100%), monotonic-clamp on regressions,
+  linear ramp through unspecified middle inputs). `compute_progress`
+  walks the sorted stops and lerps the bracketing pair. The
+  `animation-timing-function` cascade reader now uses paren-aware
+  comma splitting so `linear(0, 0.5 25%, 1)` survives intact; the
+  bare `linear` keyword still maps to the L1 unit-variant identity.
+
+## Round 17 additions
+
+- **CSS `@supports` block parse + evaluation** per CSS Conditional
+  Rules L3 — `@supports (cond) { rules }` lands on
+  `Stylesheet::supports_rules: Vec<SupportsRule>` with a parsed
+  `SupportsCondition::{Property, Not, And, Or, Always}` enum.
+  `Stylesheet::resolve_for_supports_context(supported)` walks the
+  rules against a `HashSet<(String, String)>` of supported (property,
+  value) pairs and returns the merged cascade (symmetric to round
+  16's `@media` evaluation).
+- **CSS Animations L1 long tail** —
+  `animation-timing-function` (`linear` / `ease*` / `cubic-bezier(...)`
+  / `steps(N, start|end)` per CSS Easing Functions L1 §3 / §4),
+  multi-name `animation-name: a, b, c` evaluating each animation
+  independently with mod-indexed pairing on every other longhand list
+  (L1 §6), `animation-direction` (`normal` / `reverse` / `alternate` /
+  `alternate-reverse` per §4.4), `animation-fill-mode` (`none` /
+  `forwards` / `backwards` / `both` per §4.7).
+
 ## Round 16 additions
 
 - **CSS `@media` block parse + evaluation** per CSS Media Queries L4.

@@ -64,13 +64,19 @@
 use crate::css::{declarations_for, KeyframesRule, MatchContext, Stylesheet};
 
 /// CSS Easing function — `animation-timing-function` per CSS Easing
-/// Functions L1.
+/// Functions L1 / L2.
 ///
-/// Round 17 supports the full enum surface: linear / the four named
+/// Round 17 supports the L1 surface: linear / the four named
 /// `ease*` curves (which expand to the standard cubic-bezier control
 /// points per L1 §3.1) / explicit `cubic-bezier(x1,y1,x2,y2)` / the
 /// stepping function `steps(N, start|end)` per §4.
-#[derive(Clone, Copy, Debug, PartialEq)]
+///
+/// Round 18 adds the L2 `linear()` function (CSS Easing Functions L2
+/// §3.1) — `linear(<stop>#)` defines a piecewise-linear easing curve
+/// from explicit `(input, output)` control points. The bare `linear`
+/// keyword (identity) stays on the unit variant; the parametric form
+/// lands on [`TimingFunction::LinearStops`].
+#[derive(Clone, Debug, PartialEq)]
 pub enum TimingFunction {
     /// Identity — `output = input`.
     Linear,
@@ -81,6 +87,24 @@ pub enum TimingFunction {
     CubicBezier { x1: f32, y1: f32, x2: f32, y2: f32 },
     /// `steps(<count>, start|end)` per L1 §4.
     Steps { count: u32, position: StepPosition },
+    /// `linear(<stop>#)` per CSS Easing Functions L2 §3.1 — a
+    /// piecewise-linear curve through explicit `(input, output)`
+    /// control points. Stops are stored sorted by ascending `input`
+    /// after parsing (per L2's "monotonically non-decreasing" rule);
+    /// any unspecified `input` slots have been resolved by the parser
+    /// using the L2 §3.1 "missing input" algorithm.
+    LinearStops { stops: Vec<LinearStop> },
+}
+
+/// One control point in a CSS L2 `linear()` easing function.
+///
+/// `input` ∈ [0,1] is the timeline position; `output` is the y-value
+/// emitted at that point (typically also in [0,1] but the spec allows
+/// over- and undershoot).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LinearStop {
+    pub input: f32,
+    pub output: f32,
 }
 
 impl Default for TimingFunction {
@@ -149,14 +173,14 @@ impl TimingFunction {
     /// §4.
     pub fn compute_progress(&self, t_normalised: f32) -> f32 {
         let t = t_normalised.clamp(0.0, 1.0);
-        match *self {
+        match self {
             TimingFunction::Linear => t,
-            TimingFunction::CubicBezier { x1, y1, x2, y2 } => bezier_y_at_x(t, x1, y1, x2, y2),
+            TimingFunction::CubicBezier { x1, y1, x2, y2 } => bezier_y_at_x(t, *x1, *y1, *x2, *y2),
             TimingFunction::Steps { count, position } => {
-                if count == 0 {
+                if *count == 0 {
                     return t;
                 }
-                let n = count as f32;
+                let n = *count as f32;
                 let raw = t * n;
                 let step = match position {
                     StepPosition::Start => raw.ceil(),
@@ -164,12 +188,14 @@ impl TimingFunction {
                 };
                 (step / n).clamp(0.0, 1.0)
             }
+            TimingFunction::LinearStops { stops } => linear_stops_eval(t, stops),
         }
     }
 
-    /// Parse a CSS `<easing-function>` value per L1 §3 / §4. Returns
-    /// `None` for an empty or unrecognised input (caller falls back
-    /// to the default `ease`).
+    /// Parse a CSS `<easing-function>` value per L1 §3 / §4 plus the
+    /// L2 `linear(<stop>#)` function (§3.1). Returns `None` for an
+    /// empty or unrecognised input (caller falls back to the default
+    /// `ease`).
     pub fn parse(s: &str) -> Option<Self> {
         let t = s.trim();
         if t.is_empty() {
@@ -196,6 +222,13 @@ impl TimingFunction {
                 })
             }
             _ => {}
+        }
+        // CSS Easing L2 §3.1: `linear(<stop>#)` — parsed before the
+        // bare `linear` keyword so the function form takes precedence
+        // when arguments are present. The L1 keyword `linear` (no
+        // parens) was matched above as the unit variant.
+        if let Some(args) = strip_call(&lower, "linear") {
+            return parse_linear_stops(args).map(|stops| TimingFunction::LinearStops { stops });
         }
         // cubic-bezier(x1, y1, x2, y2)
         if let Some(args) = strip_call(&lower, "cubic-bezier") {
@@ -284,6 +317,177 @@ fn bezier_y_at_x(x: f32, x1: f32, y1: f32, x2: f32, y2: f32) -> f32 {
         s = 0.5 * (lo + hi);
     }
     by(s)
+}
+
+/// Parse the comma-separated stop list inside a CSS L2 `linear(...)`
+/// easing function per CSS Easing Functions L2 §3.1.
+///
+/// Each stop is `<number> [<percentage>]?{0,2}`:
+///   - one number → output value, input position is filled by the
+///     spec's "missing input" interpolation (linear ramp from prev
+///     specified input to next specified input);
+///   - `<number> <percentage>` → output + explicit input position;
+///   - `<number> <percentage> <percentage>` → output + two consecutive
+///     input positions (lets one stop carry both endpoints of a flat
+///     plateau in a single declaration).
+///
+/// After collection the input column is patched per the L2 algorithm:
+///   - if the first stop has no input, set to 0;
+///   - if the last stop has no input, set to max(prev input, 1);
+///   - any stop whose input would regress is bumped up to the prior
+///     input (monotonic non-decreasing per the spec);
+///   - any unspecified middle stops are linearly interpolated between
+///     the bracketing specified inputs.
+///
+/// Returns `None` if the stop list is empty or any value fails to
+/// parse — the caller falls back to the default `ease`.
+fn parse_linear_stops(args: &str) -> Option<Vec<LinearStop>> {
+    // Pre-stage representation: `(output, Option<input1>, Option<input2>)`.
+    let mut staged: Vec<(f32, Option<f32>, Option<f32>)> = Vec::new();
+    for raw in args.split(',') {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let toks: Vec<&str> = trimmed.split_ascii_whitespace().collect();
+        if toks.is_empty() {
+            continue;
+        }
+        // First token: <number> output value (no `%` allowed per L2 —
+        // outputs are unbounded numbers, not percentages).
+        let output = toks[0].parse::<f32>().ok()?;
+        let in1 = toks.get(1).and_then(|t| parse_percent_unit(t));
+        let in2 = toks.get(2).and_then(|t| parse_percent_unit(t));
+        staged.push((output, in1, in2));
+    }
+    if staged.is_empty() {
+        return None;
+    }
+    // Expand any (output, Some(in1), Some(in2)) into two separate
+    // stops with the same output but distinct inputs — they describe
+    // a flat plateau between in1 and in2 per L2 §3.1.
+    let mut expanded: Vec<(f32, Option<f32>)> = Vec::new();
+    for (out, in1, in2) in staged {
+        expanded.push((out, in1));
+        if let Some(i2) = in2 {
+            expanded.push((out, Some(i2)));
+        }
+    }
+    // L2 §3.1 missing-input fill-in algorithm.
+    if expanded[0].1.is_none() {
+        expanded[0].1 = Some(0.0);
+    }
+    let last_idx = expanded.len() - 1;
+    if expanded[last_idx].1.is_none() {
+        // L2: max of (1, last specified input) — but with our fill so
+        // far the last stop simply takes 1.0 if nothing else has been
+        // pinned above 1 in the middle.
+        let prior = expanded
+            .iter()
+            .filter_map(|(_, i)| *i)
+            .fold(0.0f32, f32::max);
+        expanded[last_idx].1 = Some(prior.max(1.0));
+    }
+    // Walk forward, monotonic-clamping every specified input to the
+    // running max, then linearly interpolating any unspecified runs.
+    let mut last_specified: f32 = expanded[0].1.unwrap();
+    let mut last_specified_idx: usize = 0;
+    expanded[0].1 = Some(last_specified);
+    let mut i = 1;
+    while i <= last_idx {
+        match expanded[i].1 {
+            Some(v) => {
+                let v = v.max(last_specified);
+                expanded[i].1 = Some(v);
+                // Fill the unspecified gap between last_specified_idx
+                // and i with a linear ramp.
+                if i - last_specified_idx > 1 {
+                    let lo = last_specified;
+                    let hi = v;
+                    let span = (i - last_specified_idx) as f32;
+                    for (offset, slot) in
+                        expanded[(last_specified_idx + 1)..i].iter_mut().enumerate()
+                    {
+                        let frac = (offset + 1) as f32 / span;
+                        slot.1 = Some(lo + (hi - lo) * frac);
+                    }
+                }
+                last_specified = v;
+                last_specified_idx = i;
+            }
+            None => {
+                // leave for the next pass — handled when we hit the
+                // next specified input or fall through to end.
+            }
+        }
+        i += 1;
+    }
+    // Build the final sorted-by-input vec.
+    Some(
+        expanded
+            .into_iter()
+            .map(|(out, inp)| LinearStop {
+                input: inp.unwrap(),
+                output: out,
+            })
+            .collect(),
+    )
+}
+
+/// Parse one input-position token from a CSS L2 `linear()` stop. The
+/// token must be a percentage (`50%`); a bare number is rejected
+/// (per L2 the input slot is exclusively `<percentage>`). Returns the
+/// fractional value (`50%` → `0.5`).
+fn parse_percent_unit(tok: &str) -> Option<f32> {
+    let stripped = tok.strip_suffix('%')?;
+    stripped.trim().parse::<f32>().ok().map(|v| v / 100.0)
+}
+
+/// Evaluate the L2 `linear()` easing curve at `t` given the parsed
+/// stops vector (already monotonic-cleaned by [`parse_linear_stops`]).
+///
+/// Behaviour at the boundaries follows the L2 spec:
+///   - `t <= first.input` returns `first.output`;
+///   - `t >= last.input`  returns `last.output`;
+///   - inside a segment the output is the linear interpolant of the
+///     bracketing two stops.
+///
+/// Two stops with the same `input` define an instantaneous step in
+/// the output column — the second stop wins for any `t` exactly at
+/// the boundary (this matches how flat plateaus + step-like
+/// transitions compose in L2's worked examples).
+fn linear_stops_eval(t: f32, stops: &[LinearStop]) -> f32 {
+    if stops.is_empty() {
+        return t;
+    }
+    if stops.len() == 1 {
+        return stops[0].output;
+    }
+    if t <= stops[0].input {
+        return stops[0].output;
+    }
+    let last = stops.last().unwrap();
+    if t >= last.input {
+        return last.output;
+    }
+    // Find the segment that brackets t. Iterate in reverse so a
+    // duplicate-input (instantaneous step) resolves to the right-hand
+    // value when t equals the shared input exactly.
+    for w in stops.windows(2).rev() {
+        let a = &w[0];
+        let b = &w[1];
+        if t >= a.input && t <= b.input {
+            let span = b.input - a.input;
+            if span <= 0.0 {
+                return b.output;
+            }
+            let frac = (t - a.input) / span;
+            return a.output + (b.output - a.output) * frac;
+        }
+    }
+    // Unreachable given the boundary clamps above, but keep a safe
+    // identity fall-through.
+    t
 }
 
 /// `animation-direction` per CSS Animations L1 §4.4.
@@ -382,10 +586,14 @@ pub fn evaluate_at(
     let iters: Vec<f32> = split_csv_f(find_decl(&decls, "animation-iteration-count"), |s| {
         Some(parse_iter_count_str(s))
     });
+    // Timing-function values can themselves contain commas (inside
+    // `cubic-bezier(0, .5, .3, 1)` / `steps(4, end)` / round-18's
+    // `linear(0, 0.5 25%, 1)`), so we split paren-aware — top-level
+    // commas only, ignoring any inside `(...)` runs.
     let timings: Vec<TimingFunction> =
-        split_csv(find_decl(&decls, "animation-timing-function").unwrap_or(""))
+        split_csv_paren_aware(find_decl(&decls, "animation-timing-function").unwrap_or(""))
             .into_iter()
-            .filter_map(TimingFunction::parse)
+            .filter_map(|s| TimingFunction::parse(&s))
             .collect();
     let directions: Vec<AnimationDirection> =
         split_csv(find_decl(&decls, "animation-direction").unwrap_or(""))
@@ -542,11 +750,11 @@ fn pick_or<T: Copy>(v: &[T], idx: usize, default: T) -> T {
     }
 }
 
-fn pick_or_default<T: Copy + Default>(v: &[T], idx: usize) -> T {
+fn pick_or_default<T: Clone + Default>(v: &[T], idx: usize) -> T {
     if v.is_empty() {
         T::default()
     } else {
-        v[idx % v.len()]
+        v[idx % v.len()].clone()
     }
 }
 
@@ -555,6 +763,44 @@ fn split_csv(s: &str) -> Vec<&str> {
         .map(|p| p.trim())
         .filter(|p| !p.is_empty())
         .collect()
+}
+
+/// Comma-split that respects parenthesis nesting — used for
+/// `animation-timing-function` lists where each entry can itself
+/// contain top-level commas inside `cubic-bezier(...)` / `steps(...)`
+/// / `linear(...)`. Returns owned strings so the caller can pass each
+/// fragment into a parser that takes `&str`.
+fn split_csv_paren_aware(s: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut depth: i32 = 0;
+    let mut current = String::new();
+    for c in s.chars() {
+        match c {
+            '(' => {
+                depth += 1;
+                current.push(c);
+            }
+            ')' => {
+                if depth > 0 {
+                    depth -= 1;
+                }
+                current.push(c);
+            }
+            ',' if depth == 0 => {
+                let trimmed = current.trim().to_string();
+                if !trimmed.is_empty() {
+                    out.push(trimmed);
+                }
+                current.clear();
+            }
+            _ => current.push(c),
+        }
+    }
+    let trimmed = current.trim().to_string();
+    if !trimmed.is_empty() {
+        out.push(trimmed);
+    }
+    out
 }
 
 fn split_csv_f<T, F>(s: Option<&str>, f: F) -> Vec<T>
@@ -1370,6 +1616,134 @@ mod tests {
             (v125 - (360.0 - v25)).abs() < 5.0,
             "alternate iter1 mirror, got {v125} vs expected {}",
             360.0 - v25
+        );
+    }
+
+    // ----- Round 18: CSS Easing L2 `linear()` function
+
+    #[test]
+    fn linear_keyword_still_returns_unit_variant() {
+        // Bare `linear` (no parens) keeps the L1 unit-variant identity
+        // mapping — the L2 function form requires arguments.
+        assert_eq!(
+            TimingFunction::parse("linear"),
+            Some(TimingFunction::Linear)
+        );
+    }
+
+    #[test]
+    fn linear_fn_two_outputs_fills_endpoints() {
+        // `linear(0, 1)` is the identity mapping with explicit
+        // endpoints (input 0% → output 0, input 100% → output 1).
+        let tf = TimingFunction::parse("linear(0, 1)").unwrap();
+        match &tf {
+            TimingFunction::LinearStops { stops } => {
+                assert_eq!(stops.len(), 2);
+                assert!((stops[0].input - 0.0).abs() < 1e-6);
+                assert!((stops[0].output - 0.0).abs() < 1e-6);
+                assert!((stops[1].input - 1.0).abs() < 1e-6);
+                assert!((stops[1].output - 1.0).abs() < 1e-6);
+            }
+            _ => panic!("expected LinearStops, got {tf:?}"),
+        }
+        // Identity at t=0.5 → 0.5.
+        assert!((tf.compute_progress(0.5) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn linear_fn_explicit_input_at_midpoint() {
+        // `linear(0, 0.5 25%, 1)` per the round-18 dispatch spec.
+        // Stops: (0%, 0), (25%, 0.5), (100%, 1).
+        let tf = TimingFunction::parse("linear(0, 0.5 25%, 1)").unwrap();
+        // At t=0 → 0; at t=0.25 → 0.5; at t=1 → 1.
+        assert!((tf.compute_progress(0.0)).abs() < 1e-6);
+        assert!((tf.compute_progress(0.25) - 0.5).abs() < 1e-6);
+        assert!((tf.compute_progress(1.0) - 1.0).abs() < 1e-6);
+        // Midpoint t=0.5 lies in the second segment (0.25 → 1.0).
+        // Lerp-frac = (0.5 - 0.25) / (1.0 - 0.25) = 1/3.
+        // Output = 0.5 + (1.0 - 0.5) * (1/3) = 0.5 + 1/6 ≈ 0.6667.
+        let mid = tf.compute_progress(0.5);
+        assert!(
+            (mid - (0.5 + 1.0 / 6.0)).abs() < 1e-4,
+            "linear() midpoint expected ~0.667, got {mid}"
+        );
+    }
+
+    #[test]
+    fn linear_fn_two_input_positions_define_plateau() {
+        // `linear(0, 0.5 25% 75%, 1)` describes a curve that stays
+        // at output 0.5 for the entire range [25%, 75%]. This is the
+        // L2 §3.1 "two-percentage" expansion — one stop carrying both
+        // ends of a flat segment.
+        let tf = TimingFunction::parse("linear(0, 0.5 25% 75%, 1)").unwrap();
+        // Plateau region: any t in [0.25, 0.75] → 0.5.
+        assert!((tf.compute_progress(0.25) - 0.5).abs() < 1e-6);
+        assert!((tf.compute_progress(0.5) - 0.5).abs() < 1e-6);
+        assert!((tf.compute_progress(0.75) - 0.5).abs() < 1e-6);
+        // After the plateau, ramp up to 1.0 over [0.75, 1.0].
+        // Midpoint of that ramp (t=0.875) → 0.75.
+        let v = tf.compute_progress(0.875);
+        assert!(
+            (v - 0.75).abs() < 1e-4,
+            "post-plateau ramp midpoint expected 0.75, got {v}"
+        );
+    }
+
+    #[test]
+    fn linear_fn_overshoot_outputs_allowed() {
+        // L2 §3.1 — output values are not clamped (allows over- and
+        // undershoot for the bounce / spring approximations the
+        // function exists to support).
+        let tf = TimingFunction::parse("linear(0, 1.5 50%, 1)").unwrap();
+        let v = tf.compute_progress(0.5);
+        assert!((v - 1.5).abs() < 1e-6, "overshoot midpoint, got {v}");
+    }
+
+    #[test]
+    fn linear_fn_monotonic_clamp_pulls_inputs_forward() {
+        // L2 §3.1 — explicitly out-of-order inputs are clamped to the
+        // running maximum (the curve is monotonic non-decreasing in
+        // input). `linear(0, 0.4 50%, 0.6 25%, 1)` → second specified
+        // input 25% is below the prior 50%, so it's bumped to 50%.
+        let tf = TimingFunction::parse("linear(0, 0.4 50%, 0.6 25%, 1)").unwrap();
+        match &tf {
+            TimingFunction::LinearStops { stops } => {
+                assert_eq!(stops.len(), 4);
+                assert!((stops[1].input - 0.5).abs() < 1e-6);
+                // The clamped third stop's input also lands at 0.5
+                // (a discontinuity from output 0.4 → 0.6 at t=0.5).
+                assert!((stops[2].input - 0.5).abs() < 1e-6);
+                assert!((stops[2].output - 0.6).abs() < 1e-6);
+            }
+            _ => panic!("expected LinearStops, got {tf:?}"),
+        }
+    }
+
+    #[test]
+    fn linear_fn_drives_animation_progress_at_t() {
+        // End-to-end — wire `linear(0, 0.5 25%, 1)` through an
+        // `animation-timing-function` and verify the keyframe
+        // interpolator pulls the right opacity at runtime.
+        let mut s = Stylesheet::new();
+        s.parse_block(
+            r#"
+            @keyframes fade { from { opacity: 0 } to { opacity: 1 } }
+            "#,
+        );
+        let el = elem(
+            "g",
+            &[(
+                "style",
+                "animation-name: fade; animation-duration: 1s; animation-timing-function: linear(0, 0.5 25%, 1)",
+            )],
+        );
+        let mctx = MatchContext::root(&el);
+        // At t=0.25s the eased progress is 0.5 → opacity 0.5.
+        let snap = evaluate_at(&mctx, &s, 0.25);
+        let val: f32 = snap[0].1.parse().unwrap();
+        assert!(
+            (val - 0.5).abs() < 1e-3,
+            "linear() at t=0.25 expected opacity 0.5, got {val}"
         );
     }
 }

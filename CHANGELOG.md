@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 18** — CSS Values L4 length-unit aware coordinate parsing
+  + CSS Easing Functions L2 `linear()` function.
+  - **`crate::length` module** (new) — typed `Length { value, unit }`
+    + `LengthUnit` enum covering every CSS Values L4 §6 unit
+    (`UserUnit`, `Px`, `Em`, `Rem`, `Percent`, `Vw`, `Vh`, `Vmin`,
+    `Vmax`, `Pt`, `Cm`, `Mm`, `In`, `Pc`, `Q`). `parse_length(s)`
+    recognises every suffix (case-insensitive); `Length::resolve(ctx)`
+    returns the px value given a `ResolveContext` (current font-size,
+    root font-size, viewport dimensions, percentage basis). Existing
+    bare-number coordinates (`<rect x="100">`) parse to
+    `LengthUnit::UserUnit` and resolve bit-for-bit identically to the
+    legacy `parse_number` path — no fixture round-trip drift.
+  - **CSS Easing L2 `linear()`** — `crate::keyframe::TimingFunction`
+    gains a `LinearStops { stops: Vec<LinearStop> }` variant. Parses
+    `linear(<stop>#)` per L2 §3.1 — each stop is `<number>
+    [<percentage>]?{0,2}` with the missing-input fill-in algorithm
+    (first stop → 0%, last → max(prev, 100%), middle → linear ramp,
+    monotonic-clamp on regressions). `compute_progress(t)` walks the
+    sorted stops and lerps the bracketing pair. `animation-timing-
+    function` parsing now uses paren-aware comma-splitting so
+    `linear(0, 0.5 25%, 1)` survives the CSS cascade unscathed; the
+    bare `linear` keyword still maps to the L1 unit-variant identity.
+
 - **Round 17** — CSS `@supports` block parse + evaluation per CSS
   Conditional Rules L3, plus CSS Animations L1 long tail
   (`animation-timing-function`, multi-name `animation-name`,

@@ -400,8 +400,13 @@
 //!   deferred to keep the round in-crate.
 //! * Live evaluation of pseudo-elements (`::before` / `::after`) into
 //!   synthesised boxes — also a renderer-side concern (oxideav-raster).
-//! * Length-unit aware coordinates (CSS Values L4 — `em`, `%`, `vw`,
-//!   `vh`, etc. fold to user units today).
+//!
+//! Round 18 closed the CSS Values L4 length-unit gap (see
+//! [`crate::length`] — every CSS unit suffix now parses to a typed
+//! [`Length`](crate::length::Length) and resolves to user units via
+//! [`Length::resolve`](crate::length::Length::resolve)) and added
+//! the CSS Easing L2 `linear()` function to
+//! [`TimingFunction`](crate::keyframe::TimingFunction).
 
 pub mod animation;
 pub mod color;
@@ -414,6 +419,7 @@ pub mod encoder;
 pub mod filter;
 pub mod image;
 pub mod keyframe;
+pub mod length;
 pub mod parser;
 pub mod path_data;
 pub mod preserved;
