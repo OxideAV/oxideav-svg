@@ -119,6 +119,14 @@ fn collect_extras(el: &Element, extras: &mut PreservedExtras, current_id: Option
             // preserves it. The decoder NEVER executes the body.
             extras.scripts.push(el.clone());
         }
+        "image" => {
+            // Round 15: capture <image> with parsed href (inline data
+            // URI decoded, external URL captured) + dimensions. The
+            // encoder re-emits each on round-trip.
+            if let Some(img) = crate::image::SvgImage::from_element(el, current_id) {
+                extras.images.push(img);
+            }
+        }
         _ => {}
     }
     for child in &el.children {

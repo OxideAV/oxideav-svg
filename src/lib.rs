@@ -293,7 +293,35 @@
 //!   iterate the list and register the user-supplied fonts before
 //!   the cascade matches a `font-family: ...` declaration.
 //!
-//! # Deferred to round 15+
+//! # Round 15 additions
+//!
+//! * **`<image>` element capture (SVG 2 §6).** Inline
+//!   `data:image/<mime>;base64,…` URIs are base64-decoded into
+//!   [`crate::image::ImageHref::DataUri`] (raw bytes + MIME); external
+//!   URLs (`href="logo.png"`) are captured verbatim into
+//!   [`crate::image::ImageHref::External`] for caller-side fetching.
+//!   `x` / `y` / `width` / `height` / `transform` /
+//!   `preserveAspectRatio` are recorded on the typed
+//!   [`crate::image::SvgImage`]. Each captured image lives on
+//!   [`crate::preserved::PreservedExtras::images`]; the encoder
+//!   re-emits them at the trailing edge with a faithful round-trip
+//!   (data URIs re-encode from the decoded bytes; external URLs are
+//!   preserved as-is). `oxideav_core::Node::Image` requires a
+//!   fully-decoded `VideoFrame`, so round 15 deliberately keeps the
+//!   raster bytes opaque on the SVG side — the renderer (or a caller
+//!   that owns a PNG / JPEG decoder) decodes them lazily.
+//! * **CSS `@keyframes` capture (CSS Animations L1).** The
+//!   round-11/14 at-rule branch silently dropped `@keyframes`; round
+//!   15 routes them to a dedicated parser. Each rule lands on
+//!   [`crate::css::Stylesheet::keyframes`] as a typed
+//!   [`crate::css::KeyframesRule`] carrying the animation name + a
+//!   list of [`crate::css::KeyframeSelector`]s (each one has an
+//!   `offset` — `from` / `to` / `<percent>%` per §3 — plus the
+//!   declarations to apply at that timeline point). A downstream
+//!   animation engine (or the rasteriser's own SMIL-via-`@keyframes`
+//!   bridge) can iterate the list without re-parsing the source.
+//!
+//! # Deferred to round 16+
 //!
 //! * Actual filter-primitive rasterisation (the typed graph is
 //!   pre-rasteriser plumbing; pixel evaluation is oxideav-raster work).
@@ -302,9 +330,10 @@
 //! * `<text>` `textPath` (SVG 2 §11.3) — text-on-path layout via the
 //!   existing `oxideav-scribe` shaping path; touches scribe so
 //!   deferred from round 14 to keep the round in-crate.
-//! * `<image>` element with embedded data URIs / external href.
 //! * Live evaluation of pseudo-elements (`::before` / `::after`) into
 //!   synthesised boxes — also a renderer-side concern (oxideav-raster).
+//! * CSS `@media` block honoured (currently the entire block is
+//!   skipped; round 16 candidate alongside `@supports`).
 
 pub mod animation;
 pub mod color;
@@ -315,6 +344,7 @@ pub mod defs;
 pub mod element;
 pub mod encoder;
 pub mod filter;
+pub mod image;
 pub mod parser;
 pub mod path_data;
 pub mod preserved;

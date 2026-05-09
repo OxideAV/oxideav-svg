@@ -37,6 +37,10 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 # when an `@import` is skipped (fetcher returned None / cycle / depth
 # cap reached). The crate is otherwise silent.
 log = "0.4"
+# Round 15: `<image>` element with embedded `data:image/...;base64,...`
+# URI decoding. `STANDARD` engine implements RFC 4648 §4 — no padding
+# tolerance is acceptable for the data-URI subset.
+base64 = { version = "0.22", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 # Needed in `round3_svgz` to gzip a fixture by hand and assert the

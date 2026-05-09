@@ -161,6 +161,13 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
     for script in &extras.scripts {
         write_script_element(&mut out, script, 1);
     }
+    // Round-15: re-emit captured <image> elements. Each image carries
+    // its href verbatim (data URI re-encoded from the decoded bytes
+    // for inline; URL preserved for external) plus x/y/width/height
+    // and an optional transform.
+    for img in &extras.images {
+        img.write_to(&mut out, "  ");
+    }
     // Round 13: animations whose parent_id was tracked in
     // `extras.id_paths` are inlined inside the matching scene-graph
     // emit site by `write_node`. Anything that didn't match (no

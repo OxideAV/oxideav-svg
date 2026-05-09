@@ -655,6 +655,68 @@ pub struct Stylesheet {
     /// Loading the actual font bytes is left to the caller; the
     /// parser only collects the descriptors.
     pub font_faces: Vec<FontFace>,
+    /// **Round 15** — every `@keyframes <name> { ... }` block per CSS
+    /// Animations L1 §3. Captured in source order so a downstream
+    /// animation engine (or the rasteriser's own SMIL-via-`@keyframes`
+    /// bridge) can iterate the rules without re-parsing the source.
+    /// Loading these into a real animation timeline is left to the
+    /// caller; the parser only collects the structure.
+    pub keyframes: Vec<KeyframesRule>,
+}
+
+/// One captured `@keyframes <name> { ... }` block per CSS Animations
+/// L1 §3.
+///
+/// Each rule has a name (the animation identifier referenced by an
+/// `animation-name:` declaration) and a list of selectors; each
+/// selector pairs an offset on the animation timeline with the CSS
+/// declarations to apply at that point.
+#[derive(Clone, Debug, Default)]
+pub struct KeyframesRule {
+    /// Animation name — the identifier after `@keyframes`. Quotes (a
+    /// CSS Animations L1 alternate syntax) are stripped.
+    pub name: String,
+    /// Per-offset declaration blocks, in source order.
+    pub selectors: Vec<KeyframeSelector>,
+}
+
+/// One keyframe selector inside an `@keyframes` block.
+///
+/// Per CSS Animations L1 §3.1, a keyframe selector is one of `from`
+/// (= `0%`), `to` (= `100%`), or a percentage. Multiple comma-
+/// separated offsets are supported; we expand them into one selector
+/// per offset so each entry has exactly one [`KeyframeOffset`].
+#[derive(Clone, Debug)]
+pub struct KeyframeSelector {
+    /// Animation timeline position for this keyframe.
+    pub offset: KeyframeOffset,
+    /// CSS declarations to apply at this offset.
+    pub declarations: Vec<(String, String)>,
+}
+
+/// Animation timeline position for a [`KeyframeSelector`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum KeyframeOffset {
+    /// `from` keyword (= `0%`).
+    From,
+    /// `to` keyword (= `100%`).
+    To,
+    /// Explicit percentage in the closed interval `[0, 100]` (per
+    /// §3.1; out-of-range offsets are still kept verbatim — the
+    /// downstream animator decides how to handle them).
+    Percent(f32),
+}
+
+impl KeyframeOffset {
+    /// Convert to a normalised `[0.0, 1.0]` value for sorting /
+    /// timeline interpolation.
+    pub fn as_normalised(&self) -> f32 {
+        match self {
+            KeyframeOffset::From => 0.0,
+            KeyframeOffset::To => 1.0,
+            KeyframeOffset::Percent(p) => p / 100.0,
+        }
+    }
 }
 
 /// One captured `@font-face { ... }` block per CSS Fonts L3 §4.
@@ -768,8 +830,10 @@ impl Stylesheet {
                     i += 1;
                 }
                 if had_block {
-                    // Block-style @-rule. Route `@font-face` to the
-                    // dedicated parser; skip everything else.
+                    // Block-style @-rule. Route `@font-face` and
+                    // `@keyframes` to dedicated parsers; skip
+                    // everything else (including `@media` /
+                    // `@supports` — round 16 candidates).
                     let prelude_end = block_body_start.saturating_sub(1).min(stripped.len());
                     let prelude = stripped[at_start..prelude_end].trim();
                     let name = prelude
@@ -780,6 +844,13 @@ impl Stylesheet {
                         let body = &stripped[block_body_start..block_body_end];
                         if let Some(face) = parse_at_font_face(body) {
                             self.font_faces.push(face);
+                        }
+                    } else if name.eq_ignore_ascii_case("keyframes")
+                        || name.eq_ignore_ascii_case("-webkit-keyframes")
+                    {
+                        let body = &stripped[block_body_start..block_body_end];
+                        if let Some(rule) = parse_at_keyframes(prelude, body) {
+                            self.keyframes.push(rule);
                         }
                     }
                 } else {
@@ -1582,6 +1653,117 @@ fn parse_font_src_entry(s: &str) -> FontSource {
         }
     }
     FontSource::default()
+}
+
+/// Round 15 — parse one `@keyframes <name> { sel { props } sel { props } }`
+/// block. `prelude` is the text from the leading `@` up to (but not
+/// including) the opening brace; `body` is the text between the
+/// outer braces.
+///
+/// Per CSS Animations L1 §3:
+///
+/// - The animation name (after `@keyframes`) may be a quoted string
+///   or an identifier; quotes are stripped.
+/// - Each inner rule has a comma-separated selector list of
+///   `from | to | <percent>%` offsets followed by a `{ ... }` block
+///   of declarations.
+/// - Multiple offsets in the same selector list expand to one
+///   [`KeyframeSelector`] per offset (each carrying the same
+///   declarations) so downstream code can iterate without re-parsing.
+///
+/// Returns `None` only when the rule has no recognisable name +
+/// selectors (matches the rest of the parser's tolerance — a
+/// malformed rule shouldn't kill the whole stylesheet).
+fn parse_at_keyframes(prelude: &str, body: &str) -> Option<KeyframesRule> {
+    // Prelude: `@keyframes <name>` (or `@-webkit-keyframes <name>`).
+    // Strip the leading `@<keyword>` and then take whatever's left
+    // as the animation name.
+    let after_at = prelude.trim().strip_prefix('@')?;
+    let mut iter = after_at.splitn(2, char::is_whitespace);
+    let _keyword = iter.next()?;
+    let name_raw = iter.next().unwrap_or("").trim();
+    if name_raw.is_empty() {
+        return None;
+    }
+    let name = unquote(name_raw).trim().to_string();
+    if name.is_empty() {
+        return None;
+    }
+
+    // Body: a sequence of `selector_list { declarations }` pairs.
+    // No nested at-rules (CSS Animations L1 disallows them in
+    // `@keyframes`), but `{` can still appear inside a `content:
+    // "..."` declaration so we honour string boundaries.
+    let mut selectors: Vec<KeyframeSelector> = Vec::new();
+    let bytes = body.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        // Skip leading whitespace.
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            break;
+        }
+        // Read up to the next `{` (selector list).
+        let sel_start = i;
+        while i < bytes.len() && bytes[i] != b'{' {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            break;
+        }
+        let sel_text = body[sel_start..i].trim();
+        i += 1; // skip `{`
+        let body_start = i;
+        while i < bytes.len() && bytes[i] != b'}' {
+            i += 1;
+        }
+        let body_end = i.min(bytes.len());
+        let inner = &body[body_start..body_end];
+        if i < bytes.len() {
+            i += 1; // skip `}`
+        }
+        if sel_text.is_empty() {
+            continue;
+        }
+        let decls = parse_declarations(inner);
+        // Expand comma-separated offsets — one selector entry per
+        // offset, each carrying a clone of the declarations.
+        for piece in sel_text.split(',') {
+            let p = piece.trim();
+            if p.is_empty() {
+                continue;
+            }
+            if let Some(offset) = parse_keyframe_offset(p) {
+                selectors.push(KeyframeSelector {
+                    offset,
+                    declarations: decls.clone(),
+                });
+            }
+        }
+    }
+
+    if selectors.is_empty() {
+        // No usable keyframes — drop the rule rather than emitting an
+        // empty entry.
+        return None;
+    }
+    Some(KeyframesRule { name, selectors })
+}
+
+/// Parse one keyframe offset — `from`, `to`, or `<percent>%`.
+fn parse_keyframe_offset(s: &str) -> Option<KeyframeOffset> {
+    let t = s.trim();
+    if t.eq_ignore_ascii_case("from") {
+        return Some(KeyframeOffset::From);
+    }
+    if t.eq_ignore_ascii_case("to") {
+        return Some(KeyframeOffset::To);
+    }
+    let stripped = t.strip_suffix('%')?;
+    let n: f32 = stripped.trim().parse().ok()?;
+    Some(KeyframeOffset::Percent(n))
 }
 
 /// If `s` starts with `name(`, return `(arg, tail)` where `arg` is

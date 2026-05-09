@@ -22,6 +22,7 @@
 //! back into the output document so the rasterised representation +
 //! the dynamic definitions both survive.
 
+use crate::image::SvgImage;
 use crate::parser::Element;
 
 /// Side-channel buffer of source-XML fragments the encoder needs to
@@ -91,6 +92,20 @@ pub struct PreservedExtras {
     /// Built only by [`crate::decoder::parse_svg_with_extras`]. Empty
     /// for documents that have no id-bearing elements.
     pub id_paths: Vec<IdScenePath>,
+    /// Round 15 — `<image>` elements captured from the source SVG.
+    ///
+    /// Each entry holds the parsed [`SvgImage`] view (decoded inline
+    /// data URIs, external URLs verbatim, x/y/width/height,
+    /// transform). The encoder re-emits each image as an `<image>`
+    /// element at the trailing edge of the document, preserving the
+    /// data URI / external URL and dimensions for round-trip.
+    ///
+    /// `oxideav_core::Node::Image` requires a fully-decoded
+    /// `VideoFrame`; round 15 deliberately avoids pulling
+    /// oxideav-png / oxideav-jpeg / oxideav-webp into the SVG crate's
+    /// dep tree by carrying the raster payload as opaque bytes here
+    /// for downstream renderer-side decoding.
+    pub images: Vec<SvgImage>,
 }
 
 /// One captured animation child of a known-id parent element.
@@ -133,5 +148,6 @@ impl PreservedExtras {
             && self.scripts.is_empty()
             && self.root_preserve_aspect_ratio.is_none()
             && self.id_paths.is_empty()
+            && self.images.is_empty()
     }
 }
