@@ -19,6 +19,7 @@ use oxideav_core::{
 use crate::color::{parse_opacity, parse_paint, PaintValue};
 use crate::css::{declarations_for, MatchContext, Stylesheet};
 use crate::defs::{parse_url_ref, ClipPathDef, DefsTables, FilterDef, MaskDef, SymbolDef};
+use crate::length::{parse_length, LengthAxis, ResolveContext};
 use crate::parser::{attr, tag_local, Element, Node as XmlNode};
 use crate::path_data::parse_path_data;
 use crate::preserved::IdScenePath;
@@ -256,6 +257,16 @@ pub struct ParseContext {
     /// is a no-op. Avoids spending allocations + clones on the
     /// non-extras parse paths that don't need the mapping.
     pub track_id_paths: bool,
+    /// Round 19 — current CSS Values L4 / SVG 2 §10 length-resolution
+    /// context. Carries the bracketing viewport width/height (for
+    /// `vw` / `vh` / `vmin` / `vmax`) and the per-element font-size
+    /// cascade (for `em` / `rem`). Updated as the tree walk descends:
+    /// any element that sets `font-size` (via attr or CSS) pushes a
+    /// new context for its descendants. Bare-numeric coordinate
+    /// values (`<rect x="100">`) round-trip bit-for-bit identical to
+    /// the legacy [`parse_number`] path because [`crate::length::Length::resolve`]
+    /// is the identity for [`crate::length::LengthUnit::UserUnit`].
+    pub resolve_ctx: ResolveContext,
 }
 
 impl Default for ParseContext {
@@ -275,7 +286,16 @@ impl ParseContext {
             current_path: Vec::new(),
             id_paths: Vec::new(),
             track_id_paths: false,
+            resolve_ctx: ResolveContext::default(),
         }
+    }
+
+    /// Round 19 — bind the root [`ResolveContext`]. Used by
+    /// [`crate::decoder::parse_svg_at`] to seed the viewport
+    /// dimensions / root font-size before the tree walk starts.
+    pub fn with_resolve_ctx(mut self, ctx: ResolveContext) -> Self {
+        self.resolve_ctx = ctx;
+        self
     }
 
     /// Set the animation evaluation time (in seconds). Builder-style.
@@ -422,19 +442,26 @@ fn collect_stops(parent: &Element) -> Result<Vec<GradientStop>> {
 }
 
 /// Parse a `<rect>`. Returns `None` for degenerate (zero-size) rects.
-pub fn parse_rect(el: &Element) -> Result<Option<Path>> {
-    let x = parse_number(attr(el, "x"), 0.0)?;
-    let y = parse_number(attr(el, "y"), 0.0)?;
-    let w = parse_number(attr(el, "width"), 0.0)?;
-    let h = parse_number(attr(el, "height"), 0.0)?;
+///
+/// Round 19 — coordinate values resolve via the supplied
+/// [`ResolveContext`]. Bare-numeric inputs round-trip bit-for-bit
+/// identical to the round-1 [`parse_number`] path; unit-suffixed
+/// inputs (`<rect x="1em" width="50%">`) resolve per CSS Values L4 §6
+/// against the per-axis basis (X for `x` / `width` / `rx`, Y for `y`
+/// / `height` / `ry`).
+pub fn parse_rect(el: &Element, ctx: &ResolveContext) -> Result<Option<Path>> {
+    let x = parse_length_attr(attr(el, "x"), 0.0, LengthAxis::X, ctx)?;
+    let y = parse_length_attr(attr(el, "y"), 0.0, LengthAxis::Y, ctx)?;
+    let w = parse_length_attr(attr(el, "width"), 0.0, LengthAxis::X, ctx)?;
+    let h = parse_length_attr(attr(el, "height"), 0.0, LengthAxis::Y, ctx)?;
     if w <= 0.0 || h <= 0.0 {
         return Ok(None);
     }
     let rx_attr = attr(el, "rx")
-        .map(|v| parse_number(Some(v), 0.0))
+        .map(|v| parse_length_attr(Some(v), 0.0, LengthAxis::X, ctx))
         .transpose()?;
     let ry_attr = attr(el, "ry")
-        .map(|v| parse_number(Some(v), 0.0))
+        .map(|v| parse_length_attr(Some(v), 0.0, LengthAxis::Y, ctx))
         .transpose()?;
     // Per §9.2: if only one of rx/ry is given, the other defaults to it.
     let (rx, ry) = match (rx_attr, ry_attr) {
@@ -498,10 +525,13 @@ pub fn parse_rect(el: &Element) -> Result<Option<Path>> {
 }
 
 /// Parse a `<circle>`. Returns `None` for r ≤ 0.
-pub fn parse_circle(el: &Element) -> Result<Option<Path>> {
-    let cx = parse_number(attr(el, "cx"), 0.0)?;
-    let cy = parse_number(attr(el, "cy"), 0.0)?;
-    let r = parse_number(attr(el, "r"), 0.0)?;
+///
+/// Round 19 — `r` is an SVG 2 §10 "diagonal" length-percentage (it
+/// resolves against `sqrt(w² + h²) / sqrt(2)` per §7.10).
+pub fn parse_circle(el: &Element, ctx: &ResolveContext) -> Result<Option<Path>> {
+    let cx = parse_length_attr(attr(el, "cx"), 0.0, LengthAxis::X, ctx)?;
+    let cy = parse_length_attr(attr(el, "cy"), 0.0, LengthAxis::Y, ctx)?;
+    let r = parse_length_attr(attr(el, "r"), 0.0, LengthAxis::Diagonal, ctx)?;
     if r <= 0.0 {
         return Ok(None);
     }
@@ -509,11 +539,11 @@ pub fn parse_circle(el: &Element) -> Result<Option<Path>> {
 }
 
 /// Parse an `<ellipse>`. Returns `None` for rx ≤ 0 or ry ≤ 0.
-pub fn parse_ellipse(el: &Element) -> Result<Option<Path>> {
-    let cx = parse_number(attr(el, "cx"), 0.0)?;
-    let cy = parse_number(attr(el, "cy"), 0.0)?;
-    let rx = parse_number(attr(el, "rx"), 0.0)?;
-    let ry = parse_number(attr(el, "ry"), 0.0)?;
+pub fn parse_ellipse(el: &Element, ctx: &ResolveContext) -> Result<Option<Path>> {
+    let cx = parse_length_attr(attr(el, "cx"), 0.0, LengthAxis::X, ctx)?;
+    let cy = parse_length_attr(attr(el, "cy"), 0.0, LengthAxis::Y, ctx)?;
+    let rx = parse_length_attr(attr(el, "rx"), 0.0, LengthAxis::X, ctx)?;
+    let ry = parse_length_attr(attr(el, "ry"), 0.0, LengthAxis::Y, ctx)?;
     if rx <= 0.0 || ry <= 0.0 {
         return Ok(None);
     }
@@ -546,11 +576,11 @@ fn ellipse_path(cx: f32, cy: f32, rx: f32, ry: f32) -> Path {
 }
 
 /// Parse a `<line>`.
-pub fn parse_line(el: &Element) -> Result<Path> {
-    let x1 = parse_number(attr(el, "x1"), 0.0)?;
-    let y1 = parse_number(attr(el, "y1"), 0.0)?;
-    let x2 = parse_number(attr(el, "x2"), 0.0)?;
-    let y2 = parse_number(attr(el, "y2"), 0.0)?;
+pub fn parse_line(el: &Element, ctx: &ResolveContext) -> Result<Path> {
+    let x1 = parse_length_attr(attr(el, "x1"), 0.0, LengthAxis::X, ctx)?;
+    let y1 = parse_length_attr(attr(el, "y1"), 0.0, LengthAxis::Y, ctx)?;
+    let x2 = parse_length_attr(attr(el, "x2"), 0.0, LengthAxis::X, ctx)?;
+    let y2 = parse_length_attr(attr(el, "y2"), 0.0, LengthAxis::Y, ctx)?;
     let mut path = Path::new();
     path.move_to(Point::new(x1, y1));
     path.line_to(Point::new(x2, y2));
@@ -757,6 +787,12 @@ pub fn parse_element_to_node_ctx(
     let node_opt = match local.as_str() {
         "g" => {
             let state = parent_state.merged_with_mctx(mctx, &ctx.stylesheet)?;
+            // Round 19 — push the `<g>`'s `font-size` cascade into a
+            // child resolve context so descendants resolve `em` /
+            // `rem` against the group's font-size, not the outer
+            // viewport's. Restored after this branch returns.
+            let saved_ctx = ctx.resolve_ctx;
+            ctx.resolve_ctx = derive_child_ctx(el, mctx, &ctx.stylesheet, &saved_ctx);
             let transform = match attr(el, "transform") {
                 Some(v) => parse_transform(v)?,
                 None => Transform2D::identity(),
@@ -792,6 +828,9 @@ pub fn parse_element_to_node_ctx(
                     child_idx += 1;
                 }
             }
+            // Restore the parent's resolve context — em-cascade is
+            // strictly per-subtree.
+            ctx.resolve_ctx = saved_ctx;
             Some(Node::Group(group))
         }
         "defs" => {
@@ -835,11 +874,16 @@ pub fn parse_element_to_node_ctx(
         "use" => parse_use_element(el, parent_state, ctx, mctx)?,
         "rect" | "circle" | "ellipse" | "line" | "polyline" | "polygon" | "path" => {
             let state = parent_state.merged_with_mctx(mctx, &ctx.stylesheet)?;
+            // Round 19 — derive the per-element resolve context: any
+            // `font-size: …` cascade on this shape applies to its own
+            // `em`/`rem` resolution. The viewport / root font-size /
+            // viewport axes inherit from the parent unchanged.
+            let elem_ctx = derive_child_ctx(el, mctx, &ctx.stylesheet, &ctx.resolve_ctx);
             let path_opt = match local.as_str() {
-                "rect" => parse_rect(el)?,
-                "circle" => parse_circle(el)?,
-                "ellipse" => parse_ellipse(el)?,
-                "line" => Some(parse_line(el)?),
+                "rect" => parse_rect(el, &elem_ctx)?,
+                "circle" => parse_circle(el, &elem_ctx)?,
+                "ellipse" => parse_ellipse(el, &elem_ctx)?,
+                "line" => Some(parse_line(el, &elem_ctx)?),
                 "polyline" => parse_polyline(el, false)?,
                 "polygon" => parse_polyline(el, true)?,
                 // Round 6: the SVG 2 `d` property allows CSS to set the
@@ -1040,16 +1084,17 @@ pub fn parse_clip_path_def(
         None => return Ok(None),
     };
     let mut path = Path::new();
+    let elem_ctx = ctx.resolve_ctx;
     for child in &el.children {
         if let XmlNode::Element(c) = child {
             // Re-use the shape parsers — they already handle rect /
             // circle / ellipse / polyline / polygon / line / path.
             let local = tag_local(&c.name);
             let sub = match local.as_str() {
-                "rect" => parse_rect(c)?,
-                "circle" => parse_circle(c)?,
-                "ellipse" => parse_ellipse(c)?,
-                "line" => Some(parse_line(c)?),
+                "rect" => parse_rect(c, &elem_ctx)?,
+                "circle" => parse_circle(c, &elem_ctx)?,
+                "ellipse" => parse_ellipse(c, &elem_ctx)?,
+                "line" => Some(parse_line(c, &elem_ctx)?),
                 "polyline" => parse_polyline(c, false)?,
                 "polygon" => parse_polyline(c, true)?,
                 "path" => parse_path(c)?,
@@ -1252,8 +1297,9 @@ pub fn parse_use_element(
     };
 
     // x / y on `<use>` are an additive translate per §5.6.
-    let x = parse_number(attr(el, "x"), 0.0)?;
-    let y = parse_number(attr(el, "y"), 0.0)?;
+    // Round 19 — resolve unit-suffixed values via the current context.
+    let x = parse_length_attr(attr(el, "x"), 0.0, LengthAxis::X, &ctx.resolve_ctx)?;
+    let y = parse_length_attr(attr(el, "y"), 0.0, LengthAxis::Y, &ctx.resolve_ctx)?;
     let use_transform = match attr(el, "transform") {
         Some(v) => parse_transform(v)?,
         None => Transform2D::identity(),
@@ -1547,6 +1593,116 @@ fn apply_animation_overrides(el: &Element, t_seconds: f32) -> Option<Element> {
     Some(clone)
 }
 
+/// Round 19 — parse a length-bearing attribute and resolve it to a
+/// CSS px (≡ user unit) value via the supplied [`ResolveContext`].
+///
+/// Bare-numeric inputs (`<rect x="100">`) round-trip bit-for-bit
+/// identical to [`parse_number`] because [`crate::length::Length::resolve`]
+/// is the identity for [`crate::length::LengthUnit::UserUnit`]. Inputs
+/// carrying a CSS Values L4 unit suffix (`em` / `rem` / `%` / `vw` /
+/// `vh` / `vmin` / `vmax` / `pt` / `pc` / `cm` / `mm` / `in` / `q` /
+/// `px`) are resolved via the typed [`crate::length::Length::resolve`]
+/// path with `axis` selecting the percentage basis (per SVG 2 §7.10:
+/// width attrs against viewport width, height against viewport height,
+/// `r` / radii against the viewport diagonal).
+///
+/// Empty / missing values fall through to `default`. Malformed values
+/// fall back to [`parse_number`]'s lenient prefix-strip — preserving
+/// the round-1..18 behaviour where a malformed coordinate didn't
+/// crash the document.
+pub fn parse_length_attr(
+    v: Option<&str>,
+    default: f32,
+    axis: LengthAxis,
+    ctx: &ResolveContext,
+) -> Result<f32> {
+    let s = match v {
+        None => return Ok(default),
+        Some(s) => s.trim(),
+    };
+    if s.is_empty() {
+        return Ok(default);
+    }
+    match parse_length(s) {
+        Ok(l) => {
+            // Inject the axis-specific percentage basis so `%` inputs
+            // resolve against the right viewport axis.
+            let basis = ctx.percentage_basis_for(axis);
+            let local = ResolveContext {
+                percentage_basis_px: basis,
+                ..*ctx
+            };
+            Ok(l.resolve(local))
+        }
+        // Fall back to the legacy lenient parser — keeps round-1..18
+        // behaviour for the rare malformed-but-numeric-prefix inputs
+        // the typed parser rejects (`12foo`).
+        Err(_) => parse_number(Some(s), default),
+    }
+}
+
+/// Round 19 — derive a child [`ResolveContext`] that carries any
+/// `font-size: <length>` cascade `el` (or its matched CSS rules)
+/// declares. The em / rem / vw / vh / viewport state inherits from
+/// `parent` unchanged when no `font-size` resolves.
+///
+/// Per CSS Values L4 §6.1.2 + CSS Cascade L4: a `font-size: 1em`
+/// resolves against the *parent* element's font-size — so the new
+/// `font_size_px` is computed using `parent.font_size_px` as the em
+/// basis, *then* installed on the returned context for the element's
+/// descendants to use.
+pub fn derive_child_ctx(
+    el: &Element,
+    mctx: &MatchContext<'_>,
+    sheet: &Stylesheet,
+    parent: &ResolveContext,
+) -> ResolveContext {
+    // Walk the cascade — last `font-size` declaration wins. Inline
+    // `font-size="…"` presentation attrs lose to CSS rules + inline
+    // style (per the round-4 cascade), so check attrs first then CSS.
+    let mut effective: Option<String> = None;
+    for (name, _) in &el.attrs {
+        if name.eq_ignore_ascii_case("font-size") {
+            effective = attr(el, name).map(|s| s.to_string());
+        }
+    }
+    for (name, value) in declarations_for(mctx, sheet) {
+        if name.eq_ignore_ascii_case("font-size") {
+            effective = Some(value);
+        }
+    }
+    let raw = match effective {
+        Some(s) => s,
+        None => return *parent,
+    };
+    // Resolve the font-size value against the *parent* font-size /
+    // viewport (em-on-font-size cascades, not on the new font-size).
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return *parent;
+    }
+    let parsed = match parse_length(trimmed) {
+        Ok(l) => l,
+        Err(_) => return *parent,
+    };
+    // Use a Y-axis basis for percentage font-sizes (CSS Fonts L3 §3.5
+    // — `font-size: 50%` resolves against the parent's font-size, but
+    // since we don't have a separate parent-font-size axis we feed the
+    // parent font-size in via `percentage_basis_px`).
+    let basis_ctx = ResolveContext {
+        percentage_basis_px: parent.font_size_px,
+        ..*parent
+    };
+    let new_font_size = parsed.resolve(basis_ctx);
+    if !new_font_size.is_finite() || new_font_size <= 0.0 {
+        return *parent;
+    }
+    ResolveContext {
+        font_size_px: new_font_size,
+        ..*parent
+    }
+}
+
 /// Parse a number literal — strips optional unit suffix (`px`, `pt`,
 /// `em`, `%`, etc.). Round 1 treats every unit as user units, so the
 /// numeric value is preserved as f32 with no scaling.
@@ -1599,10 +1755,14 @@ mod tests {
 
     #[test]
     fn rect_with_no_radius_is_5_segment_path() {
-        let r = parse_rect(&elem(
-            "rect",
-            &[("x", "1"), ("y", "2"), ("width", "10"), ("height", "5")],
-        ))
+        let ctx = ResolveContext::default();
+        let r = parse_rect(
+            &elem(
+                "rect",
+                &[("x", "1"), ("y", "2"), ("width", "10"), ("height", "5")],
+            ),
+            &ctx,
+        )
         .unwrap()
         .unwrap();
         // M, L, L, L, Z = 5 commands.
@@ -1613,16 +1773,20 @@ mod tests {
 
     #[test]
     fn rect_with_radius_uses_arcs() {
-        let r = parse_rect(&elem(
-            "rect",
-            &[
-                ("x", "0"),
-                ("y", "0"),
-                ("width", "10"),
-                ("height", "10"),
-                ("rx", "2"),
-            ],
-        ))
+        let ctx = ResolveContext::default();
+        let r = parse_rect(
+            &elem(
+                "rect",
+                &[
+                    ("x", "0"),
+                    ("y", "0"),
+                    ("width", "10"),
+                    ("height", "10"),
+                    ("rx", "2"),
+                ],
+            ),
+            &ctx,
+        )
         .unwrap()
         .unwrap();
         assert!(r
@@ -1633,8 +1797,83 @@ mod tests {
 
     #[test]
     fn circle_zero_radius_returns_none() {
-        let r = parse_circle(&elem("circle", &[("r", "0")])).unwrap();
+        let ctx = ResolveContext::default();
+        let r = parse_circle(&elem("circle", &[("r", "0")]), &ctx).unwrap();
         assert!(r.is_none());
+    }
+
+    #[test]
+    fn rect_em_resolves_against_default_font_size() {
+        // <rect x="1em" width="2em"> at default font-size 16 → x=16, w=32.
+        let ctx = ResolveContext::default();
+        let r = parse_rect(
+            &elem(
+                "rect",
+                &[("x", "1em"), ("y", "0"), ("width", "2em"), ("height", "1")],
+            ),
+            &ctx,
+        )
+        .unwrap()
+        .unwrap();
+        // First command is MoveTo(x, y).
+        match r.commands[0] {
+            PathCommand::MoveTo(p) => {
+                assert!((p.x - 16.0).abs() < 1e-4, "x: got {}", p.x);
+                assert!(p.y.abs() < 1e-4, "y: got {}", p.y);
+            }
+            _ => panic!("expected MoveTo"),
+        }
+        // Width is reflected in the LineTo of the second command —
+        // x + w = 16 + 32 = 48.
+        match r.commands[1] {
+            PathCommand::LineTo(p) => {
+                assert!((p.x - 48.0).abs() < 1e-4, "x+w: got {}", p.x);
+            }
+            _ => panic!("expected LineTo"),
+        }
+    }
+
+    #[test]
+    fn rect_em_under_explicit_font_size_cascade() {
+        // <rect width="2em"> resolves to 64 with font-size 32.
+        let ctx = ResolveContext::default().with_font_size(32.0);
+        let r = parse_rect(
+            &elem(
+                "rect",
+                &[("x", "0"), ("y", "0"), ("width", "2em"), ("height", "1")],
+            ),
+            &ctx,
+        )
+        .unwrap()
+        .unwrap();
+        match r.commands[1] {
+            PathCommand::LineTo(p) => {
+                assert!((p.x - 64.0).abs() < 1e-4, "x+w: got {}", p.x);
+            }
+            _ => panic!("expected LineTo"),
+        }
+    }
+
+    #[test]
+    fn circle_percent_resolves_against_viewport_diagonal() {
+        // <circle cx="50%" cy="50%" r="10%"> at viewport 200x200.
+        // Diagonal basis = sqrt(2*200²) / sqrt(2) = 200; so r=20.
+        // cx/cy use the X/Y axes → 100 each.
+        let ctx = ResolveContext::default().with_viewport(200.0, 200.0);
+        let c = parse_circle(
+            &elem("circle", &[("cx", "50%"), ("cy", "50%"), ("r", "10%")]),
+            &ctx,
+        )
+        .unwrap()
+        .unwrap();
+        // First MoveTo is at (cx + r, cy) = (120, 100).
+        match c.commands[0] {
+            PathCommand::MoveTo(p) => {
+                assert!((p.x - 120.0).abs() < 1e-3, "x: got {}", p.x);
+                assert!((p.y - 100.0).abs() < 1e-3, "y: got {}", p.y);
+            }
+            _ => panic!("expected MoveTo"),
+        }
     }
 
     #[test]

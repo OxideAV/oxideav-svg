@@ -407,6 +407,29 @@
 //! [`Length::resolve`](crate::length::Length::resolve)) and added
 //! the CSS Easing L2 `linear()` function to
 //! [`TimingFunction`](crate::keyframe::TimingFunction).
+//!
+//! # Round 19 additions
+//!
+//! * **SVG 2 §10 length-resolution wiring through `element.rs` /
+//!   `decoder.rs`.** Round 18 produced the typed
+//!   [`crate::length::Length`] surface but only the test suite was
+//!   resolving them — the per-element shape parsers (`parse_rect`,
+//!   `parse_circle`, `parse_ellipse`, `parse_line`, `<use>`'s `x` /
+//!   `y`) still went through the legacy [`crate::element::parse_number`]
+//!   path that strips the unit suffix. Round 19 changes each of those
+//!   parsers to take a [`crate::length::ResolveContext`] and resolve
+//!   coordinate values via [`crate::element::parse_length_attr`].
+//!   The new context lives on [`crate::element::ParseContext::resolve_ctx`]
+//!   and is updated as the tree walk descends: any `<g>` (or root
+//!   `<svg>`) that sets `font-size` (via attr or matched CSS rule)
+//!   pushes a derived context for its descendants so `<g
+//!   font-size="32"><rect width="2em">` resolves the rect width to
+//!   64 px. The root viewport (from `<svg width=… height=…>` or the
+//!   `viewBox`) seeds `vw` / `vh` / `vmin` / `vmax`, the root
+//!   font-size seeds `rem`, and percentages resolve against the
+//!   appropriate axis per SVG 2 §7.10 (X for width-class attrs, Y for
+//!   height-class, "diagonal" for `r`). Bare-numeric coordinate
+//!   values round-trip bit-for-bit identical to the round-1 path.
 
 pub mod animation;
 pub mod color;

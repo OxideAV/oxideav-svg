@@ -9,6 +9,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 19** — SVG 2 §10 length-resolution wiring through
+  `element.rs` / `decoder.rs`. The round-18 typed
+  `crate::length::Length` surface now feeds the per-element coordinate
+  parsers via the new `crate::length::LengthAxis` enum +
+  `ResolveContext::percentage_basis_for(axis)` helper +
+  `crate::element::parse_length_attr(v, default, axis, ctx)`. Each
+  shape parser (`parse_rect`, `parse_circle`, `parse_ellipse`,
+  `parse_line`) now takes `&ResolveContext`; the `<g>` branch in
+  `parse_element_to_node_ctx` saves the parent context, derives a
+  child context (via the new `crate::element::derive_child_ctx`) that
+  picks up the element's `font-size` cascade, recurses, then restores
+  the parent context. The decoder seeds the root context from the
+  `<svg>` width / height (for `vw`/`vh`/`vmin`/`vmax`) plus the
+  spec-default 16 px font-size, then folds any
+  `<svg font-size="...">` cascade in (also pinning the root
+  font-size as the `rem` basis for every descendant). Bare-numeric
+  coordinate values (`<rect x="100">`) round-trip bit-for-bit
+  identical to the round-1 path because `Length::resolve` is the
+  identity for `LengthUnit::UserUnit`. Per-axis percentage basis per
+  SVG 2 §7.10 — `width="50%"` against viewport width, `height="50%"`
+  against viewport height, `r="50%"` against the spec "diagonal"
+  (`sqrt(w² + h²) / sqrt(2)`).
+  - New context field: `ParseContext::resolve_ctx: ResolveContext` +
+    builder `ParseContext::with_resolve_ctx(ctx)`.
+  - New helpers: `crate::length::LengthAxis::{X, Y, Diagonal}`,
+    `ResolveContext::percentage_basis_for(axis)`,
+    `crate::element::parse_length_attr`,
+    `crate::element::derive_child_ctx`.
+  - 8 new integration tests in `tests/round19_length_threading.rs`
+    cover root-default em (16 px), `<g>` em-cascade override, sibling
+    isolation across the cascade boundary, axis-specific `%` basis
+    (X / Y), `vw` / `vh` against the root viewport, root `font-size`
+    seeding `rem` independent of nested `<g font-size="…">`,
+    bare-numeric round-trip, and inherit-through-intermediate-`<g>`
+    em propagation. Three new shape-parser unit tests in `element.rs`
+    cover the same surface at the `parse_rect` / `parse_circle`
+    level with explicit `ResolveContext` inputs.
+
 - **Round 18** — CSS Values L4 length-unit aware coordinate parsing
   + CSS Easing Functions L2 `linear()` function.
   - **`crate::length` module** (new) — typed `Length { value, unit }`

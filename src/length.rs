@@ -205,6 +205,47 @@ impl ResolveContext {
     }
 }
 
+/// SVG 2 §7.10 — which viewport axis a length-percentage resolves
+/// against. Used by the round-19 element-side helpers in
+/// [`crate::element`] when threading a [`ResolveContext`] into the
+/// shape parsers — `<rect width="50%">` resolves the `width` against
+/// the viewport's *width* axis, `<rect height="50%">` against the
+/// *height* axis, and other coordinates against the viewport diagonal
+/// (`sqrt(w² + h²) / sqrt(2)`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LengthAxis {
+    /// Resolve `%` against the viewport's width.
+    X,
+    /// Resolve `%` against the viewport's height.
+    Y,
+    /// Resolve `%` against the SVG-spec "normalized diagonal" —
+    /// `sqrt(w² + h²) / sqrt(2)` per SVG 2 §7.10. Used by `r` /
+    /// `font-size` / `stroke-width` / etc.
+    Diagonal,
+}
+
+impl ResolveContext {
+    /// Convenience — return the percentage basis (in CSS px) for the
+    /// given axis, derived from `viewport_w` / `viewport_h`. The
+    /// result feeds straight into [`Self::with_percentage_basis`].
+    ///
+    /// Per SVG 2 §7.10:
+    ///   - `LengthAxis::X` → viewport width
+    ///   - `LengthAxis::Y` → viewport height
+    ///   - `LengthAxis::Diagonal` → `sqrt(w² + h²) / sqrt(2)`
+    pub fn percentage_basis_for(&self, axis: LengthAxis) -> f32 {
+        match axis {
+            LengthAxis::X => self.viewport_w,
+            LengthAxis::Y => self.viewport_h,
+            LengthAxis::Diagonal => {
+                let w = self.viewport_w;
+                let h = self.viewport_h;
+                ((w * w + h * h).sqrt()) / std::f32::consts::SQRT_2
+            }
+        }
+    }
+}
+
 /// Errors produced by [`parse_length`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ParseError {

@@ -8,10 +8,11 @@ use oxideav_core::{
 
 use crate::css::MatchContext;
 use crate::element::{
-    parse_clip_path_def, parse_element_to_node_ctx, parse_filter_def, parse_mask_def, parse_number,
-    parse_symbol_def, PaintState, ParseContext,
+    derive_child_ctx, parse_clip_path_def, parse_element_to_node_ctx, parse_filter_def,
+    parse_mask_def, parse_number, parse_symbol_def, PaintState, ParseContext,
 };
 use crate::filter::{MeetOrSlice, PreserveAspectRatio, PreserveAspectRatioAlign};
+use crate::length::ResolveContext;
 use crate::parser::{
     attr, decode_utf8_lossy_stripping_bom, inflate_gzip, is_gzip, parse_xml, tag_local, Element,
     Node as XmlNode,
@@ -170,7 +171,16 @@ fn parse_svg_root(
     )?;
 
     let parent_state = PaintState::default();
-    let mut ctx = ParseContext::new().with_time(t_seconds);
+    // Round 19 — seed the root [`ResolveContext`] from the SVG root's
+    // viewport (so descendant `vw` / `vh` / `vmin` / `vmax` resolve
+    // against the document size) and the spec-default 16 px font-size
+    // (CSS Values L4 §6.1.2). The root's own `font-size` cascade — if
+    // any — gets folded in below via `derive_child_ctx` so a
+    // `<svg font-size="20">` propagates `1em → 20` to descendants.
+    let root_ctx = ResolveContext::default().with_viewport(width, height);
+    let mut ctx = ParseContext::new()
+        .with_time(t_seconds)
+        .with_resolve_ctx(root_ctx);
     if track_id_paths {
         ctx.enable_id_path_tracking();
     }
@@ -179,6 +189,21 @@ fn parse_svg_root(
     // ParseContext stylesheet. Done before the def + element walks so
     // class/id selectors resolve regardless of source order.
     crate::css::collect_stylesheet(svg, &mut ctx.stylesheet);
+
+    // Round 19 — fold any root `<svg font-size="...">` into the
+    // resolve context AFTER the stylesheet is collected (so a CSS
+    // rule that targets the root element wins over the presentation
+    // attr per the round-4 cascade). The root's font-size is also the
+    // `rem` basis for every descendant.
+    let svg_mctx_seed = MatchContext::root(svg);
+    let cascaded = derive_child_ctx(svg, &svg_mctx_seed, &ctx.stylesheet, &ctx.resolve_ctx);
+    // Pin the root font-size as `rem`'s basis — every descendant's
+    // `1rem` resolves against this.
+    let cascaded = ResolveContext {
+        root_font_size_px: cascaded.font_size_px,
+        ..cascaded
+    };
+    ctx.resolve_ctx = cascaded;
 
     // First pass: register every <defs> child + every gradient /
     // filter / mask / clipPath / symbol seen anywhere in the tree, so
