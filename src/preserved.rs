@@ -73,6 +73,24 @@ pub struct PreservedExtras {
     /// result; this side-channel preserves the original keyword pair
     /// so the encoder can re-emit it verbatim.
     pub root_preserve_aspect_ratio: Option<String>,
+    /// Round 13 — scene-graph tree-paths of source-id-bearing nodes.
+    /// Each entry maps a source SVG `id="..."` to the
+    /// [`Vec<usize>`] tree-path of the corresponding scene-graph node
+    /// (where each `usize` is a child index from the root group, top to
+    /// bottom). The encoder uses this to:
+    ///
+    /// 1. Re-emit the original `id="..."` attribute on each emitted
+    ///    `<g>` / `<path>` so downstream tooling can still address the
+    ///    element by its source name.
+    /// 2. Re-attach captured `<animate>` / `<set>` /
+    ///    `<animateTransform>` fragments as children of their declared
+    ///    parent element instead of dumping them at the trailing edge of
+    ///    the document with a parent-id comment hint (the round-12
+    ///    fallback).
+    ///
+    /// Built only by [`crate::decoder::parse_svg_with_extras`]. Empty
+    /// for documents that have no id-bearing elements.
+    pub id_paths: Vec<IdScenePath>,
 }
 
 /// One captured animation child of a known-id parent element.
@@ -85,6 +103,20 @@ pub struct AnimationFragment {
     /// The animation element itself (one of `<animate>`, `<set>`,
     /// `<animateTransform>`, `<animateMotion>`).
     pub element: Element,
+}
+
+/// Round 13 — one (scene-graph tree-path, source-id) pair. Used by the
+/// encoder to re-emit `id="..."` attributes on the right scene-graph
+/// nodes and to re-attach SMIL animation fragments inside their
+/// declared parent.
+#[derive(Clone, Debug)]
+pub struct IdScenePath {
+    /// Source SVG `id="..."` value.
+    pub id: String,
+    /// Tree-path through the scene graph: each `usize` is the child
+    /// index in the parent's `children` vector, from the root group
+    /// down to the target node. Empty path means the root.
+    pub path: Vec<usize>,
 }
 
 impl PreservedExtras {
@@ -100,5 +132,6 @@ impl PreservedExtras {
             && self.foreign_objects.is_empty()
             && self.scripts.is_empty()
             && self.root_preserve_aspect_ratio.is_none()
+            && self.id_paths.is_empty()
     }
 }

@@ -9,6 +9,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 13** — animation re-attachment to the source emit site +
+  `Stylesheet::resolve_imports` caller-fetcher hook for `@import`.
+  - **Animation re-attachment.** Round 4–12 captured every
+    `<animate>` / `<set>` / `<animateTransform>` into
+    `PreservedExtras::animations` keyed by the parent's `id`, then
+    re-emitted them at the trailing edge of the SVG with a
+    `<!-- animation parent: #id -->` comment hint. Round 13 inlines
+    each animation as a child of its declared parent when the
+    parent's `id` was tracked into the new
+    `PreservedExtras::id_paths` side-channel by
+    `parse_svg_with_extras`. Re-emission also surfaces the
+    original `id="..."` on the matching `<g>` / `<path>` so
+    downstream tooling can still address the element by source
+    name. Animations whose parent didn't carry an `id` (or whose
+    parent didn't survive the scene-graph build) fall back to the
+    round-12 trailing-edge emission with the comment hint — so no
+    captured fragment is ever lost.
+  - **`PreservedExtras::id_paths` + `IdScenePath`.** New
+    `Vec<IdScenePath>` field on the side-channel; each entry maps
+    a source `id="..."` to the `Vec<usize>` scene-graph tree-path
+    of the corresponding emit site. Populated only by
+    `parse_svg_with_extras`; left empty for the back-compat
+    `parse_svg` / `parse_svg_at` paths so they don't pay the
+    bookkeeping cost.
+  - **`Stylesheet::resolve_imports(fetcher)`.** Round 11 captured
+    `@import url(…)` URLs into `Stylesheet::imports` but never
+    fetched / parsed them. Round 13 adds a recursive resolver:
+    the caller supplies a `Fn(&str) -> Option<Vec<u8>>` (lets the
+    consumer choose HTTP / FS / cache); each fetched body is
+    parsed as CSS and its rules are appended to `self.rules` so
+    the cascade applies as if the rules were inline. Cycle
+    detection (visited-URL `HashSet`) and a depth cap of 8 hops
+    (`Stylesheet::IMPORT_DEPTH_CAP`) keep runaway chains in check.
+    Failure modes — fetcher returns `None`, body isn't UTF-8,
+    parse produces no rules — log at `debug` and skip silently
+    rather than fail the document.
+  - **New `log = "0.4"` dependency.** Used only by
+    `resolve_imports` to surface skipped imports under the `debug`
+    level; the rest of the crate stays silent.
+
 - **Round 12** — `<script>` graceful capture (HTML5-style raw-text
   body) + `viewBox` / `preserveAspectRatio` viewport mapping baked
   into `root.transform`.

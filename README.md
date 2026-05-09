@@ -153,6 +153,32 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
+## Round 13 additions
+
+- **SMIL animation re-attachment.** Round 4–12 captured every
+  `<animate>` / `<set>` / `<animateTransform>` into
+  `PreservedExtras::animations` and re-emitted them at the trailing
+  edge of the SVG with a `<!-- animation parent: #id -->` comment
+  hint. Round 13 inlines each animation as a child of its declared
+  parent element when the parent has an `id`, and re-emits the
+  original `id="..."` attribute on the matching `<g>` / `<path>` so
+  downstream tooling can still address the element by source name.
+  A new `PreservedExtras::id_paths` side-channel maps each source
+  `id="..."` to the `Vec<usize>` scene-graph tree-path of the
+  matching emit site; populated only by `parse_svg_with_extras`.
+  Animations whose parent didn't carry an `id` fall back to the
+  round-12 trailing-edge emission so no captured fragment is lost.
+- **`Stylesheet::resolve_imports(fetcher)`.** Round 11 captured
+  `@import url(…)` URLs into `Stylesheet::imports`. Round 13 adds
+  a recursive resolver: the caller supplies a
+  `Fn(&str) -> Option<Vec<u8>>` (lets the consumer pick HTTP / FS /
+  cache); fetched bodies are parsed as CSS and their rules merged
+  into `self.rules` so the cascade applies as if the rules were
+  inline. Cycle detection (visited-URL set) and an 8-hop depth cap
+  (`Stylesheet::IMPORT_DEPTH_CAP`) prevent runaway chains. Failure
+  modes — fetcher returns `None`, body isn't UTF-8, parse produces
+  no rules — log at `debug` and skip silently.
+
 ## Round 12 additions
 
 - **`<script>` graceful capture** — HTML5-style "script data state":
@@ -267,7 +293,7 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
     so the rasterizer can implement it directly. Defaults `dx=dy=2`,
     `stdDeviation=2 2`, `flood-color` opaque black, `flood-opacity=1`.
 
-## Deferred to round 13+
+## Deferred to round 14+
 
 - Actual filter-primitive rasterisation (the typed graph is
   pre-rasteriser plumbing; pixel evaluation is `oxideav-raster` work).
@@ -276,11 +302,6 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
 - Live evaluation of pseudo-elements and stateful pseudo-classes (the
   selectors parse + survive the round-trip but a synthesised-box
   renderer is a separate oxideav-raster work-stream).
-- Resolving `@import`-ed external stylesheets (URL capture only — the
-  parser deliberately doesn't make network requests).
-- Animation re-attachment to specific scene-graph emit sites in the
-  encoder (currently appended at the trailing edge of the document
-  with a parent-id comment).
 
 ## Usage
 

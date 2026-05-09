@@ -237,12 +237,40 @@
 //!   aspect-match degenerate case) skip the correction — the
 //!   renderer's stretch IS the spec's behaviour for those.
 //!
-//! # Deferred to round 13+
+//! # Round 13 additions
+//!
+//! * **SMIL animation re-attachment to the source emit site.** Round
+//!   4–12 captured every `<animate>` / `<set>` / `<animateTransform>`
+//!   into [`crate::preserved::PreservedExtras::animations`] keyed by
+//!   the parent's `id` and re-emitted them at the trailing edge of the
+//!   SVG with a `<!-- animation parent: #id -->` comment hint. Round
+//!   13 inlines each animation as a child of its declared parent
+//!   element when the parent's id was tracked. The decoder records
+//!   each id-bearing element's scene-graph tree-path into the new
+//!   [`crate::preserved::PreservedExtras::id_paths`] side-channel so
+//!   the encoder can find the matching emit site without re-parsing
+//!   the source. The original `id="..."` is also surfaced on the
+//!   matching `<g>` / `<path>` so downstream tooling can address
+//!   the element by source name. Animations whose parent didn't
+//!   carry an id fall back to the round-12 trailing-edge emission so
+//!   no captured fragment is ever lost.
+//! * **`Stylesheet::resolve_imports(fetcher)`.** Round 11 captured
+//!   `@import url(…)` URLs into [`crate::css::Stylesheet::imports`]
+//!   but never fetched them. Round 13 adds a recursive resolver: the
+//!   caller supplies a `Fn(&str) -> Option<Vec<u8>>` (lets the
+//!   consumer pick HTTP / FS / cache); fetched bodies are parsed as
+//!   CSS and their rules merged so the cascade applies as if the
+//!   rules were inline. Cycle detection (visited-URL set) + an
+//!   8-hop depth cap (`IMPORT_DEPTH_CAP`) prevent runaway chains.
+//!
+//! # Deferred to round 14+
 //!
 //! * Actual filter-primitive rasterisation (the typed graph is
 //!   pre-rasteriser plumbing; pixel evaluation is oxideav-raster work).
 //! * `<marker>` defs + `marker-start` / `marker-mid` / `marker-end`
 //!   (needs a `Marker` construct in `oxideav-core`).
+//! * Live evaluation of pseudo-elements (`::before` / `::after`) into
+//!   synthesised boxes — also a renderer-side concern (oxideav-raster).
 
 pub mod animation;
 pub mod color;

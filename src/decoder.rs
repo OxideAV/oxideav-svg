@@ -16,7 +16,7 @@ use crate::parser::{
     attr, decode_utf8_lossy_stripping_bom, inflate_gzip, is_gzip, parse_xml, tag_local, Element,
     Node as XmlNode,
 };
-use crate::preserved::{AnimationFragment, PreservedExtras};
+use crate::preserved::{AnimationFragment, IdScenePath, PreservedExtras};
 
 /// Codec id string for SVG vector frames.
 pub const CODEC_ID_STR: &str = "svg";
@@ -51,7 +51,8 @@ pub fn parse_svg_at(bytes: &[u8], t_seconds: f32) -> Result<VectorFrame> {
     let nodes = parse_xml(&text)?;
     let svg =
         find_svg_root(&nodes).ok_or_else(|| Error::invalid("SVG: missing <svg> root element"))?;
-    parse_svg_root(svg, t_seconds)
+    let (frame, _) = parse_svg_root(svg, t_seconds, false)?;
+    Ok(frame)
 }
 
 /// Round 4 — parse and *also* return a [`PreservedExtras`] side-channel
@@ -75,7 +76,8 @@ pub fn parse_svg_with_extras(bytes: &[u8]) -> Result<(VectorFrame, PreservedExtr
     let mut extras = PreservedExtras::new();
     collect_extras(svg, &mut extras, None);
     extras.root_preserve_aspect_ratio = attr(svg, "preserveAspectRatio").map(str::to_string);
-    let frame = parse_svg_root(svg, 0.0)?;
+    let (frame, id_paths) = parse_svg_root(svg, 0.0, true)?;
+    extras.id_paths = id_paths;
     Ok((frame, extras))
 }
 
@@ -137,7 +139,11 @@ fn find_svg_root(nodes: &[XmlNode]) -> Option<&Element> {
     None
 }
 
-fn parse_svg_root(svg: &Element, t_seconds: f32) -> Result<VectorFrame> {
+fn parse_svg_root(
+    svg: &Element,
+    t_seconds: f32,
+    track_id_paths: bool,
+) -> Result<(VectorFrame, Vec<IdScenePath>)> {
     let view_box = match attr(svg, "viewBox") {
         Some(v) => Some(parse_view_box(v)?),
         None => None,
@@ -157,6 +163,9 @@ fn parse_svg_root(svg: &Element, t_seconds: f32) -> Result<VectorFrame> {
 
     let parent_state = PaintState::default();
     let mut ctx = ParseContext::new().with_time(t_seconds);
+    if track_id_paths {
+        ctx.enable_id_path_tracking();
+    }
 
     // Round-4 step 0: collect every `<style>` block's body into the
     // ParseContext stylesheet. Done before the def + element walks so
@@ -193,7 +202,13 @@ fn parse_svg_root(svg: &Element, t_seconds: f32) -> Result<VectorFrame> {
                 of_type_count: of_count,
                 parent: Some(&svg_mctx),
             };
-            if let Some(node) = parse_element_to_node_ctx(c, &parent_state, &mut ctx, &cmctx)? {
+            // Round 13: scene-graph index = number of children already
+            // pushed onto root.
+            let scene_idx = root.children.len();
+            ctx.current_path.push(scene_idx);
+            let result = parse_element_to_node_ctx(c, &parent_state, &mut ctx, &cmctx);
+            ctx.current_path.pop();
+            if let Some(node) = result? {
                 root.children.push(node);
             }
             child_idx += 1;
@@ -221,14 +236,15 @@ fn parse_svg_root(svg: &Element, t_seconds: f32) -> Result<VectorFrame> {
         }
     }
 
-    Ok(VectorFrame {
+    let frame = VectorFrame {
         width,
         height,
         view_box,
         root,
         pts: None,
         time_base: TimeBase::new(1, 1),
-    })
+    };
+    Ok((frame, ctx.id_paths))
 }
 
 /// Round-12 — given the root viewport (`width` × `height`), the source

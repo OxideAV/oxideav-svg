@@ -21,6 +21,7 @@ use crate::css::{declarations_for, MatchContext, Stylesheet};
 use crate::defs::{parse_url_ref, ClipPathDef, DefsTables, FilterDef, MaskDef, SymbolDef};
 use crate::parser::{attr, tag_local, Element, Node as XmlNode};
 use crate::path_data::parse_path_data;
+use crate::preserved::IdScenePath;
 use crate::transform::parse_transform;
 
 /// Inherited paint / stroke / opacity / fill-rule state. Round 1
@@ -239,6 +240,22 @@ pub struct ParseContext {
     /// `<set>` / `<animateTransform>`. `0.0` reproduces the round-3
     /// first-paint snapshot. Set via [`ParseContext::with_time`].
     pub animation_t: f32,
+    /// Round 13 — current scene-graph child-index path during the
+    /// build, used by [`ParseContext::record_id_path`] to map source
+    /// `id="..."` attributes to scene-graph emit sites. Pushed before
+    /// each child build, popped after. Empty by default and only
+    /// populated by [`crate::decoder::parse_svg_with_extras`].
+    pub current_path: Vec<usize>,
+    /// Round 13 — collected `(scene_path, source_id)` mappings.
+    /// Populated only when the caller opted in via
+    /// [`crate::decoder::parse_svg_with_extras`]; the `parse_svg` /
+    /// `parse_svg_at` paths leave the recorder untouched so the
+    /// hot-path doesn't pay the (tiny) bookkeeping cost.
+    pub id_paths: Vec<IdScenePath>,
+    /// Round 13 — gate; when `false`, [`ParseContext::record_id_path`]
+    /// is a no-op. Avoids spending allocations + clones on the
+    /// non-extras parse paths that don't need the mapping.
+    pub track_id_paths: bool,
 }
 
 impl Default for ParseContext {
@@ -255,6 +272,9 @@ impl ParseContext {
             use_stack: HashSet::new(),
             stylesheet: Stylesheet::new(),
             animation_t: 0.0,
+            current_path: Vec::new(),
+            id_paths: Vec::new(),
+            track_id_paths: false,
         }
     }
 
@@ -262,6 +282,25 @@ impl ParseContext {
     pub fn with_time(mut self, t_seconds: f32) -> Self {
         self.animation_t = t_seconds;
         self
+    }
+
+    /// Round 13 — opt in to scene-graph id-path tracking. Must be set
+    /// before the build walk begins; otherwise [`Self::id_paths`] is
+    /// left empty.
+    pub fn enable_id_path_tracking(&mut self) {
+        self.track_id_paths = true;
+    }
+
+    /// Round 13 — record the current scene-graph path against `id`.
+    /// No-op when [`Self::track_id_paths`] is `false`.
+    pub fn record_id_path(&mut self, id: &str) {
+        if !self.track_id_paths || id.is_empty() {
+            return;
+        }
+        self.id_paths.push(IdScenePath {
+            id: id.to_string(),
+            path: self.current_path.clone(),
+        });
     }
 }
 
@@ -732,7 +771,15 @@ pub fn parse_element_to_node_ctx(
                     *tag_seen.get_mut(&lower).unwrap() += 1;
                     let of_count = *tag_totals.get(&lower).unwrap_or(&0);
                     let cmctx = child_match_context(mctx, c, child_idx, of_idx, total, of_count);
-                    if let Some(node) = parse_element_to_node_ctx(c, &state, ctx, &cmctx)? {
+                    // Round 13: scene-graph index = number of children
+                    // already pushed onto this group (so a `<defs>` /
+                    // `<style>` in the source that produces no scene
+                    // node doesn't shift the index).
+                    let scene_idx = group.children.len();
+                    ctx.current_path.push(scene_idx);
+                    let result = parse_element_to_node_ctx(c, &state, ctx, &cmctx);
+                    ctx.current_path.pop();
+                    if let Some(node) = result? {
                         group.children.push(node);
                     }
                     child_idx += 1;
@@ -850,7 +897,18 @@ pub fn parse_element_to_node_ctx(
         Some(n) => n,
         None => return Ok(None),
     };
-    Ok(Some(apply_referenced_defs(el, node, &ctx.defs)))
+    let wrapped = apply_referenced_defs(el, node, &ctx.defs);
+    // Round 13: record the source `id="..."` against the current
+    // scene-graph path (which the caller pushed before invoking us).
+    // We record against the *outer-most* wrapping so the encoder
+    // emits `id=` on the topmost emitted element — matching the
+    // SVG-source layout where `<rect id=... clip-path=...>` keeps the
+    // id on the rect itself even though our scene-graph wraps it in
+    // a clip group.
+    if let Some(id) = attr(el, "id") {
+        ctx.record_id_path(id);
+    }
+    Ok(Some(wrapped))
 }
 
 /// Apply `clip-path="url(#id)"` / `mask="url(#id)"` / `filter="url(#id)"`

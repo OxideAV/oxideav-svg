@@ -16,7 +16,7 @@ use oxideav_core::{
 
 use crate::decoder::CODEC_ID_STR;
 use crate::parser::{escape_attr, Element, Node as XmlNode};
-use crate::preserved::PreservedExtras;
+use crate::preserved::{AnimationFragment, PreservedExtras};
 
 /// Round 3: serialise a [`VectorFrame`] into a gzip-compressed
 /// `.svgz` byte buffer. Equivalent to `gzip(write_svg(frame))`.
@@ -37,7 +37,40 @@ pub fn write_svg(frame: &VectorFrame) -> Vec<u8> {
 /// supplied in `extras`. Pair with
 /// [`crate::decoder::parse_svg_with_extras`] for a structural
 /// round-trip that doesn't lose CSS / filter / animation definitions.
+///
+/// Round 13 — when `extras.id_paths` is populated, each scene-graph
+/// node whose tree-path matches a recorded entry is emitted with the
+/// original `id="..."` attribute and any captured `<animate>` /
+/// `<set>` / `<animateTransform>` whose `parent_id == id` is inlined
+/// as a child of that node (instead of dumped at the trailing edge of
+/// the document with a parent-id comment hint).
 pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> Vec<u8> {
+    // Round 13 — index id_paths by `Vec<usize>` for O(1) per-node
+    // lookup, and group animations by `parent_id` so we can drain a
+    // single id's children inline.
+    let mut path_to_id: HashMap<Vec<usize>, String> = HashMap::new();
+    for entry in &extras.id_paths {
+        path_to_id.insert(entry.path.clone(), entry.id.clone());
+    }
+    let mut anim_by_parent: HashMap<String, Vec<&AnimationFragment>> = HashMap::new();
+    let mut anim_orphan: Vec<&AnimationFragment> = Vec::new();
+    // Set of ids that actually appear in id_paths — used to decide
+    // whether an animation can be inlined or must be appended at the
+    // trailing edge of the document (back-compat for callers that
+    // didn't pre-populate id_paths or whose target id wasn't tracked).
+    let mut known_ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for entry in &extras.id_paths {
+        known_ids.insert(entry.id.as_str());
+    }
+    for anim in &extras.animations {
+        match &anim.parent_id {
+            Some(pid) if known_ids.contains(pid.as_str()) => {
+                anim_by_parent.entry(pid.clone()).or_default().push(anim);
+            }
+            _ => anim_orphan.push(anim),
+        }
+    }
+
     let mut out = String::new();
     out.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     out.push_str("<svg xmlns=\"http://www.w3.org/2000/svg\"");
@@ -101,7 +134,18 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
         out.push_str("  </defs>\n");
     }
 
-    write_group_children(&mut out, &frame.root, 1, &gradients, &clips, &masks);
+    let mut path_stack: Vec<usize> = Vec::new();
+    write_group_children(
+        &mut out,
+        &frame.root,
+        1,
+        &gradients,
+        &clips,
+        &masks,
+        &path_to_id,
+        &anim_by_parent,
+        &mut path_stack,
+    );
 
     // Round-4 extras that don't belong in <defs>: <foreignObject> and
     // animations get emitted at the trailing edge of the document so
@@ -117,9 +161,15 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
     for script in &extras.scripts {
         write_script_element(&mut out, script, 1);
     }
-    for anim in &extras.animations {
-        // Wrap each animation in a comment carrying its parent id —
-        // round 4 does not yet re-attach to the precise emit site.
+    // Round 13: animations whose parent_id was tracked in
+    // `extras.id_paths` are inlined inside the matching scene-graph
+    // emit site by `write_node`. Anything that didn't match (no
+    // parent_id, or the parent_id wasn't recorded — happens for
+    // documents constructed without `parse_svg_with_extras`, or for
+    // animations whose parent didn't survive the scene-graph build)
+    // falls back to the round-4 trailing-edge emission with a parent
+    // comment hint so it isn't lost.
+    for anim in &anim_orphan {
         if let Some(id) = &anim.parent_id {
             out.push_str(&format!("  <!-- animation parent: #{} -->\n", id));
         }
@@ -216,6 +266,7 @@ fn escape_text(s: &str) -> String {
     out
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_group_children(
     out: &mut String,
     group: &Group,
@@ -223,12 +274,28 @@ fn write_group_children(
     gradients: &GradientCollector,
     clips: &ClipPathCollector,
     masks: &MaskCollector,
+    path_to_id: &HashMap<Vec<usize>, String>,
+    anim_by_parent: &HashMap<String, Vec<&AnimationFragment>>,
+    path_stack: &mut Vec<usize>,
 ) {
-    for child in &group.children {
-        write_node(out, child, depth, gradients, clips, masks);
+    for (i, child) in group.children.iter().enumerate() {
+        path_stack.push(i);
+        write_node(
+            out,
+            child,
+            depth,
+            gradients,
+            clips,
+            masks,
+            path_to_id,
+            anim_by_parent,
+            path_stack,
+        );
+        path_stack.pop();
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_node(
     out: &mut String,
     node: &Node,
@@ -236,12 +303,26 @@ fn write_node(
     gradients: &GradientCollector,
     clips: &ClipPathCollector,
     masks: &MaskCollector,
+    path_to_id: &HashMap<Vec<usize>, String>,
+    anim_by_parent: &HashMap<String, Vec<&AnimationFragment>>,
+    path_stack: &mut Vec<usize>,
 ) {
     let indent = "  ".repeat(depth);
+    // Round 13 — does this scene-graph position carry a recorded
+    // source id? If so we emit `id="..."` and inline its
+    // `<animate>` / `<set>` / `<animateTransform>` fragments.
+    let id_here: Option<&str> = path_to_id.get(path_stack.as_slice()).map(String::as_str);
+    let inline_anims: &[&AnimationFragment] = id_here
+        .and_then(|id| anim_by_parent.get(id))
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
     match node {
         Node::Group(g) => {
             out.push_str(&indent);
             out.push_str("<g");
+            if let Some(id) = id_here {
+                out.push_str(&format!(" id=\"{}\"", escape_attr(id)));
+            }
             if !g.transform.is_identity() {
                 out.push_str(&format!(
                     " transform=\"{}\"",
@@ -257,17 +338,51 @@ fn write_node(
                 }
             }
             out.push_str(">\n");
-            write_group_children(out, g, depth + 1, gradients, clips, masks);
+            write_group_children(
+                out,
+                g,
+                depth + 1,
+                gradients,
+                clips,
+                masks,
+                path_to_id,
+                anim_by_parent,
+                path_stack,
+            );
+            // Round 13 — animation children come AFTER the group's
+            // own children. SMIL doesn't dictate an ordering between
+            // sibling shapes and animation elements; emitting last
+            // matches the order browsers typically produce on
+            // serialisation and keeps the static visual identical.
+            for anim in inline_anims {
+                write_raw_element(out, &anim.element, depth + 1);
+            }
             out.push_str(&indent);
             out.push_str("</g>\n");
         }
         Node::Path(p) => {
+            // If we have inline animations for this path, emit it as
+            // `<path ...>...</path>` (with an explicit close so
+            // children fit). Otherwise self-close.
             out.push_str(&indent);
-            out.push_str("<path d=\"");
+            out.push_str("<path");
+            if let Some(id) = id_here {
+                out.push_str(&format!(" id=\"{}\"", escape_attr(id)));
+            }
+            out.push_str(" d=\"");
             write_path_d(out, &p.path.commands);
             out.push('"');
             write_paint_attrs(out, p, gradients);
-            out.push_str("/>\n");
+            if inline_anims.is_empty() {
+                out.push_str("/>\n");
+            } else {
+                out.push_str(">\n");
+                for anim in inline_anims {
+                    write_raw_element(out, &anim.element, depth + 1);
+                }
+                out.push_str(&indent);
+                out.push_str("</path>\n");
+            }
         }
         Node::SoftMask {
             mask,
@@ -282,12 +397,41 @@ fn write_node(
                 .map(String::from)
                 .unwrap_or_default();
             out.push_str(&indent);
+            // Round 13: if a source id was attached here (e.g. the
+            // source `<rect id="r1" mask="url(#m)">` becomes
+            // `Node::SoftMask { content: Path(r1) }`), surface it on
+            // the wrapping group so downstream tooling can address
+            // the masked rect by its source name.
+            let id_attr = id_here
+                .map(|i| format!(" id=\"{}\"", escape_attr(i)))
+                .unwrap_or_default();
             if id.is_empty() {
-                out.push_str("<g>\n");
+                out.push_str(&format!("<g{}>\n", id_attr));
             } else {
-                out.push_str(&format!("<g mask=\"url(#{})\">\n", escape_attr(&id)));
+                out.push_str(&format!(
+                    "<g{} mask=\"url(#{})\">\n",
+                    id_attr,
+                    escape_attr(&id)
+                ));
             }
-            write_node(out, content, depth + 1, gradients, clips, masks);
+            // The masked content's scene-graph position is unchanged
+            // (SoftMask is a wrapper that doesn't add to the path
+            // index space). Don't push an extra index — the inner
+            // node sits at the same path as the SoftMask itself.
+            write_node(
+                out,
+                content,
+                depth + 1,
+                gradients,
+                clips,
+                masks,
+                path_to_id,
+                anim_by_parent,
+                path_stack,
+            );
+            for anim in inline_anims {
+                write_raw_element(out, &anim.element, depth + 1);
+            }
             out.push_str(&indent);
             out.push_str("</g>\n");
         }
@@ -790,10 +934,25 @@ fn write_mask(
     // Mask content is emitted under the defs section. We pass empty
     // clip / mask collectors here because nested clip-paths / masks
     // inside a mask are an edge case (deferred): downstream rasterizer
-    // doesn't support them either.
+    // doesn't support them either. Round 13 — pass empty id_paths
+    // / animation maps too (the mask subtree is a def, not part of
+    // the live scene graph that animations attach to).
     let empty_clips = ClipPathCollector::default();
     let empty_masks = MaskCollector::default();
-    write_node(out, content, 3, gradients, &empty_clips, &empty_masks);
+    let empty_path_to_id: HashMap<Vec<usize>, String> = HashMap::new();
+    let empty_anims: HashMap<String, Vec<&AnimationFragment>> = HashMap::new();
+    let mut empty_stack: Vec<usize> = Vec::new();
+    write_node(
+        out,
+        content,
+        3,
+        gradients,
+        &empty_clips,
+        &empty_masks,
+        &empty_path_to_id,
+        &empty_anims,
+        &mut empty_stack,
+    );
     out.push_str("    </mask>\n");
 }
 

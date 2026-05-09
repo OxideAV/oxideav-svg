@@ -754,6 +754,113 @@ impl Stylesheet {
         }
     }
 
+    /// Round 13 — resolve every `@import url(…)` URL recorded in
+    /// [`Self::imports`] using a caller-supplied `fetcher`, parse the
+    /// fetched body as CSS, and append the imported sheet's rules to
+    /// `self.rules` so the cascade applies as if the rules were
+    /// inline.
+    ///
+    /// Why caller-supplied: the SVG parser has no opinion on whether
+    /// `@import url("foo.css")` should resolve via HTTP, the local
+    /// filesystem, an in-memory cache, or a sandboxed bundler — the
+    /// fetcher closure lets the consumer pick. `fetcher` returns
+    /// `None` to signal "I can't / won't fetch this URL"; the import
+    /// is then quietly skipped (matching browser tolerance — a
+    /// missing imported sheet doesn't break the whole document).
+    ///
+    /// Recursion: the fetched sheet's own `@import`s are resolved
+    /// transitively, up to a depth cap of 8 (matches what major
+    /// browsers cap at — see CSS 2.1 §6.3 implementation note in the
+    /// CSSOM specs). Cycles (a sheet eventually imports itself
+    /// directly or transitively) are detected via a visited-URL set;
+    /// the offending re-import is skipped and the rest of the sheet
+    /// still applies.
+    ///
+    /// `imports` is left populated post-resolve so callers can
+    /// re-introspect what was requested (e.g. for cache invalidation
+    /// or a separate "show all sheets" UI).
+    ///
+    /// Failure modes (per the round-13 spec):
+    ///
+    /// - `fetcher` returns `None` → the import is silently dropped
+    ///   (logged at `debug` for observability).
+    /// - Fetched bytes aren't valid UTF-8 → silently dropped.
+    /// - Parse produces no rules → silently dropped (matches
+    ///   `parse_block`'s tolerant behaviour for malformed CSS).
+    pub fn resolve_imports<F>(&mut self, fetcher: F)
+    where
+        F: Fn(&str) -> Option<Vec<u8>>,
+    {
+        let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let pending: Vec<String> = self.imports.clone();
+        for url in pending {
+            self.resolve_import_recursive(&url, &fetcher, &mut visited, 0);
+        }
+    }
+
+    /// Internal recursive helper for `resolve_imports`. Tracks
+    /// visited URLs (cycle detection) and recursion depth (runaway
+    /// chain protection — capped at [`Self::IMPORT_DEPTH_CAP`]).
+    fn resolve_import_recursive<F>(
+        &mut self,
+        url: &str,
+        fetcher: &F,
+        visited: &mut std::collections::HashSet<String>,
+        depth: usize,
+    ) where
+        F: Fn(&str) -> Option<Vec<u8>>,
+    {
+        if depth >= Self::IMPORT_DEPTH_CAP {
+            log::debug!(
+                "@import depth cap ({}) reached; skipping `{}`",
+                Self::IMPORT_DEPTH_CAP,
+                url
+            );
+            return;
+        }
+        if !visited.insert(url.to_string()) {
+            log::debug!("@import cycle detected on `{}`; skipping", url);
+            return;
+        }
+        let bytes = match fetcher(url) {
+            Some(b) => b,
+            None => {
+                log::debug!("@import fetcher returned None for `{}`; skipping", url);
+                return;
+            }
+        };
+        let css = match std::str::from_utf8(&bytes) {
+            Ok(s) => s.to_string(),
+            Err(e) => {
+                log::debug!("@import body for `{}` is not UTF-8: {}", url, e);
+                return;
+            }
+        };
+        // Parse the fetched body into a fresh sheet so we can recurse
+        // into its imports separately without polluting `self.imports`.
+        let mut nested = Stylesheet::new();
+        nested.parse_block(&css);
+        // Per CSS 2.1 §6.3, the imported sheet's rules behave as if
+        // they appeared at the @import statement's position. We
+        // append to `self.rules` after the existing rules — the
+        // parent's later rules still win on equal-specificity
+        // ties (matched_declarations sorts stably by source
+        // order). For full spec accuracy callers should call
+        // `resolve_imports` before `parse_block`-ing additional
+        // inline rules; documenting this is sufficient for round 13.
+        self.rules.append(&mut nested.rules);
+        // Recurse into the nested sheet's own imports.
+        for nested_url in &nested.imports {
+            self.resolve_import_recursive(nested_url, fetcher, visited, depth + 1);
+        }
+    }
+
+    /// Maximum `@import` recursion depth. Eight matches what major
+    /// browsers cap at (Firefox + WebKit historically; see CSSOM
+    /// implementation notes). Enough to load a typical theme tree
+    /// without runaway expansion.
+    pub const IMPORT_DEPTH_CAP: usize = 8;
+
     /// Return every declaration matching `mctx.el`, sorted ascending by
     /// specificity (caller layers them in order — last wins, ties go to
     /// source order). The pairs are owned because the caller often

@@ -33,6 +33,10 @@ oxideav-scribe = { version = "0.1.1", optional = true }
 # (miniz_oxide) so we don't pull in any C dependencies — same backend
 # `oxideav-pdf` and `oxideav-png` already use transitively.
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+# Round 13: `Stylesheet::resolve_imports` emits `log::debug!` lines
+# when an `@import` is skipped (fetcher returned None / cycle / depth
+# cap reached). The crate is otherwise silent.
+log = "0.4"
 
 [dev-dependencies]
 # Needed in `round3_svgz` to gzip a fixture by hand and assert the
