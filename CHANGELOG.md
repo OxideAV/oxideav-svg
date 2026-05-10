@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/OxideAV/oxideav-svg/compare/v0.1.2...v0.1.3) - 2026-05-09
+
+### Added
+
+- round 19 — thread ResolveContext through element.rs / decoder.rs
+- round 18 — CSS Values L4 length units + CSS Easing L2 linear()
+- round 17 — CSS @supports + animation long-tail (timing/direction/fill-mode/multi-name)
+- round 16 — CSS @media + @keyframes-at-t evaluation
+- round 15 — <image> capture + CSS @keyframes capture
+- round 14 — <symbol> + <use> viewport mapping + CSS @font-face capture
+- round 13 — animation re-attachment to source emit site + Stylesheet::resolve_imports
+- round 12 — <script> graceful capture + viewBox/preserveAspectRatio mapping
+- round 11 — feImage / feTile + ::before/::after + @import + stateful pseudos
+- round 10 — feDiffuseLighting / feSpecularLighting + LightSource
+- round 9 — feConvolveMatrix / feTurbulence / feDisplacementMap
+- round 8 — long-tail filter primitives (feColorMatrix / feMerge / feComponentTransfer / feDropShadow)
+- round 7 — typed <filter> primitive graph + calcMode paced/spline
+- round 6 — Selectors L3 leftovers (:nth-last-*, :lang) + SVG 2 d as a CSS property
+- round 5 — CSS 3 Selectors Level 3 subset (attrs + combinators + structural pseudos)
+- round 4 — SMIL @ arbitrary t + CSS cascade + encoder preservation
+
+### Other
+
+- round 15 — <image> capture + @keyframes capture
+- document round 5 (CSS3 Selectors L3) + round 6 sections
+- drop stale REGISTRARS / with_all_features intra-doc links
+- drop dead `linkme` dep
+- drop committed Cargo.lock + relax oxideav-core to "0.1"
+- auto-register via oxideav_core::register! macro (linkme distributed slice)
+- unify entry point on register(&mut RuntimeContext) ([#502](https://github.com/OxideAV/oxideav-svg/pull/502))
+
 ### Added
 
 - **Round 19** — SVG 2 §10 length-resolution wiring through
