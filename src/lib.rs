@@ -430,6 +430,31 @@
 //!   appropriate axis per SVG 2 §7.10 (X for width-class attrs, Y for
 //!   height-class, "diagonal" for `r`). Bare-numeric coordinate
 //!   values round-trip bit-for-bit identical to the round-1 path.
+//!
+//! # Round 20 additions
+//!
+//! * **`<pattern>` paint-server capture (SVG 2 §14.3).** New typed
+//!   [`crate::defs::PatternDef`] carries every spec attribute (`x` /
+//!   `y` / `width` / `height` + `patternUnits` /
+//!   `patternContentUnits` per §14.3.1 defaulting to
+//!   `ObjectBoundingBox` / `UserSpaceOnUse` + `patternTransform` +
+//!   `viewBox` + `preserveAspectRatio` + `href` for SVG-2 plus the
+//!   legacy `xlink:href` template reference) and the parsed tile
+//!   content as a `Group`. Populated into
+//!   [`crate::defs::DefsTables::patterns`] during the pre-walk so
+//!   forward references resolve regardless of source order; verbatim
+//!   XML also rides on [`crate::preserved::PreservedExtras::patterns`]
+//!   so `parse_svg_with_extras` → `write_svg_with_extras` round-trips
+//!   the definition byte-faithfully.
+//! * **SVG 2 §13.2 paint-list with fallback** —
+//!   `fill="url(#pat) red"` / `fill="url(#pat) none"` /
+//!   `fill="url(#pat)"` all parse via the widened
+//!   [`crate::color::PaintValue::Reference`] struct variant. A known
+//!   pattern (or an unresolvable id) falls through to the fallback
+//!   colour today since `oxideav_core::Paint` has no `Pattern` variant
+//!   yet — Inkscape / Illustrator hatch-pattern exports therefore no
+//!   longer render as silent-empty fills while preserving the
+//!   pattern definition for a later renderer.
 
 pub mod animation;
 pub mod color;

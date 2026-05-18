@@ -22,9 +22,35 @@ pub enum PaintValue {
     None,
     /// A solid colour.
     Color(Rgba),
-    /// A `url(#id)` reference to a gradient / pattern. The `id` is
-    /// stored verbatim (without the leading `#`).
-    Reference(String),
+    /// A `url(#id)` reference to a gradient / pattern, with an optional
+    /// fallback per SVG 2 §13.2 (`<paint> = url(...) [none | <color>]?`).
+    /// The `id` is stored verbatim (without the leading `#`). The
+    /// fallback is taken when the reference resolves to an unknown id
+    /// or to an element that isn't a valid paint server.
+    ///
+    /// `fallback == Some(None)` encodes the explicit `none` token (paint
+    /// suppressed if the reference is invalid); `fallback == None`
+    /// indicates the SVG-1.1-style bare reference with no fallback
+    /// token. The two are distinct on round-trip so the encoder can
+    /// re-emit the source verbatim instead of injecting a synthetic
+    /// `none`.
+    Reference {
+        id: String,
+        fallback: Option<Option<Rgba>>,
+    },
+}
+
+impl PaintValue {
+    /// Backwards-compat constructor matching the pre-round-20
+    /// [`PaintValue::Reference(String)`] shape (no fallback token).
+    /// Round 20 widened the variant to carry the SVG 2 paint-list
+    /// fallback; this helper keeps the legacy call sites compact.
+    pub fn reference(id: impl Into<String>) -> Self {
+        PaintValue::Reference {
+            id: id.into(),
+            fallback: None,
+        }
+    }
 }
 
 /// Parse a paint value (`fill`/`stroke` attribute). Whitespace is
@@ -53,11 +79,14 @@ pub fn parse_paint(src: &str) -> Result<PaintValue> {
     if let Some(rest) = strip_func(s, "rgba") {
         return parse_rgb_args(rest, true).map(PaintValue::Color);
     }
-    if let Some(rest) = strip_func(s, "url") {
-        // url(#id) — strip optional surrounding quotes and the leading '#'.
+    if let Some((rest, tail)) = strip_func_with_tail(s, "url") {
+        // url(#id) [none | <color>]? — strip optional surrounding quotes
+        // and the leading '#' on the id; the remainder, if any, is the
+        // SVG 2 §13.2 fallback token.
         let inner = rest.trim().trim_matches(|c: char| c == '\'' || c == '"');
-        let id = inner.strip_prefix('#').unwrap_or(inner);
-        return Ok(PaintValue::Reference(id.to_string()));
+        let id = inner.strip_prefix('#').unwrap_or(inner).to_string();
+        let fallback = parse_paint_fallback(tail)?;
+        return Ok(PaintValue::Reference { id, fallback });
     }
     if let Some(rgb) = lookup_named_color(s) {
         return Ok(PaintValue::Color(Rgba::opaque(rgb.0, rgb.1, rgb.2)));
@@ -85,6 +114,49 @@ fn strip_func<'a>(s: &'a str, name: &str) -> Option<&'a str> {
     let inner = rest.strip_prefix('(')?;
     let close = inner.rfind(')')?;
     Some(&inner[..close])
+}
+
+/// Like [`strip_func`] but also returns the (trimmed) tail after the
+/// closing parenthesis. Used by the SVG 2 §13.2 paint-list parser to
+/// pick up the optional `[none | <color>]` fallback after `url(...)`.
+fn strip_func_with_tail<'a>(s: &'a str, name: &str) -> Option<(&'a str, &'a str)> {
+    let lower = s.to_ascii_lowercase();
+    if !lower.starts_with(name) {
+        return None;
+    }
+    let rest = &s[name.len()..];
+    let rest = rest.trim_start();
+    let inner = rest.strip_prefix('(')?;
+    let close = inner.find(')')?;
+    let payload = &inner[..close];
+    let tail = inner[close + 1..].trim();
+    Some((payload, tail))
+}
+
+/// Parse the optional fallback after a `url(...)` reference per SVG 2
+/// §13.2. Returns:
+///   - `Ok(None)`             — no fallback token (legacy bare-reference)
+///   - `Ok(Some(None))`       — explicit `none` (suppress paint on
+///     resolution failure)
+///   - `Ok(Some(Some(Rgba)))` — explicit colour fallback
+fn parse_paint_fallback(tail: &str) -> Result<Option<Option<Rgba>>> {
+    if tail.is_empty() {
+        return Ok(None);
+    }
+    if tail.eq_ignore_ascii_case("none") {
+        return Ok(Some(None));
+    }
+    // Per SVG 2 §13.2 only a <color> may follow `none` is its own
+    // sibling. Reuse parse_paint recursively but reject another url(...)
+    // (no chained paint servers).
+    let inner = parse_paint(tail)?;
+    match inner {
+        PaintValue::Color(c) => Ok(Some(Some(c))),
+        PaintValue::None => Ok(Some(None)),
+        PaintValue::Reference { .. } => Err(Error::invalid(
+            "SVG paint: fallback after url(...) must be `none` or a colour",
+        )),
+    }
 }
 
 fn parse_hex(rest: &str) -> Result<Rgba> {
@@ -404,12 +476,63 @@ mod tests {
     fn parses_url_reference() {
         assert_eq!(
             parse_paint("url(#grad1)").unwrap(),
-            PaintValue::Reference("grad1".to_string())
+            PaintValue::Reference {
+                id: "grad1".into(),
+                fallback: None,
+            }
         );
         assert_eq!(
             parse_paint("url('#g')").unwrap(),
-            PaintValue::Reference("g".to_string())
+            PaintValue::Reference {
+                id: "g".into(),
+                fallback: None,
+            }
         );
+    }
+
+    // Round 20 — SVG 2 §13.2 paint-list with fallback.
+    #[test]
+    fn parses_url_reference_with_colour_fallback() {
+        assert_eq!(
+            parse_paint("url(#p1) red").unwrap(),
+            PaintValue::Reference {
+                id: "p1".into(),
+                fallback: Some(Some(Rgba::opaque(255, 0, 0))),
+            }
+        );
+        assert_eq!(
+            parse_paint("url(#p1) #00ff00").unwrap(),
+            PaintValue::Reference {
+                id: "p1".into(),
+                fallback: Some(Some(Rgba::opaque(0, 255, 0))),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_url_reference_with_none_fallback() {
+        assert_eq!(
+            parse_paint("url(#p1) none").unwrap(),
+            PaintValue::Reference {
+                id: "p1".into(),
+                fallback: Some(None),
+            }
+        );
+        // Case-insensitive on the `none` token.
+        assert_eq!(
+            parse_paint("url(#p1) NONE").unwrap(),
+            PaintValue::Reference {
+                id: "p1".into(),
+                fallback: Some(None),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_chained_paint_server_fallback() {
+        // `url(#a) url(#b)` is not a valid SVG 2 paint-list — the
+        // fallback must be `none` or a <color>.
+        assert!(parse_paint("url(#a) url(#b)").is_err());
     }
 
     #[test]

@@ -182,12 +182,12 @@ impl PaintState {
         Ok(())
     }
 
-    fn solid_fill(&self, gradients: &GradientTable) -> Option<Paint> {
-        resolve_paint(&self.fill, self.fill_opacity, gradients)
+    fn solid_fill(&self, gradients: &GradientTable, defs: &DefsTables) -> Option<Paint> {
+        resolve_paint(&self.fill, self.fill_opacity, gradients, defs)
     }
 
-    fn solid_stroke(&self, gradients: &GradientTable) -> Option<Stroke> {
-        let paint = resolve_paint(&self.stroke, self.stroke_opacity, gradients)?;
+    fn solid_stroke(&self, gradients: &GradientTable, defs: &DefsTables) -> Option<Stroke> {
+        let paint = resolve_paint(&self.stroke, self.stroke_opacity, gradients, defs)?;
         Some(Stroke {
             width: self.stroke_width,
             paint,
@@ -207,11 +207,64 @@ fn apply_alpha(color: Rgba, alpha: f32) -> Rgba {
     Rgba::new(color.r, color.g, color.b, a.round() as u8)
 }
 
-fn resolve_paint(value: &PaintValue, opacity: f32, gradients: &GradientTable) -> Option<Paint> {
+/// Resolve a parsed [`PaintValue`] against the gradient + pattern
+/// tables. Returns `None` for `none` (no paint), an explicit `none`
+/// fallback (round 20), or an unresolvable reference with no fallback.
+///
+/// Round 20 — the SVG 2 §13.2 paint-list (`url(#id) [none | <color>]`)
+/// resolves through the following precedence:
+///   1. Gradient table (round 1+ — typed [`Paint`] cloned into place).
+///   2. Pattern table (round 20 — typed [`crate::defs::PatternDef`]).
+///      The renderer doesn't yet have a `Paint::Pattern` constructor
+///      so we treat a successful pattern lookup as "no fill" UNTIL
+///      the fallback colour applies. In other words, a pattern with
+///      a fallback colour renders as the fallback today; without a
+///      fallback, no paint is applied. Once `oxideav_core::Paint`
+///      gains a `Pattern` variant, the pattern branch will return the
+///      tiled paint directly and the fallback path becomes a true
+///      error case again.
+///   3. Fallback (when present in the source paint-list).
+fn resolve_paint(
+    value: &PaintValue,
+    opacity: f32,
+    gradients: &GradientTable,
+    defs: &DefsTables,
+) -> Option<Paint> {
     match value {
         PaintValue::None => None,
         PaintValue::Color(c) => Some(Paint::Solid(apply_alpha(*c, opacity))),
-        PaintValue::Reference(id) => gradients.get(id).cloned(),
+        PaintValue::Reference { id, fallback } => {
+            if let Some(p) = gradients.get(id) {
+                return Some(p.clone());
+            }
+            if defs.patterns.contains_key(id) {
+                // Pattern paint server known but `oxideav_core::Paint`
+                // has no `Pattern` variant — fall through to the
+                // fallback so the visual isn't silently dropped. Per
+                // SVG 2 §13.2: the fallback applies "if the paint
+                // server reference cannot be resolved." Strict
+                // interpretation treats a successful resolution as
+                // "render the pattern," but for a scene graph that
+                // can't carry one, the fallback is the spec-friendly
+                // proxy.
+                return resolve_paint_fallback(fallback, opacity);
+            }
+            // Unknown id — apply fallback if any, otherwise no paint
+            // (matches the pre-round-20 behaviour for a bare
+            // `url(#missing)`).
+            resolve_paint_fallback(fallback, opacity)
+        }
+    }
+}
+
+/// Apply the optional `[none | <color>]` fallback half of an SVG 2
+/// paint-list. Returns `None` for explicit `none`, the alpha-scaled
+/// colour for `<color>`, and `None` for no fallback at all.
+fn resolve_paint_fallback(fallback: &Option<Option<Rgba>>, opacity: f32) -> Option<Paint> {
+    match fallback {
+        Some(Some(c)) => Some(Paint::Solid(apply_alpha(*c, opacity))),
+        Some(None) => None,
+        None => None,
     }
 }
 
@@ -903,8 +956,8 @@ pub fn parse_element_to_node_ctx(
             // We follow the spec literally; users who don't want a
             // fill set fill="none".
             let transform = attr(el, "transform").map(parse_transform).transpose()?;
-            let fill = state.solid_fill(&ctx.gradients);
-            let stroke = state.solid_stroke(&ctx.gradients);
+            let fill = state.solid_fill(&ctx.gradients, &ctx.defs);
+            let stroke = state.solid_stroke(&ctx.gradients, &ctx.defs);
             let path_node = PathNode {
                 path,
                 fill,
@@ -1159,6 +1212,101 @@ pub fn parse_symbol_def(
             intrinsic_height,
         },
     )))
+}
+
+/// Round 20 — parse `<pattern id="...">` into a typed
+/// [`crate::defs::PatternDef`]. SVG 2 §14.3.
+///
+/// Returns `None` if the element lacks an `id` (then it can't be
+/// referenced via `url(#id)`). The tile content (shapes / groups /
+/// nested gradients) is parsed using the existing element pipeline so a
+/// `<pattern>` containing a `<rect>` round-trips faithfully.
+pub fn parse_pattern_def(
+    el: &Element,
+    ctx: &mut ParseContext,
+) -> Result<Option<(String, crate::defs::PatternDef)>> {
+    use crate::defs::{PatternDef, PatternUnits};
+    let id = match attr(el, "id") {
+        Some(v) => v.to_string(),
+        None => return Ok(None),
+    };
+    // x / y default to 0; width / height default to 0. Per §14.3.1
+    // negative widths/heights are errors and zero suppresses paint —
+    // mirror that by capturing the parsed values as-is and letting a
+    // downstream rasterizer decide.
+    let x = parse_number(attr(el, "x"), 0.0)?;
+    let y = parse_number(attr(el, "y"), 0.0)?;
+    let width = parse_number(attr(el, "width"), 0.0)?;
+    let height = parse_number(attr(el, "height"), 0.0)?;
+    let pattern_units =
+        parse_pattern_units(attr(el, "patternUnits"), PatternUnits::ObjectBoundingBox);
+    let pattern_content_units = parse_pattern_units(
+        attr(el, "patternContentUnits"),
+        PatternUnits::UserSpaceOnUse,
+    );
+    let pattern_transform = match attr(el, "patternTransform") {
+        Some(s) => parse_transform(s)?,
+        None => Transform2D::identity(),
+    };
+    let view_box = match attr(el, "viewBox") {
+        Some(s) => parse_symbol_view_box(s),
+        None => None,
+    };
+    let preserve_aspect_ratio = match attr(el, "preserveAspectRatio") {
+        Some(s) => crate::filter::PreserveAspectRatio::from_str(s),
+        None => crate::filter::PreserveAspectRatio::default(),
+    };
+    let href = attr(el, "href")
+        .or_else(|| attr(el, "xlink:href"))
+        .map(|s| s.trim().trim_start_matches('#').to_string())
+        .unwrap_or_default();
+
+    // Parse the tile content using the standard pipeline. Pattern
+    // children may include shapes / groups / use / nested gradients;
+    // round 20 reuses the existing element parser so we get all of
+    // them for free (the round-2 def-walker already registered any
+    // nested defs into ctx during the pre-walk).
+    let parent_state = PaintState::default();
+    let mut content = Group::default();
+    for child in &el.children {
+        if let XmlNode::Element(c) = child {
+            if let Some(node) = parse_element_to_node(c, &parent_state, ctx)? {
+                content.children.push(node);
+            }
+        }
+    }
+    Ok(Some((
+        id,
+        PatternDef {
+            x,
+            y,
+            width,
+            height,
+            pattern_units,
+            pattern_content_units,
+            pattern_transform,
+            view_box,
+            preserve_aspect_ratio,
+            href,
+            content,
+        },
+    )))
+}
+
+/// Round 20 — `patternUnits` / `patternContentUnits` keyword parser
+/// per SVG 2 §14.3.1. Unknown / malformed values fall back to the
+/// caller-supplied default to mirror the spec's "ignore unknown" lenient
+/// processing rule.
+fn parse_pattern_units(
+    v: Option<&str>,
+    default: crate::defs::PatternUnits,
+) -> crate::defs::PatternUnits {
+    use crate::defs::PatternUnits;
+    match v.map(str::trim) {
+        Some("userSpaceOnUse") => PatternUnits::UserSpaceOnUse,
+        Some("objectBoundingBox") => PatternUnits::ObjectBoundingBox,
+        _ => default,
+    }
 }
 
 /// Parse the four-number `viewBox=` attribute payload. Returns `None`

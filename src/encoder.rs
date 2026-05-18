@@ -108,7 +108,8 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
         || !clips.entries.is_empty()
         || !masks.entries.is_empty()
         || !extras.styles.is_empty()
-        || !extras.filters.is_empty();
+        || !extras.filters.is_empty()
+        || !extras.patterns.is_empty();
     if has_defs {
         out.push_str("  <defs>\n");
         for body in &extras.styles {
@@ -121,6 +122,12 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
         }
         for filter in &extras.filters {
             write_raw_element(&mut out, filter, 2);
+        }
+        // Round 20 — `<pattern>` paint-server definitions, re-emitted
+        // verbatim from the side-channel so a `parse → write`
+        // round-trip preserves them.
+        for pattern in &extras.patterns {
+            write_raw_element(&mut out, pattern, 2);
         }
         for (id, paint) in &gradients.entries {
             write_gradient(&mut out, id, paint);

@@ -92,6 +92,15 @@ pub struct PreservedExtras {
     /// Built only by [`crate::decoder::parse_svg_with_extras`]. Empty
     /// for documents that have no id-bearing elements.
     pub id_paths: Vec<IdScenePath>,
+    /// Round 20 — `<pattern>` paint-server definitions captured
+    /// verbatim from the source SVG. The decoder also stores a typed
+    /// view on [`crate::defs::DefsTables::patterns`] for downstream
+    /// consumption, but the verbatim element here is the source of
+    /// truth for round-trip emission (preserves attribute ordering,
+    /// nested defs, and any attributes the typed view doesn't yet
+    /// model). The encoder re-emits each in a `<defs>` block so a
+    /// `parse → write` preserves the paint server.
+    pub patterns: Vec<Element>,
     /// Round 15 — `<image>` elements captured from the source SVG.
     ///
     /// Each entry holds the parsed [`SvgImage`] view (decoded inline
@@ -149,5 +158,6 @@ impl PreservedExtras {
             && self.root_preserve_aspect_ratio.is_none()
             && self.id_paths.is_empty()
             && self.images.is_empty()
+            && self.patterns.is_empty()
     }
 }

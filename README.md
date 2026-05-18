@@ -153,6 +153,35 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
+## Round 20 additions
+
+- **`<pattern>` paint-server capture (SVG 2 §14.3)** —
+  `<pattern id="...">` definitions now parse into a typed
+  `crate::defs::PatternDef` carrying every spec attribute
+  (`x` / `y` / `width` / `height` + `patternUnits` /
+  `patternContentUnits` per §14.3.1 + `patternTransform` + `viewBox`
+  + `preserveAspectRatio` + `href` / `xlink:href` template
+  reference). The typed view hangs off
+  `DefsTables::patterns: HashMap<String, PatternDef>` so a downstream
+  rasterizer can consume it without re-parsing. The verbatim XML
+  also rides on `PreservedExtras::patterns: Vec<Element>` so
+  `parse → write_svg_with_extras` round-trips the definition
+  byte-faithfully (encoder re-emits it inside the `<defs>` block).
+- **SVG 2 §13.2 paint-list (`url(#id) [none | <color>]?`)** —
+  `PaintValue::Reference` widened to a struct variant with an
+  optional `fallback: Option<Option<Rgba>>` capturing the SVG 2
+  three-way distinction (no fallback / explicit `none` / explicit
+  colour). The fill / stroke resolver consults both the gradient
+  table and the pattern table; a known pattern resolves to the
+  fallback colour today because `oxideav_core::Paint` has no
+  `Pattern` variant yet — once it lands, the pattern branch will
+  return the tiled paint directly. Unknown ids fall back the same
+  way, matching the spec's "if the paint server reference cannot be
+  resolved" wording. Inkscape / Illustrator hatch-pattern exports
+  therefore no longer render as silent-empty fills; they pick up
+  the author-supplied fallback colour while still preserving the
+  pattern definition for a later renderer.
+
 ## Round 18 additions
 
 - **CSS Values L4 length-unit aware coordinate parsing** via the new

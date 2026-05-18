@@ -9,7 +9,7 @@ use oxideav_core::{
 use crate::css::MatchContext;
 use crate::element::{
     derive_child_ctx, parse_clip_path_def, parse_element_to_node_ctx, parse_filter_def,
-    parse_mask_def, parse_number, parse_symbol_def, PaintState, ParseContext,
+    parse_mask_def, parse_number, parse_pattern_def, parse_symbol_def, PaintState, ParseContext,
 };
 use crate::filter::{MeetOrSlice, PreserveAspectRatio, PreserveAspectRatioAlign};
 use crate::length::ResolveContext;
@@ -105,6 +105,14 @@ fn collect_extras(el: &Element, extras: &mut PreservedExtras, current_id: Option
         }
         "filter" => {
             extras.filters.push(el.clone());
+        }
+        "pattern" => {
+            // Round 20 — capture the verbatim <pattern> for round-trip
+            // re-emission. The decoder's pre-walk separately builds a
+            // typed [`crate::defs::PatternDef`] for downstream
+            // consumers, but the verbatim XML is the round-trip
+            // source of truth.
+            extras.patterns.push(el.clone());
         }
         "foreignobject" => {
             extras.foreign_objects.push(el.clone());
@@ -411,6 +419,12 @@ fn register_all_defs(el: &Element, ctx: &mut ParseContext) -> Result<()> {
         "symbol" => {
             if let Some((id, def)) = parse_symbol_def(el, ctx)? {
                 ctx.defs.symbols.insert(id, def);
+            }
+        }
+        "pattern" => {
+            // Round 20 — typed <pattern> capture (SVG 2 §14.3).
+            if let Some((id, def)) = parse_pattern_def(el, ctx)? {
+                ctx.defs.patterns.insert(id, def);
             }
         }
         _ => {}

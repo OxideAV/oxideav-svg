@@ -248,7 +248,7 @@ impl crate::element::PaintState {
                 *c,
                 self.fill_opacity * self.opacity,
             ))),
-            crate::color::PaintValue::Reference(_) => None,
+            crate::color::PaintValue::Reference { .. } => None,
         }
     }
 }

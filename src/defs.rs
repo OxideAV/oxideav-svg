@@ -24,10 +24,19 @@
 
 use std::collections::HashMap;
 
-use oxideav_core::{Group, Path, ViewBox};
+use oxideav_core::{Group, Path, Transform2D, ViewBox};
 
 use crate::filter::{FilterGraph, PreserveAspectRatio};
 use crate::parser::Element;
+
+/// Round 20 — `patternUnits` / `patternContentUnits` value per SVG 2
+/// §14.3.1. Defaults: `patternUnits` → `ObjectBoundingBox`,
+/// `patternContentUnits` → `UserSpaceOnUse`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PatternUnits {
+    UserSpaceOnUse,
+    ObjectBoundingBox,
+}
 
 /// Captured `<filter id="...">` element. Round 2 stored the original
 /// element verbatim so the encoder could re-emit it; round 7 also
@@ -89,6 +98,57 @@ pub struct SymbolDef {
     pub intrinsic_height: Option<f32>,
 }
 
+/// Round 20 — captured `<pattern id="...">` paint server. SVG 2 §14.3.
+///
+/// `oxideav_core::Paint` lacks a `Pattern` variant — the IR was last
+/// frozen with only `Solid` / `LinearGradient` / `RadialGradient`. Round
+/// 20 captures every `<pattern>` we see (typed view + verbatim XML on
+/// the side-channel) so the encoder round-trips the definition AND a
+/// downstream rasterizer that picks up the typed view can tile the
+/// content correctly without re-parsing.
+///
+/// The fill / stroke resolver falls back to the SVG 2 §13.2 paint-list
+/// fallback colour (`fill="url(#pat) red"`) for a non-pattern-aware
+/// scene-graph renderer; once `Paint::Pattern` lands in oxideav-core
+/// this typed view becomes the input to the [`Paint`] constructor and
+/// the fallback path becomes a real edge case (invalid id, recursive
+/// reference, etc.) per the spec.
+#[derive(Clone, Debug)]
+pub struct PatternDef {
+    /// Tile reference rectangle. Stored in the units indicated by
+    /// `pattern_units` (default `ObjectBoundingBox` per §14.3.1, in
+    /// which case `0..=1` spans the referencing element's bounding
+    /// box).
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    /// Coordinate system for `x` / `y` / `width` / `height`. Default
+    /// `ObjectBoundingBox`.
+    pub pattern_units: PatternUnits,
+    /// Coordinate system for the pattern's tile content. Default
+    /// `UserSpaceOnUse`. Per §14.3.1, ignored when `view_box` is set.
+    pub pattern_content_units: PatternUnits,
+    /// Per-tile transform from the `patternTransform` attribute.
+    pub pattern_transform: Transform2D,
+    /// `viewBox` mapping inside the tile (§14.3.2 supplemental
+    /// transform).
+    pub view_box: Option<ViewBox>,
+    /// `preserveAspectRatio` inside the tile (default `xMidYMid meet`).
+    pub preserve_aspect_ratio: PreserveAspectRatio,
+    /// Template reference — `href` (or legacy `xlink:href`) per
+    /// §14.3.1. Stored as the bare id (`#`-stripped); empty `String`
+    /// when absent. Pattern chaining (template inheritance of `x` /
+    /// `y` / `width` / `height` / `viewBox` / `preserveAspectRatio` /
+    /// `patternTransform` / `patternUnits` / `patternContentUnits`
+    /// from the referenced template) is the rasterizer's job — round
+    /// 20 captures the reference faithfully.
+    pub href: String,
+    /// Parsed tile content as a `Group`. Empty group when the source
+    /// `<pattern>` had no renderable children.
+    pub content: Group,
+}
+
 /// Aggregated tables built during the pre-walk, consumed by the main
 /// element parser when it resolves `url(#id)` references.
 ///
@@ -102,6 +162,10 @@ pub struct DefsTables {
     pub masks: HashMap<String, MaskDef>,
     pub clip_paths: HashMap<String, ClipPathDef>,
     pub symbols: HashMap<String, SymbolDef>,
+    /// Round 20 — typed `<pattern>` paint servers (SVG 2 §14.3) keyed
+    /// by `id`. Populated during the pre-walk so a forward `fill=
+    /// "url(#pat)"` reference resolves regardless of source order.
+    pub patterns: HashMap<String, PatternDef>,
     /// Round 3: every `id`-bearing element in the source XML, captured
     /// for `<use href="#id">` resolution. Includes shapes, groups,
     /// symbols, defs children, etc. — anything addressable by id.

@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Round 20** — `<pattern>` paint-server capture (SVG 2 §14.3) + SVG 2
+  §13.2 paint-list fallback grammar
+  (`<paint> = url(#id) [none | <color>]?`).
+  - New typed [`crate::defs::PatternDef`] carrying every spec attribute
+    on `<pattern>`: `x` / `y` / `width` / `height` (parsed as numbers
+    in the units indicated by `patternUnits`), `patternUnits` /
+    `patternContentUnits` (`UserSpaceOnUse` / `ObjectBoundingBox`,
+    defaults per §14.3.1), `patternTransform` (`Transform2D`),
+    `viewBox`, `preserveAspectRatio`, `href` (template reference;
+    SVG-2 `href` and SVG-1.1 `xlink:href` both honoured), and the
+    parsed tile content as a `Group`. Captured into
+    `DefsTables::patterns: HashMap<String, PatternDef>` during the
+    pre-walk so forward references resolve.
+  - New [`crate::defs::PatternUnits`] enum (`UserSpaceOnUse` /
+    `ObjectBoundingBox`).
+  - [`PreservedExtras::patterns: Vec<Element>`] — verbatim source XML
+    of every `<pattern>` element. The encoder re-emits each in the
+    `<defs>` block (alongside `<filter>` extras) so a `parse → write`
+    round-trip preserves the paint-server definition byte-faithfully.
+  - [`PaintValue::Reference`] widened to a struct variant carrying an
+    optional `fallback: Option<Option<Rgba>>` per SVG 2 §13.2 —
+    `None` = legacy bare `url(...)` (no fallback token),
+    `Some(None)` = explicit `none` (suppress paint on resolution
+    failure), `Some(Some(rgba))` = explicit `<color>` fallback.
+    `PaintValue::reference(id)` constructor preserved as a
+    backwards-compat shorthand.
+  - [`crate::element::resolve_paint`] now consults both the gradient
+    table and the pattern table; a known pattern id resolves to the
+    fallback colour today (since `oxideav_core::Paint` has no
+    `Pattern` variant yet — once it lands, the pattern branch will
+    return the tiled paint directly and the fallback path will become
+    a true error case again per the spec).
+  - 9 new integration tests in `tests/round20_pattern.rs` (pattern
+    with fallback colour renders as the colour, pattern without
+    fallback yields no paint, unknown id with fallback resolves to
+    the colour, explicit `none` fallback suppresses paint, typed
+    `PatternDef` records spec defaults, every attribute survives the
+    typed parse, `<pattern>` round-trips through `PreservedExtras`,
+    legacy `xlink:href` template reference, missing pattern with no
+    fallback doesn't poison the document). Plus 3 new unit tests in
+    `crate::color::tests` covering the paint-list grammar (colour
+    fallback, `none` fallback, rejection of chained paint servers).
+
+
 ## [0.1.3](https://github.com/OxideAV/oxideav-svg/compare/v0.1.2...v0.1.3) - 2026-05-09
 
 ### Added
