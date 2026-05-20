@@ -104,12 +104,30 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
     let mut masks: MaskCollector = MaskCollector::default();
     walk_collect_defs(&frame.root, &mut gradients, &mut clips, &mut masks);
 
+    // Round 81 — collect the set of gradient ids carried by the
+    // preserved-extras side-channel so we skip the scene-walk's
+    // flattened emission for any id the author originally provided
+    // verbatim. Without this guard, a `parse → write_svg_with_extras`
+    // would emit each gradient twice (once verbatim from extras, once
+    // flattened from the scene-walk).
+    let extras_gradient_ids: std::collections::HashSet<&str> = extras
+        .gradients
+        .iter()
+        .filter_map(|el| {
+            el.attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("id"))
+                .map(|(_, v)| v.as_str())
+        })
+        .collect();
+
     let has_defs = !gradients.entries.is_empty()
         || !clips.entries.is_empty()
         || !masks.entries.is_empty()
         || !extras.styles.is_empty()
         || !extras.filters.is_empty()
-        || !extras.patterns.is_empty();
+        || !extras.patterns.is_empty()
+        || !extras.gradients.is_empty();
     if has_defs {
         out.push_str("  <defs>\n");
         for body in &extras.styles {
@@ -129,7 +147,19 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
         for pattern in &extras.patterns {
             write_raw_element(&mut out, pattern, 2);
         }
+        // Round 81 — preserved-extras gradients re-emitted verbatim
+        // *before* the flattened scene-walk gradients. Carrying the
+        // author's original element means `gradientUnits` /
+        // `gradientTransform` / `href` survive the round-trip even
+        // though the flattened legacy [`Paint`] dropped them.
+        for grad in &extras.gradients {
+            write_raw_element(&mut out, grad, 2);
+        }
         for (id, paint) in &gradients.entries {
+            if extras_gradient_ids.contains(id.as_str()) {
+                // Already emitted verbatim above — don't duplicate.
+                continue;
+            }
             write_gradient(&mut out, id, paint);
         }
         for (id, path) in &clips.entries {

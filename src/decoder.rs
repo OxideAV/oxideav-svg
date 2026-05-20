@@ -8,8 +8,9 @@ use oxideav_core::{
 
 use crate::css::MatchContext;
 use crate::element::{
-    derive_child_ctx, parse_clip_path_def, parse_element_to_node_ctx, parse_filter_def,
-    parse_mask_def, parse_number, parse_pattern_def, parse_symbol_def, PaintState, ParseContext,
+    derive_child_ctx, flatten_gradient_to_paint, parse_clip_path_def, parse_element_to_node_ctx,
+    parse_filter_def, parse_linear_gradient_def, parse_mask_def, parse_number, parse_pattern_def,
+    parse_radial_gradient_def, parse_symbol_def, PaintState, ParseContext,
 };
 use crate::filter::{MeetOrSlice, PreserveAspectRatio, PreserveAspectRatioAlign};
 use crate::length::ResolveContext;
@@ -113,6 +114,15 @@ fn collect_extras(el: &Element, extras: &mut PreservedExtras, current_id: Option
             // consumers, but the verbatim XML is the round-trip
             // source of truth.
             extras.patterns.push(el.clone());
+        }
+        "lineargradient" | "radialgradient" => {
+            // Round 81 — verbatim gradient capture. The typed view on
+            // `DefsTables::gradients` carries the resolved geometry +
+            // template chain for downstream consumers; this verbatim
+            // element is the round-trip source of truth so an author's
+            // `gradientUnits` / `gradientTransform` / `href` survive a
+            // `parse_svg_with_extras → write_svg_with_extras` cycle.
+            extras.gradients.push(el.clone());
         }
         "foreignobject" => {
             extras.foreign_objects.push(el.clone());
@@ -218,6 +228,24 @@ fn parse_svg_root(
     // forward references inside the doc work regardless of declaration
     // order.
     register_all_defs(svg, &mut ctx)?;
+
+    // Round 81 — flatten every typed [`GradientDef`] (via the §14.1.1
+    // template chain) into a legacy [`Paint`] for the round-1 fill
+    // resolver. Done AFTER `register_all_defs` so a forward `href`
+    // reference (`<linearGradient id="b" href="#a">` declared before
+    // `<linearGradient id="a">`) resolves correctly.
+    let mut gradient_paints: std::collections::HashMap<String, oxideav_core::Paint> =
+        std::collections::HashMap::with_capacity(ctx.defs.gradients.len());
+    for (id, def) in &ctx.defs.gradients {
+        gradient_paints.insert(id.clone(), flatten_gradient_to_paint(def, &ctx.defs));
+    }
+    for (id, paint) in gradient_paints {
+        // Don't clobber a legacy `Paint` already in the table — the
+        // few callers that go directly through `parse_linear_gradient`
+        // (round-1 unit tests / external code) bypass the def-table
+        // entirely.
+        ctx.gradients.entry(id).or_insert(paint);
+    }
 
     // Second pass: walk the tree and build the scene graph. Gradients
     // and round-2 defs are now resolvable. Build a per-child
@@ -392,13 +420,17 @@ fn register_all_defs(el: &Element, ctx: &mut ParseContext) -> Result<()> {
     }
     match tag_local(&el.name).as_str() {
         "lineargradient" => {
-            if let Some((id, p)) = crate::element::parse_linear_gradient(el)? {
-                ctx.gradients.insert(id, p);
+            // Round 81 — capture the typed def for §14.1.1 template
+            // chain resolution; the legacy `Paint` flatten happens in
+            // a second pass after the whole tree is walked so forward
+            // `href` references resolve regardless of source order.
+            if let Some((id, def)) = parse_linear_gradient_def(el)? {
+                ctx.defs.gradients.insert(id, def);
             }
         }
         "radialgradient" => {
-            if let Some((id, p)) = crate::element::parse_radial_gradient(el)? {
-                ctx.gradients.insert(id, p);
+            if let Some((id, def)) = parse_radial_gradient_def(el)? {
+                ctx.defs.gradients.insert(id, def);
             }
         }
         "filter" => {

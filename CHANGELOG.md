@@ -9,6 +9,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 81** — SVG 2 §14.1.1 gradient `href` template inheritance +
+  §14.2.2.1 / §14.2.3.1 `gradientUnits` / `gradientTransform` /
+  `spreadMethod` typed capture.
+  - New typed [`crate::defs::GradientDef`] carrying every spec
+    attribute on `<linearGradient>` / `<radialGradient>` as
+    `Option<_>` so [`crate::defs::resolve_gradient_chain`] can tell
+    "attribute not specified, inherit from template" from
+    "specified-with-explicit-value." Geometry kind discriminator
+    (`Linear` / `Radial`) — per-kind attributes are
+    `x1`/`y1`/`x2`/`y2` for linear and `cx`/`cy`/`r`/`fx`/`fy`/`fr`
+    for radial (including the SVG-2 `fr` focal-circle radius). Shared
+    `units` / `transform` / `spread` / `stops` / `href` on the parent
+    struct.
+  - New [`crate::defs::GradientUnits`] enum (`UserSpaceOnUse` /
+    `ObjectBoundingBox`; default `ObjectBoundingBox` per §14.2.2.1
+    / §14.2.3.1).
+  - New [`crate::defs::ResolvedGradient`] / [`ResolvedGradientKind`]
+    — the output of `resolve_gradient_chain`: every attribute pinned
+    to a concrete value, stops populated. Spec defaults populated
+    when the whole chain leaves an attribute unspecified (linear:
+    `x1=0`, `y1=0`, `x2=1`, `y2=0`; radial: `cx=cy=0.5`, `r=0.5`,
+    `fx=cx`, `fy=cy`, `fr=0`).
+  - `<linearGradient>` / `<radialGradient>` honour both SVG-2 `href`
+    and SVG-1.1 `xlink:href`; child-specified attributes win over the
+    template per §14.1.1.
+  - Cycle / depth-cap guard: chain walker terminates at
+    `GRADIENT_HREF_DEPTH_CAP = 8` hops or on a self-reference,
+    matching the round-13 CSS `@import` cap.
+  - [`crate::element::flatten_gradient_to_paint`] folds the resolved
+    chain into a legacy [`oxideav_core::Paint::LinearGradient`] /
+    `RadialGradient`, with `gradientTransform` applied to the start /
+    end / centre / focal points; the radius is scaled by the
+    geometric mean of the matrix's per-axis scale (a uniform-scale
+    `gradientTransform` is bit-exact; non-uniform scale / shear keeps
+    full fidelity in the typed `ResolvedGradient` on
+    `DefsTables::gradients` for a renderer that wants it).
+  - [`PreservedExtras::gradients: Vec<Element>`] — verbatim source
+    XML of every `<linearGradient>` / `<radialGradient>` element. The
+    encoder re-emits each verbatim in the `<defs>` block and skips
+    the scene-walk's flattened emission for any id the side-channel
+    already carried, so `parse_svg_with_extras → write_svg_with_extras`
+    preserves `gradientUnits` / `gradientTransform` / `href` /
+    `xlink:href` byte-faithfully without duplicating definitions.
+  - 9 new integration tests in `tests/round81_gradient_template.rs`
+    (linear template chain copies coords + stops, `xlink:href`
+    deprecated form resolves the same way, radial template chain
+    copies `cx`/`cy`/`r`/`fx`/`fy`, child-specified attribute
+    overrides template, self-reference is broken with spec defaults,
+    `gradientTransform` is folded into the flattened paint, typed
+    def records units / transform / href + spread, round-trip
+    preserves the template chain verbatim, explicit
+    `gradientUnits="userSpaceOnUse"` passes through the resolver
+    intact). Plus 6 unit tests in `crate::defs::tests` covering the
+    chain walker (no chain → spec defaults, single-hop inheritance,
+    child-wins precedence, cycle termination, radial defaults, radial
+    chain inheritance with kind preservation).
+
 - **Round 20** — `<pattern>` paint-server capture (SVG 2 §14.3) + SVG 2
   §13.2 paint-list fallback grammar
   (`<paint> = url(#id) [none | <color>]?`).

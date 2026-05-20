@@ -18,7 +18,10 @@ use oxideav_core::{
 
 use crate::color::{parse_opacity, parse_paint, PaintValue};
 use crate::css::{declarations_for, MatchContext, Stylesheet};
-use crate::defs::{parse_url_ref, ClipPathDef, DefsTables, FilterDef, MaskDef, SymbolDef};
+use crate::defs::{
+    parse_url_ref, resolve_gradient_chain, ClipPathDef, DefsTables, FilterDef, GradientDef,
+    GradientKind, GradientUnits, MaskDef, ResolvedGradient, ResolvedGradientKind, SymbolDef,
+};
 use crate::length::{parse_length, LengthAxis, ResolveContext};
 use crate::parser::{attr, tag_local, Element, Node as XmlNode};
 use crate::path_data::parse_path_data;
@@ -380,6 +383,15 @@ impl ParseContext {
 /// Parse `<linearGradient id="...">` into a [`Paint`] entry. Returns
 /// `Some((id, paint))` on success, `None` if the element lacks an `id`
 /// (in which case it can't be referenced).
+///
+/// **Round 81** — this is the *legacy* path that ignores `href`
+/// template inheritance and `gradientUnits` / `gradientTransform`.
+/// The decoder pre-walk now builds typed [`GradientDef`]s via
+/// [`parse_linear_gradient_def`] and flattens them through
+/// [`crate::defs::resolve_gradient_chain`]; this entry point survives
+/// for the round-1 unit-tests and for downstream callers that need a
+/// direct `Element → Paint` conversion without going through the def
+/// table.
 pub fn parse_linear_gradient(el: &Element) -> Result<Option<(String, Paint)>> {
     let id = match attr(el, "id") {
         Some(v) => v.to_string(),
@@ -403,6 +415,9 @@ pub fn parse_linear_gradient(el: &Element) -> Result<Option<(String, Paint)>> {
 }
 
 /// Parse `<radialGradient id="...">` into a [`Paint`] entry.
+///
+/// See the [`parse_linear_gradient`] doc-comment regarding the
+/// round-81 split with [`parse_radial_gradient_def`].
 pub fn parse_radial_gradient(el: &Element) -> Result<Option<(String, Paint)>> {
     let id = match attr(el, "id") {
         Some(v) => v.to_string(),
@@ -435,6 +450,189 @@ pub fn parse_radial_gradient(el: &Element) -> Result<Option<(String, Paint)>> {
             spread,
         }),
     )))
+}
+
+/// Round 81 — parse `<linearGradient>` into a typed [`GradientDef`]
+/// preserving per-attribute "specified vs absent" so
+/// [`crate::defs::resolve_gradient_chain`] can apply SVG 2 §14.1.1
+/// template inheritance.
+///
+/// Returns `None` when the element lacks an `id` (no `url(#id)`
+/// reference can target it).
+pub fn parse_linear_gradient_def(el: &Element) -> Result<Option<(String, GradientDef)>> {
+    let id = match attr(el, "id") {
+        Some(v) => v.to_string(),
+        None => return Ok(None),
+    };
+    let kind = GradientKind::Linear {
+        x1: parse_opt_coord(attr(el, "x1"))?,
+        y1: parse_opt_coord(attr(el, "y1"))?,
+        x2: parse_opt_coord(attr(el, "x2"))?,
+        y2: parse_opt_coord(attr(el, "y2"))?,
+    };
+    Ok(Some((id, gradient_def_common(el, kind)?)))
+}
+
+/// Round 81 — parse `<radialGradient>` into a typed [`GradientDef`]
+/// preserving per-attribute "specified vs absent." See
+/// [`parse_linear_gradient_def`].
+pub fn parse_radial_gradient_def(el: &Element) -> Result<Option<(String, GradientDef)>> {
+    let id = match attr(el, "id") {
+        Some(v) => v.to_string(),
+        None => return Ok(None),
+    };
+    let kind = GradientKind::Radial {
+        cx: parse_opt_coord(attr(el, "cx"))?,
+        cy: parse_opt_coord(attr(el, "cy"))?,
+        r: parse_opt_coord(attr(el, "r"))?,
+        fx: parse_opt_coord(attr(el, "fx"))?,
+        fy: parse_opt_coord(attr(el, "fy"))?,
+        fr: parse_opt_coord(attr(el, "fr"))?,
+    };
+    Ok(Some((id, gradient_def_common(el, kind)?)))
+}
+
+/// Shared (units / transform / spread / stops / href) tail parser used
+/// by both [`parse_linear_gradient_def`] and
+/// [`parse_radial_gradient_def`]. Per SVG 2 §14.2.2.1 / §14.2.3.1 +
+/// §14.1.1 every field stays `Option<_>` so the template walker can
+/// distinguish "not specified" (inherit from template) from
+/// "specified-with-default" (the child's explicit choice wins).
+fn gradient_def_common(el: &Element, kind: GradientKind) -> Result<GradientDef> {
+    let units = match attr(el, "gradientUnits") {
+        Some(s) => parse_gradient_units_opt(s),
+        None => None,
+    };
+    let transform = match attr(el, "gradientTransform") {
+        Some(s) => Some(parse_transform(s)?),
+        None => None,
+    };
+    let spread = match attr(el, "spreadMethod") {
+        Some(s) => Some(parse_spread_method_value(s)?),
+        None => None,
+    };
+    let stops = collect_stops(el)?;
+    let href = attr(el, "href")
+        .or_else(|| attr(el, "xlink:href"))
+        .map(|s| s.trim().trim_start_matches('#').to_string())
+        .unwrap_or_default();
+    Ok(GradientDef {
+        kind,
+        units,
+        transform,
+        spread,
+        stops,
+        href,
+    })
+}
+
+/// Round 81 — flatten a typed [`GradientDef`] (via the template chain)
+/// into a legacy [`Paint`] so [`resolve_paint`] keeps working without a
+/// renderer-side rewrite. `gradient_transform` is folded into the
+/// gradient's geometry (start / end points or center / focal) by
+/// applying the transform to the original coords. For
+/// `gradientUnits="objectBoundingBox"` (the default) the bare 0..1
+/// coords are kept literal — the existing round-1 paint resolver
+/// already documented that gradient coordinates are unitless box
+/// fractions — but the units field stays preserved in
+/// [`crate::defs::DefsTables`] for a renderer that needs it.
+pub fn flatten_gradient_to_paint(def: &GradientDef, defs: &DefsTables) -> Paint {
+    let resolved = resolve_gradient_chain(def, defs);
+    resolved_to_paint(&resolved)
+}
+
+fn resolved_to_paint(r: &ResolvedGradient) -> Paint {
+    let tx = &r.transform;
+    match r.kind {
+        ResolvedGradientKind::Linear { x1, y1, x2, y2 } => {
+            let start = apply_xform(tx, x1, y1);
+            let end = apply_xform(tx, x2, y2);
+            Paint::LinearGradient(LinearGradient {
+                start,
+                end,
+                stops: r.stops.clone(),
+                spread: r.spread,
+            })
+        }
+        ResolvedGradientKind::Radial {
+            cx,
+            cy,
+            r: radius,
+            fx,
+            fy,
+            ..
+        } => {
+            let center = apply_xform(tx, cx, cy);
+            let focal_pt = apply_xform(tx, fx, fy);
+            let focal_opt = if (fx - cx).abs() < 1e-6 && (fy - cy).abs() < 1e-6 {
+                None
+            } else {
+                Some(focal_pt)
+            };
+            // Approximate transformed radius via the geometric mean of
+            // the transform's per-axis scale (the spec semantics for a
+            // non-uniformly-scaled radial gradient need a renderer
+            // that tracks the full 2x2 matrix; this preserves area for
+            // a uniform scale + falls back to a sensible default for
+            // shear / non-uniform — the typed `ResolvedGradient` on
+            // [`DefsTables::gradients`] still has the full geometry
+            // for a renderer that wants exact behaviour).
+            let sx = (tx.a * tx.a + tx.b * tx.b).sqrt();
+            let sy = (tx.c * tx.c + tx.d * tx.d).sqrt();
+            let scaled = radius * (sx * sy).sqrt();
+            Paint::RadialGradient(RadialGradient {
+                center,
+                radius: scaled,
+                focal: focal_opt,
+                stops: r.stops.clone(),
+                spread: r.spread,
+            })
+        }
+    }
+}
+
+#[inline]
+fn apply_xform(t: &Transform2D, x: f32, y: f32) -> Point {
+    // (x', y') = (a*x + c*y + e, b*x + d*y + f) per Transform2D's
+    // column-major SVG/PDF matrix layout.
+    Point::new(t.a * x + t.c * y + t.e, t.b * x + t.d * y + t.f)
+}
+
+fn parse_opt_coord(v: Option<&str>) -> Result<Option<f32>> {
+    match v {
+        None => Ok(None),
+        Some(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                return Ok(None);
+            }
+            // Strip `%` (matches the legacy `parse_coord` lenience).
+            let bare = trimmed.trim_end_matches('%');
+            bare.parse::<f32>()
+                .map(Some)
+                .map_err(|_| Error::invalid("SVG gradient: malformed coordinate"))
+        }
+    }
+}
+
+fn parse_gradient_units_opt(s: &str) -> Option<GradientUnits> {
+    match s.trim() {
+        "userSpaceOnUse" => Some(GradientUnits::UserSpaceOnUse),
+        "objectBoundingBox" => Some(GradientUnits::ObjectBoundingBox),
+        // Unknown → leave as None so the template-chain walker can fall
+        // back to the spec default rather than baking the unknown
+        // keyword in.
+        _ => None,
+    }
+}
+
+fn parse_spread_method_value(s: &str) -> Result<SpreadMethod> {
+    Ok(match s.trim() {
+        "pad" => SpreadMethod::Pad,
+        "reflect" => SpreadMethod::Reflect,
+        "repeat" => SpreadMethod::Repeat,
+        _ => return Err(Error::invalid("SVG gradient: bad spreadMethod")),
+    })
 }
 
 fn parse_coord(v: Option<&str>, default: f32) -> Result<f32> {
@@ -894,13 +1092,13 @@ pub fn parse_element_to_node_ctx(
             // depend on inheritance and are cheap to re-resolve).
             for child in &el.children {
                 if let XmlNode::Element(c) = child {
-                    register_def(c, &mut ctx.gradients)?;
+                    register_def(c, ctx)?;
                 }
             }
             None
         }
         "lineargradient" | "radialgradient" => {
-            register_def(el, &mut ctx.gradients)?;
+            register_def(el, ctx)?;
             None
         }
         // Round-2: filter / mask / clipPath / symbol definitions don't
@@ -1389,16 +1587,39 @@ fn transform_path(path: Path, t: &Transform2D) -> Path {
     Path { commands: cmds }
 }
 
-fn register_def(el: &Element, gradients: &mut GradientTable) -> Result<()> {
+/// Round-1 helper that captured `<linearGradient>` / `<radialGradient>`
+/// during the second tree-walk pass and inserted the legacy
+/// [`Paint`] into the gradient table.
+///
+/// **Round 81** — superseded by [`crate::defs::resolve_gradient_chain`]
+/// flattening on the typed [`crate::defs::DefsTables::gradients`] table
+/// (populated during the pre-walk in
+/// [`crate::decoder::register_all_defs`] then flattened en-masse
+/// once after the pre-walk). The second-pass entry-point now goes
+/// through `register_def_typed` which (a) registers the typed def if
+/// it's not already on the table and (b) keeps the
+/// `ctx.gradients` legacy `Paint` cache in sync via the chain
+/// resolver.
+fn register_def(el: &Element, ctx: &mut ParseContext) -> Result<()> {
     match tag_local(&el.name).as_str() {
         "lineargradient" => {
-            if let Some((id, paint)) = parse_linear_gradient(el)? {
-                gradients.insert(id, paint);
+            if let Some((id, def)) = parse_linear_gradient_def(el)? {
+                // Pre-walk normally got here first; only insert if the
+                // tree-walk reaches an element the pre-walk missed.
+                ctx.defs.gradients.entry(id.clone()).or_insert(def);
+                if let Some(def) = ctx.defs.gradients.get(&id).cloned() {
+                    let p = flatten_gradient_to_paint(&def, &ctx.defs);
+                    ctx.gradients.insert(id, p);
+                }
             }
         }
         "radialgradient" => {
-            if let Some((id, paint)) = parse_radial_gradient(el)? {
-                gradients.insert(id, paint);
+            if let Some((id, def)) = parse_radial_gradient_def(el)? {
+                ctx.defs.gradients.entry(id.clone()).or_insert(def);
+                if let Some(def) = ctx.defs.gradients.get(&id).cloned() {
+                    let p = flatten_gradient_to_paint(&def, &ctx.defs);
+                    ctx.gradients.insert(id, p);
+                }
             }
         }
         _ => {}

@@ -101,6 +101,17 @@ pub struct PreservedExtras {
     /// model). The encoder re-emits each in a `<defs>` block so a
     /// `parse → write` preserves the paint server.
     pub patterns: Vec<Element>,
+    /// Round 81 — `<linearGradient>` / `<radialGradient>` paint-server
+    /// definitions captured verbatim from the source SVG. The typed
+    /// view on [`crate::defs::DefsTables::gradients`] holds the
+    /// resolved geometry / template chain, but the verbatim element
+    /// here is the round-trip source of truth: it preserves
+    /// `gradientUnits` / `gradientTransform` / `href` /
+    /// `xlink:href` exactly as authored, plus any author-specified
+    /// attribute ordering. The encoder re-emits each in a `<defs>`
+    /// block so a `parse → write_svg_with_extras` round-trip preserves
+    /// the paint server alongside the flattened scene graph.
+    pub gradients: Vec<Element>,
     /// Round 15 — `<image>` elements captured from the source SVG.
     ///
     /// Each entry holds the parsed [`SvgImage`] view (decoded inline
@@ -159,5 +170,6 @@ impl PreservedExtras {
             && self.id_paths.is_empty()
             && self.images.is_empty()
             && self.patterns.is_empty()
+            && self.gradients.is_empty()
     }
 }

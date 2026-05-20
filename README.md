@@ -153,6 +153,46 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
+## Round 81 additions
+
+- **SVG 2 §14.1.1 gradient `href` template inheritance** — `<linearGradient
+  id="child" href="#tmpl"/>` (and the legacy `xlink:href` form) now
+  inherits any *unspecified* attribute from the template chain (`x1` /
+  `y1` / `x2` / `y2` / `cx` / `cy` / `r` / `fx` / `fy` / `fr` /
+  `gradientUnits` / `gradientTransform` / `spreadMethod`) AND inherits
+  the template's `<stop>` children when the child has none. A child's
+  *specified* attribute always wins per §14.1.1. Self-references and
+  longer cycles terminate at an 8-hop depth cap (matching the round-13
+  CSS `@import` cap) and fall back to spec-default initial values
+  rather than diverging.
+- **Typed `<linearGradient>` / `<radialGradient>` view** — new
+  [`crate::defs::GradientDef`] records the un-resolved per-element
+  state (every numeric attribute is `Option<f32>` so the chain walker
+  can tell "not specified" from "specified-with-explicit-value"); the
+  pre-walk populates `DefsTables::gradients`, and the second-pass tree
+  walk flattens each entry through
+  [`crate::defs::resolve_gradient_chain`] into a legacy
+  [`oxideav_core::Paint::LinearGradient`] / `RadialGradient` for the
+  existing round-1 fill resolver. The typed view stays on
+  `DefsTables::gradients` so a downstream rasteriser that wants the
+  full SVG-2 surface (`gradientUnits` mapping into the referencing
+  element's bounding box, full 2×2 `gradientTransform`, `fr` focal-
+  circle radius) reads it directly without re-parsing XML.
+- **`gradientTransform` is folded into the flattened paint** — the
+  start / end / centre / focal points are transformed in place. The
+  radius scales by the geometric mean of the matrix's per-axis scale
+  (a uniform-scale `gradientTransform` is bit-exact; non-uniform scale
+  / shear keeps full fidelity in the typed `ResolvedGradient`).
+- **Verbatim round-trip** — `PreservedExtras::gradients: Vec<Element>`
+  carries each source `<linearGradient>` / `<radialGradient>` for the
+  encoder to re-emit byte-faithfully inside the `<defs>` block. A
+  `parse_svg_with_extras → write_svg_with_extras` cycle preserves
+  `gradientUnits` / `gradientTransform` / `href` / `xlink:href`
+  exactly as authored, plus the original `<stop>` ordering. The
+  encoder skips the scene-walk's flattened emission for any id the
+  side-channel already carried so the output never duplicates a
+  definition.
+
 ## Round 20 additions
 
 - **`<pattern>` paint-server capture (SVG 2 §14.3)** —
