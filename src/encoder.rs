@@ -204,6 +204,14 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
     for fo in &extras.foreign_objects {
         write_raw_element(&mut out, fo, 1);
     }
+    // Round 95 — re-emit captured `<view>` elements verbatim at the
+    // trailing edge. Per SVG 2 §16.3.3 `<view>` itself contributes no
+    // pixels to the rendered scene (it's a fragment-identifier
+    // target), so positioning has no visual effect; emitting at the
+    // trailing edge keeps the defs block tidy.
+    for view in &extras.views {
+        write_raw_element(&mut out, view, 1);
+    }
     // Round-12: re-emit captured <script> elements. The body is
     // wrapped in `<![CDATA[...]]>` so unescaped `<` characters
     // (common in real-world JS) don't poison the XML on the next

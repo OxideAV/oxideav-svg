@@ -9,6 +9,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 95** — SVG 2 §16.3 `<view>` element + fragment-identifier
+  routing.
+  - New [`crate::defs::ViewDef`] capturing the three typed `<view>`
+    attributes per §16.3.3 (`viewBox`, `preserveAspectRatio`,
+    `zoomAndPan`). Stored on the new
+    [`crate::defs::DefsTables::views: HashMap<String, ViewDef>`]
+    table during the pre-walk so a forward / nested reference resolves
+    regardless of source order.
+  - New [`crate::defs::ZoomAndPan`] enum (`Disable` / `Magnify`;
+    default `Magnify`) — SVG 2 §16.3.3 keyword.
+  - New [`crate::resolve_fragment(&frame, &extras, fragment)`] top-level
+    API + [`crate::ResolvedView`] typed return per §16.3.2. Honours
+    both fragment shapes:
+    - **Bare-name** (`MyDrawing.svg#MyView`) — addresses an
+      id-bearing `<view>`; any attribute the view specified
+      overrides the corresponding root `<svg>` attribute, anything
+      the view left out inherits from the root.
+    - **`svgView(...)` spec** (`MyDrawing.svg#svgView(viewBox(0,200,1000,1000);preserveAspectRatio(xMidYMid))`)
+      — semicolon-separated `viewBox(...)` / `preserveAspectRatio(...)`
+      / `transform(...)` / `zoomAndPan(...)` in any order, each at
+      most once. `%3B` (percent-encoded semicolon, per CSSOM
+      escaping) tolerated. Malformed payloads drop silently.
+    - Empty fragment / spatial (`xywh=`) / temporal (`t=`) /
+      track / id media-fragments degrade to the document root's
+      baseline view per §16.3.2 ("if the SVG fragment identifier
+      addresses a time segment ... as if no fragment identifier was
+      provided").
+  - New [`PreservedExtras::views: Vec<Element>`] (verbatim XML for
+    round-trip) + [`PreservedExtras::typed_views: HashMap<String, ViewDef>`]
+    (typed mirror for fragment resolution). Encoder re-emits each
+    captured `<view>` at the trailing edge of the output so a
+    `parse_svg_with_extras → write_svg_with_extras → parse_svg_with_extras`
+    cycle preserves every view definition + lookup.
+  - The `<view>` element itself contributes no scene-graph node
+    (it's pure metadata per §16.3.3) — its only effect is making
+    the typed mirror available to [`resolve_fragment`].
+  - 12 module-level unit tests + 10 integration tests covering
+    every §16.3.2 input shape (bare-name, full `svgView` spec,
+    multi-attribute order independence, percent-encoded
+    semicolons, malformed payloads, unknown attributes,
+    inheritance from root, empty fragment, unknown bare name,
+    nested `<view>` discovery, round-trip).
+
 - **Round 21** — SVG 2 §9.6.1 `pathLength` attribute on every
   `SVGGeometryElement`.
   - New [`crate::path_length`] module: parser (rejects negative,

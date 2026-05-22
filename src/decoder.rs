@@ -10,7 +10,7 @@ use crate::css::MatchContext;
 use crate::element::{
     derive_child_ctx, flatten_gradient_to_paint, parse_clip_path_def, parse_element_to_node_ctx,
     parse_filter_def, parse_linear_gradient_def, parse_mask_def, parse_number, parse_pattern_def,
-    parse_radial_gradient_def, parse_symbol_def, PaintState, ParseContext,
+    parse_radial_gradient_def, parse_symbol_def, parse_view_def, PaintState, ParseContext,
 };
 use crate::filter::{MeetOrSlice, PreserveAspectRatio, PreserveAspectRatioAlign};
 use crate::length::ResolveContext;
@@ -78,10 +78,37 @@ pub fn parse_svg_with_extras(bytes: &[u8]) -> Result<(VectorFrame, PreservedExtr
     let mut extras = PreservedExtras::new();
     collect_extras(svg, &mut extras, None);
     extras.root_preserve_aspect_ratio = attr(svg, "preserveAspectRatio").map(str::to_string);
+    // Round 95 — independent of the scene-graph build, walk the source
+    // XML for every id-bearing `<view>` so a caller resolving an SVG
+    // fragment identifier (`MyDrawing.svg#MyView`) has the typed view
+    // parameters at hand without re-parsing the document. The verbatim
+    // `<view>` capture in [`collect_extras`] takes care of round-trip
+    // emission; this pass populates the typed mirror keyed by id.
+    collect_typed_views(svg, &mut extras.typed_views);
     let (frame, id_paths, path_lengths) = parse_svg_root(svg, 0.0, true)?;
     extras.id_paths = id_paths;
     extras.path_lengths = path_lengths;
     Ok((frame, extras))
+}
+
+/// Round 95 — walk the source XML for every `<view id="...">` and
+/// populate the typed mirror on the caller's `extras.typed_views` map.
+/// Mirrors the verbatim collection in [`collect_extras`] but emits the
+/// typed [`crate::defs::ViewDef`] shape.
+fn collect_typed_views(
+    el: &Element,
+    out: &mut std::collections::HashMap<String, crate::defs::ViewDef>,
+) {
+    if tag_local(&el.name) == "view" {
+        if let Some((id, def)) = crate::element::parse_view_def(el) {
+            out.insert(id, def);
+        }
+    }
+    for child in &el.children {
+        if let XmlNode::Element(c) = child {
+            collect_typed_views(c, out);
+        }
+    }
 }
 
 /// Walk the source XML once to populate `extras` with every preservable
@@ -146,6 +173,16 @@ fn collect_extras(el: &Element, extras: &mut PreservedExtras, current_id: Option
             if let Some(img) = crate::image::SvgImage::from_element(el, current_id) {
                 extras.images.push(img);
             }
+        }
+        "view" => {
+            // Round 95 — verbatim <view> capture per SVG 2 §16.3.3.
+            // The typed parse on `DefsTables::views` lets a caller
+            // resolve a fragment identifier; this side-channel makes
+            // sure the source XML (descriptive children, attribute
+            // ordering, any attributes the typed view doesn't model)
+            // round-trips byte-faithfully on
+            // `write_svg_with_extras`.
+            extras.views.push(el.clone());
         }
         _ => {}
     }
@@ -458,6 +495,15 @@ fn register_all_defs(el: &Element, ctx: &mut ParseContext) -> Result<()> {
             // Round 20 — typed <pattern> capture (SVG 2 §14.3).
             if let Some((id, def)) = parse_pattern_def(el, ctx)? {
                 ctx.defs.patterns.insert(id, def);
+            }
+        }
+        "view" => {
+            // Round 95 — typed <view> capture (SVG 2 §16.3.3). The
+            // element itself doesn't render anything; capturing the
+            // typed def lets [`crate::resolve_fragment`] honour a
+            // `MyDrawing.svg#MyView` fragment identifier per §16.3.2.
+            if let Some((id, def)) = parse_view_def(el) {
+                ctx.defs.views.insert(id, def);
             }
         }
         _ => {}

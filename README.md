@@ -153,6 +153,42 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
+## Round 95 additions
+
+- **SVG 2 §16.3 `<view>` element + fragment-identifier routing**.
+  `<view id="...">` per §16.3.3 captures into a new typed
+  `crate::defs::ViewDef { view_box, preserve_aspect_ratio,
+  zoom_and_pan }` populated on `DefsTables::views` during the
+  pre-walk. The element itself doesn't push a scene-graph node — it
+  carries the override parameters a fragment-identifier link should
+  apply when a host loads `MyDrawing.svg#MyView`.
+- **New `resolve_fragment(&frame, &extras, fragment) -> ResolvedView`
+  top-level API** per §16.3.2. Honours both fragment shapes:
+  - **Bare-name** (`#MyView`) — looks up the id on
+    `extras.typed_views`; attributes the view specified override the
+    root `<svg>`'s, anything the view left out inherits from the root.
+  - **`svgView(...)` spec** —
+    `#svgView(viewBox(0,0,200,200);preserveAspectRatio(xMidYMid);zoomAndPan(disable);transform(scale(5)))`,
+    semicolon-separated, in any order, each attribute at most once.
+    Percent-encoded semicolons (`%3B`) tolerated per CSSOM escaping.
+    Unknown attributes drop silently; malformed payloads (e.g. a
+    `viewBox(...)` with the wrong number of arguments) fall back to
+    the baseline.
+  - **Empty fragment** / spatial (`xywh=`) / temporal (`t=`) /
+    track / id media-fragments degrade to the document root's
+    baseline view, matching the spec's "as if no fragment
+    identifier was provided" rule.
+- **New `ZoomAndPan` enum** (`Disable` / `Magnify`; default
+  `Magnify` per §16.3.3).
+- **Round-trip preservation** — `PreservedExtras::views:
+  Vec<Element>` (verbatim XML) plus
+  `PreservedExtras::typed_views: HashMap<String, ViewDef>` (typed
+  mirror for resolution). `write_svg_with_extras` re-emits each
+  captured `<view>` at the trailing edge of the output so a
+  `parse_svg_with_extras → write_svg_with_extras →
+  parse_svg_with_extras` cycle preserves every view definition and
+  bare-name lookup still resolves on the round-tripped document.
+
 ## Round 21 additions
 
 - **SVG 2 §9.6.1 `pathLength` attribute** on every

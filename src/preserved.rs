@@ -22,6 +22,9 @@
 //! back into the output document so the rasterised representation +
 //! the dynamic definitions both survive.
 
+use std::collections::HashMap;
+
+use crate::defs::ViewDef;
 use crate::image::SvgImage;
 use crate::parser::Element;
 
@@ -140,6 +143,20 @@ pub struct PreservedExtras {
     /// dash pattern as the source. Populated only by
     /// [`crate::decoder::parse_svg_with_extras`].
     pub path_lengths: Vec<PathLengthBinding>,
+    /// Round 95 — `<view>` element trees captured verbatim from the
+    /// source SVG. The verbatim element is the round-trip source of
+    /// truth so attribute ordering, descriptive children (`<title>` /
+    /// `<desc>` / `<metadata>`), and any attributes the typed view
+    /// doesn't yet model survive a `parse_svg_with_extras →
+    /// write_svg_with_extras` cycle. The typed view (keyed by `id`)
+    /// rides on [`typed_views`](Self::typed_views) for fragment-
+    /// identifier resolution via [`crate::resolve_fragment`].
+    pub views: Vec<Element>,
+    /// Round 95 — typed [`ViewDef`]s for every captured `<view>` keyed
+    /// by `id`. Consumed by [`crate::resolve_fragment`] (SVG 2 §16.3.2
+    /// bare-name routing). Empty when the source SVG had no
+    /// id-bearing `<view>` elements.
+    pub typed_views: HashMap<String, ViewDef>,
 }
 
 /// One captured animation child of a known-id parent element.
@@ -198,5 +215,7 @@ impl PreservedExtras {
             && self.patterns.is_empty()
             && self.gradients.is_empty()
             && self.path_lengths.is_empty()
+            && self.views.is_empty()
+            && self.typed_views.is_empty()
     }
 }

@@ -1584,6 +1584,34 @@ pub fn parse_pattern_def(
     )))
 }
 
+/// Round 95 — parse `<view id="...">` into a typed
+/// [`crate::defs::ViewDef`]. SVG 2 §16.3.3.
+///
+/// The element only contributes when it carries an `id` — without one
+/// no fragment identifier can address it. Per §16.3.3 the three
+/// view-relevant attributes are `viewBox`, `preserveAspectRatio`, and
+/// `zoomAndPan`; descriptive children (`<title>` / `<desc>` /
+/// `<metadata>`) are not consumed here (the verbatim XML round-trip
+/// channel preserves them via [`crate::preserved::PreservedExtras::views`]).
+///
+/// Returns `None` when the element has no `id` (then it can't be
+/// referenced via `MyDrawing.svg#view-id`).
+pub fn parse_view_def(el: &Element) -> Option<(String, crate::defs::ViewDef)> {
+    let id = attr(el, "id")?.to_string();
+    let view_box = attr(el, "viewBox").and_then(parse_symbol_view_box);
+    let preserve_aspect_ratio =
+        attr(el, "preserveAspectRatio").map(crate::filter::PreserveAspectRatio::from_str);
+    let zoom_and_pan = attr(el, "zoomAndPan").map(crate::defs::ZoomAndPan::from_str);
+    Some((
+        id,
+        crate::defs::ViewDef {
+            view_box,
+            preserve_aspect_ratio,
+            zoom_and_pan,
+        },
+    ))
+}
+
 /// Round 20 — `patternUnits` / `patternContentUnits` keyword parser
 /// per SVG 2 §14.3.1. Unknown / malformed values fall back to the
 /// caller-supplied default to mirror the spec's "ignore unknown" lenient

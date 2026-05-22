@@ -414,6 +414,73 @@ pub struct PatternDef {
     pub content: Group,
 }
 
+/// Round 95 — `zoomAndPan` attribute keyword per SVG 2 §16.3.3 / §16.3.2.
+///
+/// SVG 2 carries the SVG 1.1 attribute forward as a no-op for `disable`
+/// (host UA may not zoom or pan the document) and `magnify` (host UA may
+/// zoom or pan). Default is `magnify`. The decoder captures the typed
+/// value on every `<view>` so a caller routing a fragment-identifier
+/// view can surface the intent even though we have no zoom-and-pan host
+/// UA wired up.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ZoomAndPan {
+    /// `zoomAndPan="disable"` — UA must not honour user-driven zoom or
+    /// pan gestures.
+    Disable,
+    /// `zoomAndPan="magnify"` — the default; UA may honour zoom + pan.
+    #[default]
+    Magnify,
+}
+
+impl ZoomAndPan {
+    /// Parse the `zoomAndPan` keyword. Unknown values fall back to the
+    /// spec default `magnify`.
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "disable" => ZoomAndPan::Disable,
+            // `magnify` and anything unrecognised collapse to the
+            // default per the SVG 2 §16.3.3 tolerance rule.
+            _ => ZoomAndPan::Magnify,
+        }
+    }
+
+    /// Emit the canonical keyword for round-trip serialisation.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ZoomAndPan::Disable => "disable",
+            ZoomAndPan::Magnify => "magnify",
+        }
+    }
+}
+
+/// Round 95 — captured `<view id="...">` definition (SVG 2 §16.3.3 /
+/// §16.3.2). The `<view>` element doesn't itself render anything — its
+/// purpose is to be addressed by an SVG fragment identifier of the form
+/// `MyDrawing.svg#MyView`, in which case the renderer adopts the view's
+/// `viewBox` / `preserveAspectRatio` / `zoomAndPan` (overriding the
+/// corresponding attributes on the root `<svg>`) for the initial view
+/// into the document.
+///
+/// Round 95 captures the three typed attributes plus the original
+/// element id so [`resolve_fragment`](crate::resolve_fragment) can wire
+/// a caller-supplied fragment string to the right `<view>`. The
+/// scene-graph itself is unaffected — the `<view>` lives in the
+/// def-table side of the document.
+#[derive(Clone, Debug, Default)]
+pub struct ViewDef {
+    /// `viewBox=` on the `<view>`. `None` when omitted; per §16.3.2 the
+    /// caller then falls back to the root `<svg>` viewBox.
+    pub view_box: Option<ViewBox>,
+    /// `preserveAspectRatio=` on the `<view>`. `None` when omitted; per
+    /// §16.3.2 the caller falls back to the root `<svg>` value (and
+    /// from there to the spec default `xMidYMid meet`).
+    pub preserve_aspect_ratio: Option<PreserveAspectRatio>,
+    /// `zoomAndPan=` on the `<view>`. `None` when omitted; the caller
+    /// falls back to the root `<svg>` value (default `magnify`).
+    pub zoom_and_pan: Option<ZoomAndPan>,
+}
+
 /// Aggregated tables built during the pre-walk, consumed by the main
 /// element parser when it resolves `url(#id)` references.
 ///
@@ -440,6 +507,11 @@ pub struct DefsTables {
     /// `resolve_gradient_chain` so the existing
     /// [`crate::element::resolve_paint`] code path keeps working.
     pub gradients: HashMap<String, GradientDef>,
+    /// Round 95 — typed `<view>` definitions (SVG 2 §16.3.3) keyed by
+    /// the view's `id`. Consumed by [`crate::resolve_fragment`] to map
+    /// a `MyDrawing.svg#MyView` fragment to the correct initial-view
+    /// parameters per §16.3.2.
+    pub views: HashMap<String, ViewDef>,
     /// Round 3: every `id`-bearing element in the source XML, captured
     /// for `<use href="#id">` resolution. Includes shapes, groups,
     /// symbols, defs children, etc. — anything addressable by id.

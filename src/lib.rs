@@ -456,6 +456,41 @@
 //!   longer render as silent-empty fills while preserving the
 //!   pattern definition for a later renderer.
 //!
+//! # Round 95 additions
+//!
+//! * **SVG 2 §16.3 `<view>` element + fragment-identifier routing.**
+//!   `<view id="...">` (per §16.3.3) is captured into the new typed
+//!   [`crate::defs::ViewDef`] holding the three view-relevant
+//!   attributes (`viewBox`, `preserveAspectRatio`, the new
+//!   [`crate::defs::ZoomAndPan`] enum keyword). The pre-walk
+//!   populates [`crate::defs::DefsTables::views`] so forward / nested
+//!   references resolve regardless of source order. The `<view>`
+//!   element contributes no scene-graph node (it's pure metadata).
+//!
+//!   New [`crate::resolve_fragment`] top-level API +
+//!   [`crate::ResolvedView`] typed return per §16.3.2 honour both
+//!   fragment shapes:
+//!   - **Bare-name** (`MyDrawing.svg#MyView`) — looks up the
+//!     id-bearing `<view>`; attributes the view specified override
+//!     the root `<svg>` attributes, anything the view left out
+//!     inherits from the root per §16.3.2.
+//!   - **`svgView(...)` spec** (e.g.
+//!     `MyDrawing.svg#svgView(viewBox(0,200,1000,1000);preserveAspectRatio(xMidYMid))`)
+//!     — semicolon-separated `viewBox(...)` / `preserveAspectRatio(...)`
+//!     / `transform(...)` / `zoomAndPan(...)` in any order, each at
+//!     most once. Percent-encoded semicolons (`%3B`) are tolerated.
+//!   - Empty fragment / spatial (`xywh=`) / temporal (`t=`)
+//!     media-fragment shapes fall through to the document root's
+//!     baseline view per the spec's "as if no fragment identifier
+//!     was provided" rule.
+//!
+//!   New [`crate::preserved::PreservedExtras::views`] +
+//!   [`crate::preserved::PreservedExtras::typed_views`] carry the
+//!   verbatim XML + typed mirror for the encoder + the resolver.
+//!   `write_svg_with_extras` re-emits each captured `<view>` at the
+//!   trailing edge so a `parse → write → parse` cycle preserves both
+//!   the definitions and the bare-name fragment routing.
+//!
 //! # Round 21 additions
 //!
 //! * **SVG 2 §9.6.1 `pathLength` attribute** on every
@@ -498,6 +533,10 @@ pub mod transform;
 pub use decoder::{make_decoder, parse_svg, parse_svg_at, parse_svg_with_extras, CODEC_ID_STR};
 pub use encoder::{make_encoder, write_svg, write_svg_with_extras, write_svgz};
 pub use preserved::PreservedExtras;
+
+// Round 95 — fragment-identifier routing (SVG 2 §16.3.2 / §16.3.3).
+mod fragment;
+pub use fragment::{resolve_fragment, ResolvedView};
 
 use oxideav_core::{
     CodecCapabilities, CodecId, CodecInfo, CodecRegistry, ContainerRegistry, RuntimeContext,
