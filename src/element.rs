@@ -323,6 +323,18 @@ pub struct ParseContext {
     /// the legacy [`parse_number`] path because [`crate::length::Length::resolve`]
     /// is the identity for [`crate::length::LengthUnit::UserUnit`].
     pub resolve_ctx: ResolveContext,
+    /// Round 21 — collected `(scene_path, pathLength)` mappings.
+    /// Populated only when the caller opted in via
+    /// [`crate::decoder::parse_svg_with_extras`] (the same gate that
+    /// enables [`Self::track_id_paths`]). Each entry records the
+    /// author-supplied `pathLength` for a shape so the encoder can
+    /// re-emit the attribute on round-trip.
+    pub path_lengths: Vec<crate::preserved::PathLengthBinding>,
+    /// Round 21 — scratch slot used by the shape branch to hand the
+    /// parsed `pathLength` over to the wrapper-aware recorder that
+    /// runs after `apply_referenced_defs`. Always cleared at the end
+    /// of each `parse_element_to_node_ctx` call.
+    pub pending_path_length: Option<f32>,
 }
 
 impl Default for ParseContext {
@@ -343,6 +355,8 @@ impl ParseContext {
             id_paths: Vec::new(),
             track_id_paths: false,
             resolve_ctx: ResolveContext::default(),
+            path_lengths: Vec::new(),
+            pending_path_length: None,
         }
     }
 
@@ -376,6 +390,21 @@ impl ParseContext {
         self.id_paths.push(IdScenePath {
             id: id.to_string(),
             path: self.current_path.clone(),
+        });
+    }
+
+    /// Round 21 — record the current scene-graph path against an
+    /// author-supplied `pathLength`. Gated behind the same
+    /// [`Self::track_id_paths`] flag as [`Self::record_id_path`]
+    /// because both binding tables are consumed by the
+    /// `parse_svg_with_extras` round-trip path.
+    pub fn record_path_length(&mut self, path_length: f32) {
+        if !self.track_id_paths {
+            return;
+        }
+        self.path_lengths.push(crate::preserved::PathLengthBinding {
+            path: self.current_path.clone(),
+            path_length,
         });
     }
 }
@@ -1155,7 +1184,18 @@ pub fn parse_element_to_node_ctx(
             // fill set fill="none".
             let transform = attr(el, "transform").map(parse_transform).transpose()?;
             let fill = state.solid_fill(&ctx.gradients, &ctx.defs);
-            let stroke = state.solid_stroke(&ctx.gradients, &ctx.defs);
+            let mut stroke = state.solid_stroke(&ctx.gradients, &ctx.defs);
+            // Round 21 — SVG 2 §9.6.1: the `pathLength` attribute
+            // re-scales `stroke-dasharray` / `stroke-dashoffset` so a
+            // downstream rasteriser that only knows user units paints
+            // the spec-correct dash pattern. The author-supplied total
+            // is also captured on `ctx.pending_path_length`; the
+            // outer-most wrapper logic below records it at the
+            // **inner Path's** scene-graph slot so the encoder
+            // re-emits `pathLength="..."` on the `<path>` element
+            // itself (not on a wrapping `<g transform=...>`).
+            ctx.pending_path_length =
+                crate::path_length::apply_to_path_node(attr(el, "pathLength"), &path, &mut stroke);
             let path_node = PathNode {
                 path,
                 fill,
@@ -1210,7 +1250,60 @@ pub fn parse_element_to_node_ctx(
     if let Some(id) = attr(el, "id") {
         ctx.record_id_path(id);
     }
+    // Round 21 — drain the shape branch's pending `pathLength` (if
+    // any) and record it at the **inner Path's** scene-graph slot.
+    // The encoder emits `pathLength="..."` on the `<path>` element
+    // itself (where SVG carries the attribute), not on a wrapping
+    // `<g transform=...>` / `<g clip-path=...>` / `<g filter=...>` /
+    // `Node::SoftMask`. `find_inner_path_subpath` walks the final
+    // wrapped node and returns the child-index sub-path to the leaf.
+    if let Some(pl) = ctx.pending_path_length.take() {
+        if let Some(sub) = find_inner_path_subpath(&wrapped) {
+            let save = ctx.current_path.len();
+            for idx in &sub {
+                ctx.current_path.push(*idx);
+            }
+            ctx.record_path_length(pl);
+            ctx.current_path.truncate(save);
+        }
+    }
     Ok(Some(wrapped))
+}
+
+/// Round 21 — return the child-index sub-path from `root` down to the
+/// first [`Node::Path`] leaf, matching what the encoder pushes on its
+/// `path_stack` while walking the same node tree. Used to attach an
+/// author-supplied `pathLength` to the right emit site even when
+/// `apply_referenced_defs` (clip / mask / filter) added wrappers
+/// after the shape branch.
+///
+/// * `Node::Path` → returns the empty path (this node is the leaf).
+/// * `Node::Group` → descends into `children[0]` with index 0
+///   prepended. (Shape wrappers built by the shape branch are
+///   single-child groups, so `children[0]` is always the inner.)
+/// * `Node::SoftMask` → descends into `content` **without** adding an
+///   index, matching the encoder's `write_node` arm for SoftMask
+///   which doesn't push an extra index for the wrapped content.
+/// * Anything else → returns `None`.
+fn find_inner_path_subpath(node: &Node) -> Option<Vec<usize>> {
+    match node {
+        Node::Path(_) => Some(Vec::new()),
+        Node::Group(g) => {
+            // Single-child shape wrappers (the round-2/3 case) — descend.
+            // For multi-child groups we can't disambiguate, so bail.
+            if g.children.len() == 1 {
+                let inner = find_inner_path_subpath(&g.children[0])?;
+                let mut out = Vec::with_capacity(inner.len() + 1);
+                out.push(0);
+                out.extend(inner);
+                Some(out)
+            } else {
+                None
+            }
+        }
+        Node::SoftMask { content, .. } => find_inner_path_subpath(content),
+        _ => None,
+    }
 }
 
 /// Apply `clip-path="url(#id)"` / `mask="url(#id)"` / `filter="url(#id)"`

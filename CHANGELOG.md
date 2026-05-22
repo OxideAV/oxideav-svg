@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 21** — SVG 2 §9.6.1 `pathLength` attribute on every
+  `SVGGeometryElement`.
+  - New [`crate::path_length`] module: parser (rejects negative,
+    accepts a longest-prefix-parses pattern for tolerant unit
+    suffixes), [`compute_path_length`] (line / quadratic / cubic /
+    elliptic-arc geometric length via chord sums + centre
+    parameterisation per SVG 1.1 §F.6.5), and
+    [`apply_to_stroke`] (rewrites `stroke-dasharray` /
+    `stroke-dashoffset` by `geometric_length / pathLength` per §9.6.1).
+  - Honours the §9.6.1 special cases: `pathLength=0` collapses a
+    non-zero dasharray to a solid stroke (infinity scaling); an
+    all-zero dasharray survives ("zero scaled infinitely must remain
+    zero"); a negative or non-numeric value is silently ignored.
+  - New [`PreservedExtras::path_lengths: Vec<PathLengthBinding>`]
+    side-channel records the author's original value keyed by
+    scene-graph tree-path; [`encoder::write_svg_with_extras`] re-emits
+    `pathLength="..."` on the matching `<path>` / `<rect>` /
+    `<circle>` / `<ellipse>` / `<line>` / `<polyline>` / `<polygon>`
+    on round-trip.
+  - 10 integration tests + 12 module-level unit tests covering all
+    seven geometry elements and the §9.6.1 edge cases.
+
 - **Round 81** — SVG 2 §14.1.1 gradient `href` template inheritance +
   §14.2.2.1 / §14.2.3.1 `gradientUnits` / `gradientTransform` /
   `spreadMethod` typed capture.

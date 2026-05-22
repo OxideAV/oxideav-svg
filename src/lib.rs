@@ -455,6 +455,25 @@
 //!   yet — Inkscape / Illustrator hatch-pattern exports therefore no
 //!   longer render as silent-empty fills while preserving the
 //!   pattern definition for a later renderer.
+//!
+//! # Round 21 additions
+//!
+//! * **SVG 2 §9.6.1 `pathLength` attribute** on every
+//!   `SVGGeometryElement` (`<path>`, `<rect>`, `<circle>`,
+//!   `<ellipse>`, `<line>`, `<polyline>`, `<polygon>`). The decoder
+//!   parses the author's path-length, computes the **geometric**
+//!   length of the resulting [`oxideav_core::Path`] via the new
+//!   [`crate::path_length`] module (chord-sum for line / quadratic /
+//!   cubic segments, centre-parameterised arc sampling), and rescales
+//!   `stroke-dasharray` / `stroke-dashoffset` by
+//!   `geometric_length / path_length` so a downstream rasteriser that
+//!   consumes user-space lengths paints the spec-correct dash
+//!   pattern. The §9.6.1 special cases (`pathLength=0` → "infinity"
+//!   scaling, negative → error / ignored, missing → no-op) are
+//!   honoured. The author's original `pathLength` is captured into
+//!   [`crate::preserved::PathLengthBinding`] keyed by scene-graph
+//!   tree-path so [`encoder::write_svg_with_extras`] re-emits the
+//!   attribute on round-trip.
 
 pub mod animation;
 pub mod color;
@@ -470,6 +489,7 @@ pub mod keyframe;
 pub mod length;
 pub mod parser;
 pub mod path_data;
+pub mod path_length;
 pub mod preserved;
 #[cfg(feature = "text")]
 pub mod text;

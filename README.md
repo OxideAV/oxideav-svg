@@ -153,6 +153,31 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
+## Round 21 additions
+
+- **SVG 2 §9.6.1 `pathLength` attribute** on every
+  `SVGGeometryElement` (`<path>`, `<rect>`, `<circle>`, `<ellipse>`,
+  `<line>`, `<polyline>`, `<polygon>`). The decoder parses the
+  author's value, computes the **geometric** length of the resulting
+  `oxideav_core::Path` via the new `oxideav_svg::path_length` module
+  (chord-sum for line / quadratic / cubic; centre-parameterised
+  sampling for elliptic arcs per SVG 1.1 §F.6.5), and rescales
+  `stroke-dasharray` / `stroke-dashoffset` by
+  `geometric_length / pathLength`. A downstream rasteriser that
+  consumes user-space lengths therefore paints the spec-correct dash
+  pattern even though it knows nothing about `pathLength`.
+- **§9.6.1 edge cases** — `pathLength=0` collapses a non-zero
+  dasharray to a solid stroke (the spec's "scaling factor of infinity"
+  interpretation); an all-zero dasharray survives ("zero scaled
+  infinitely must remain zero"); negative values are an error per
+  §9.6.1 and silently ignored; missing / unparseable values are a
+  no-op.
+- **Round-trip preservation** — `PreservedExtras::path_lengths:
+  Vec<PathLengthBinding>` records the author's original value keyed
+  by scene-graph tree-path; `encoder::write_svg_with_extras` re-emits
+  `pathLength="..."` on the matching shape on round-trip so a
+  consumer that wants the calibration metadata sees it.
+
 ## Round 81 additions
 
 - **SVG 2 §14.1.1 gradient `href` template inheritance** — `<linearGradient

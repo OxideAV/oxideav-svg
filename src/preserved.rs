@@ -126,6 +126,20 @@ pub struct PreservedExtras {
     /// dep tree by carrying the raster payload as opaque bytes here
     /// for downstream renderer-side decoding.
     pub images: Vec<SvgImage>,
+    /// Round 21 — SVG 2 §9.6.1 `pathLength` attribute, recorded per
+    /// emitted shape so the encoder can re-emit
+    /// `pathLength="..."` on the matching `<path>` / `<rect>` /
+    /// `<circle>` / `<ellipse>` / `<line>` / `<polyline>` /
+    /// `<polygon>` element on round-trip.
+    ///
+    /// The author-supplied path-length is stored in user units; the
+    /// decoder has already scaled the corresponding stroke's
+    /// `stroke-dasharray` / `stroke-dashoffset` by the
+    /// `geometric_length / pathLength` ratio (per §9.6.1), so the
+    /// emitted document with this attribute carries the same visual
+    /// dash pattern as the source. Populated only by
+    /// [`crate::decoder::parse_svg_with_extras`].
+    pub path_lengths: Vec<PathLengthBinding>,
 }
 
 /// One captured animation child of a known-id parent element.
@@ -154,6 +168,18 @@ pub struct IdScenePath {
     pub path: Vec<usize>,
 }
 
+/// Round 21 — one (scene-graph tree-path, author `pathLength`) pair.
+/// Same shape as [`IdScenePath`] but typed on the f32 path length so
+/// the encoder doesn't need a string parse to re-emit the attribute.
+#[derive(Clone, Debug)]
+pub struct PathLengthBinding {
+    /// Tree-path through the scene graph; matches the layout of
+    /// [`IdScenePath::path`].
+    pub path: Vec<usize>,
+    /// Author-supplied `pathLength` in user units (per SVG 2 §9.6.1).
+    pub path_length: f32,
+}
+
 impl PreservedExtras {
     pub fn new() -> Self {
         Self::default()
@@ -171,5 +197,6 @@ impl PreservedExtras {
             && self.images.is_empty()
             && self.patterns.is_empty()
             && self.gradients.is_empty()
+            && self.path_lengths.is_empty()
     }
 }

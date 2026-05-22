@@ -52,6 +52,19 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
     for entry in &extras.id_paths {
         path_to_id.insert(entry.path.clone(), entry.id.clone());
     }
+    // Round 21 — index the side-channel `pathLength` bindings by
+    // scene-graph tree-path so `write_node` can re-emit
+    // `pathLength="..."` on the matching `<path>` / `<rect>` /
+    // `<circle>` / `<ellipse>` / `<line>` / `<polyline>` /
+    // `<polygon>` emit site. The dasharray on the shape was already
+    // rescaled to user-units at parse time, so emitting the original
+    // `pathLength` lets a downstream renderer that consumes both
+    // attributes still produce the spec-correct dash pattern after
+    // re-normalising.
+    let mut path_to_path_length: HashMap<Vec<usize>, f32> = HashMap::new();
+    for entry in &extras.path_lengths {
+        path_to_path_length.insert(entry.path.clone(), entry.path_length);
+    }
     let mut anim_by_parent: HashMap<String, Vec<&AnimationFragment>> = HashMap::new();
     let mut anim_orphan: Vec<&AnimationFragment> = Vec::new();
     // Set of ids that actually appear in id_paths — used to decide
@@ -180,6 +193,7 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
         &clips,
         &masks,
         &path_to_id,
+        &path_to_path_length,
         &anim_by_parent,
         &mut path_stack,
     );
@@ -319,6 +333,7 @@ fn write_group_children(
     clips: &ClipPathCollector,
     masks: &MaskCollector,
     path_to_id: &HashMap<Vec<usize>, String>,
+    path_to_path_length: &HashMap<Vec<usize>, f32>,
     anim_by_parent: &HashMap<String, Vec<&AnimationFragment>>,
     path_stack: &mut Vec<usize>,
 ) {
@@ -332,6 +347,7 @@ fn write_group_children(
             clips,
             masks,
             path_to_id,
+            path_to_path_length,
             anim_by_parent,
             path_stack,
         );
@@ -348,6 +364,7 @@ fn write_node(
     clips: &ClipPathCollector,
     masks: &MaskCollector,
     path_to_id: &HashMap<Vec<usize>, String>,
+    path_to_path_length: &HashMap<Vec<usize>, f32>,
     anim_by_parent: &HashMap<String, Vec<&AnimationFragment>>,
     path_stack: &mut Vec<usize>,
 ) {
@@ -356,6 +373,11 @@ fn write_node(
     // source id? If so we emit `id="..."` and inline its
     // `<animate>` / `<set>` / `<animateTransform>` fragments.
     let id_here: Option<&str> = path_to_id.get(path_stack.as_slice()).map(String::as_str);
+    // Round 21 — does this scene-graph position carry a recorded
+    // author `pathLength`? If so the corresponding `<path>` emission
+    // below carries `pathLength="..."` so a re-parse of the output
+    // recovers the same calibration.
+    let path_length_here: Option<f32> = path_to_path_length.get(path_stack.as_slice()).copied();
     let inline_anims: &[&AnimationFragment] = id_here
         .and_then(|id| anim_by_parent.get(id))
         .map(Vec::as_slice)
@@ -390,6 +412,7 @@ fn write_node(
                 clips,
                 masks,
                 path_to_id,
+                path_to_path_length,
                 anim_by_parent,
                 path_stack,
             );
@@ -417,6 +440,10 @@ fn write_node(
             write_path_d(out, &p.path.commands);
             out.push('"');
             write_paint_attrs(out, p, gradients);
+            // Round 21 — re-emit the author's `pathLength` (SVG 2 §9.6.1).
+            if let Some(pl) = path_length_here {
+                out.push_str(&format!(" pathLength=\"{}\"", trim_float(pl)));
+            }
             if inline_anims.is_empty() {
                 out.push_str("/>\n");
             } else {
@@ -470,6 +497,7 @@ fn write_node(
                 clips,
                 masks,
                 path_to_id,
+                path_to_path_length,
                 anim_by_parent,
                 path_stack,
             );
@@ -984,6 +1012,7 @@ fn write_mask(
     let empty_clips = ClipPathCollector::default();
     let empty_masks = MaskCollector::default();
     let empty_path_to_id: HashMap<Vec<usize>, String> = HashMap::new();
+    let empty_path_to_pl: HashMap<Vec<usize>, f32> = HashMap::new();
     let empty_anims: HashMap<String, Vec<&AnimationFragment>> = HashMap::new();
     let mut empty_stack: Vec<usize> = Vec::new();
     write_node(
@@ -994,6 +1023,7 @@ fn write_mask(
         &empty_clips,
         &empty_masks,
         &empty_path_to_id,
+        &empty_path_to_pl,
         &empty_anims,
         &mut empty_stack,
     );
