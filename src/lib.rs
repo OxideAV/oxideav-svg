@@ -512,6 +512,7 @@
 
 pub mod animation;
 pub mod color;
+pub mod conditional;
 pub mod container;
 pub mod css;
 pub mod decoder;
@@ -530,7 +531,10 @@ pub mod preserved;
 pub mod text;
 pub mod transform;
 
-pub use decoder::{make_decoder, parse_svg, parse_svg_at, parse_svg_with_extras, CODEC_ID_STR};
+pub use decoder::{
+    make_decoder, parse_svg, parse_svg_at, parse_svg_at_with_languages, parse_svg_with_extras,
+    CODEC_ID_STR,
+};
 pub use encoder::{make_encoder, write_svg, write_svg_with_extras, write_svgz};
 pub use preserved::PreservedExtras;
 

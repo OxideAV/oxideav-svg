@@ -42,6 +42,26 @@ pub fn parse_svg(bytes: &[u8]) -> Result<VectorFrame> {
 /// folded into its parent's attribute set before the scene graph is
 /// built. `t_seconds = 0.0` matches `parse_svg`.
 pub fn parse_svg_at(bytes: &[u8], t_seconds: f32) -> Result<VectorFrame> {
+    parse_svg_at_with_languages(bytes, t_seconds, &[])
+}
+
+/// Round 98 — parse with an explicit user-preferred language list, used
+/// by SVG 2 §5.7.3 `<switch>` conditional processing when it evaluates
+/// a child's `systemLanguage` (§5.7.5) test attribute.
+///
+/// `system_language` carries the "language tags indicated by user
+/// preferences" the spec matches against (oxideav owns no user-agent
+/// locale registry, so the caller supplies it — e.g. `&["en", "fr"]`).
+/// `parse_svg` / `parse_svg_at` pass an empty list: an absent
+/// `systemLanguage` still implicitly evaluates to true, but a present,
+/// non-empty one then matches nothing, so a `<switch>` falls through to
+/// the first child without a language test (the spec-recommended
+/// "catch-all" choice).
+pub fn parse_svg_at_with_languages(
+    bytes: &[u8],
+    t_seconds: f32,
+    system_language: &[&str],
+) -> Result<VectorFrame> {
     let inflated;
     let raw: &[u8] = if is_gzip(bytes) {
         inflated = inflate_gzip(bytes)?;
@@ -53,7 +73,8 @@ pub fn parse_svg_at(bytes: &[u8], t_seconds: f32) -> Result<VectorFrame> {
     let nodes = parse_xml(&text)?;
     let svg =
         find_svg_root(&nodes).ok_or_else(|| Error::invalid("SVG: missing <svg> root element"))?;
-    let (frame, _, _) = parse_svg_root(svg, t_seconds, false)?;
+    let langs: Vec<String> = system_language.iter().map(|s| s.to_string()).collect();
+    let (frame, _, _) = parse_svg_root(svg, t_seconds, false, &langs)?;
     Ok(frame)
 }
 
@@ -85,7 +106,7 @@ pub fn parse_svg_with_extras(bytes: &[u8]) -> Result<(VectorFrame, PreservedExtr
     // `<view>` capture in [`collect_extras`] takes care of round-trip
     // emission; this pass populates the typed mirror keyed by id.
     collect_typed_views(svg, &mut extras.typed_views);
-    let (frame, id_paths, path_lengths) = parse_svg_root(svg, 0.0, true)?;
+    let (frame, id_paths, path_lengths) = parse_svg_root(svg, 0.0, true, &[])?;
     extras.id_paths = id_paths;
     extras.path_lengths = path_lengths;
     Ok((frame, extras))
@@ -208,6 +229,7 @@ fn parse_svg_root(
     svg: &Element,
     t_seconds: f32,
     track_id_paths: bool,
+    system_language: &[String],
 ) -> Result<(VectorFrame, Vec<IdScenePath>, Vec<PathLengthBinding>)> {
     let view_box = match attr(svg, "viewBox") {
         Some(v) => Some(parse_view_box(v)?),
@@ -236,7 +258,8 @@ fn parse_svg_root(
     let root_ctx = ResolveContext::default().with_viewport(width, height);
     let mut ctx = ParseContext::new()
         .with_time(t_seconds)
-        .with_resolve_ctx(root_ctx);
+        .with_resolve_ctx(root_ctx)
+        .with_system_language(system_language.to_vec());
     if track_id_paths {
         ctx.enable_id_path_tracking();
     }

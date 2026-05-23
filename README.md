@@ -153,6 +153,33 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
+## Round 98 additions
+
+- **SVG 2 §5.7 `<switch>` conditional processing**. `<switch>` now
+  evaluates the `requiredExtensions` (§5.7.4) and `systemLanguage`
+  (§5.7.5) test attributes on its direct children in document order and
+  renders the **first** child for which all tests pass; the rest are
+  bypassed (§5.7.3). A chosen container child (`<g>`, …) renders its
+  whole subtree. Lives in the new `oxideav_svg::conditional` module.
+  - **`requiredExtensions`** — absent → true; empty/whitespace-only
+    string → false; any named extension → false (oxideav implements no
+    language extensions, so "all of the given extensions are supported"
+    can't hold).
+  - **`systemLanguage`** — comma-separated BCP 47 tokens; absent → true;
+    empty string → false; otherwise true iff a user-preferred tag
+    case-insensitively equals, or is a `-`-boundary prefix of, one of
+    the attribute's tags. The user-preferred list is caller-supplied via
+    the new `parse_svg_at_with_languages(bytes, t, &["en", …])` entry
+    point (oxideav owns no UA locale registry); `parse_svg` /
+    `parse_svg_at` pass an empty list, so a present, non-empty
+    `systemLanguage` matches nothing and the `<switch>` falls through to
+    the spec-recommended un-tagged "catch-all" child.
+  - **Never-rendered children** (`<style>`, `<script>`, `<desc>`,
+    animation elements, defs) are skipped without consuming the
+    "first-match" slot, per §5.7.1. The legacy SVG 1.1
+    `requiredFeatures` attribute was removed in SVG 2 (§5.7.1) and is
+    deliberately not evaluated.
+
 ## Round 95 additions
 
 - **SVG 2 §16.3 `<view>` element + fragment-identifier routing**.

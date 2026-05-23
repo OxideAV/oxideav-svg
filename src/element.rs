@@ -335,6 +335,14 @@ pub struct ParseContext {
     /// runs after `apply_referenced_defs`. Always cleared at the end
     /// of each `parse_element_to_node_ctx` call.
     pub pending_path_length: Option<f32>,
+    /// Round 98 — SVG 2 §5.7.5 "language tags indicated by user
+    /// preferences", consulted by `<switch>` conditional processing
+    /// (§5.7.3) when it evaluates a child's `systemLanguage` attribute.
+    /// oxideav owns no user-agent locale registry, so the caller
+    /// supplies the list (default empty — a present, non-empty
+    /// `systemLanguage` then matches nothing, while an absent attribute
+    /// still implicitly evaluates to true per §5.7.5).
+    pub system_language: Vec<String>,
 }
 
 impl Default for ParseContext {
@@ -357,7 +365,15 @@ impl ParseContext {
             resolve_ctx: ResolveContext::default(),
             path_lengths: Vec::new(),
             pending_path_length: None,
+            system_language: Vec::new(),
         }
+    }
+
+    /// Round 98 — bind the user-preferred language list consulted by
+    /// `<switch>` (`systemLanguage`, SVG 2 §5.7.5). Builder-style.
+    pub fn with_system_language(mut self, langs: Vec<String>) -> Self {
+        self.system_language = langs;
+        self
     }
 
     /// Round 19 — bind the root [`ResolveContext`]. Used by
@@ -1012,6 +1028,42 @@ fn child_sibling_totals(parent_el: &Element) -> (usize, HashMap<String, usize>) 
     (total, tag_totals)
 }
 
+/// Round 98 — is a `<switch>` child eligible to be the rendered choice?
+///
+/// SVG 2 §5.7.1: conditional processing "does not affect the processing
+/// of a `style` or `script` element" and "will have no effect on
+/// never-rendered elements", and it "prevents animation elements from
+/// playing". So a `<switch>` only ever selects among its *renderable*
+/// direct children; never-rendered children (`<defs>`, `<style>`,
+/// `<script>`, gradients, filter/mask/clipPath/symbol/marker defs, and
+/// the animation elements) are skipped without consuming the "first
+/// match" slot. The eligible set is the renderable content listed in
+/// the §5.7.3 `<switch>` content model.
+fn is_switch_candidate(local: &str) -> bool {
+    matches!(
+        local,
+        "circle"
+            | "ellipse"
+            | "line"
+            | "path"
+            | "polygon"
+            | "polyline"
+            | "rect"
+            | "a"
+            | "audio"
+            | "canvas"
+            | "foreignobject"
+            | "g"
+            | "iframe"
+            | "image"
+            | "svg"
+            | "switch"
+            | "text"
+            | "use"
+            | "video"
+    )
+}
+
 /// Build the [`MatchContext`] for one element child.
 fn child_match_context<'a>(
     parent_mctx: &'a MatchContext<'a>,
@@ -1110,6 +1162,84 @@ pub fn parse_element_to_node_ctx(
             }
             // Restore the parent's resolve context — em-cascade is
             // strictly per-subtree.
+            ctx.resolve_ctx = saved_ctx;
+            Some(Node::Group(group))
+        }
+        // Round 98 — SVG 2 §5.7.3 `<switch>` conditional processing.
+        // "The `switch` element evaluates the `requiredExtensions` and
+        // `systemLanguage` attributes on its direct child elements in
+        // order, and then processes and renders the first child for
+        // which these attributes evaluate to true. All others will be
+        // bypassed and therefore not rendered."
+        "switch" => {
+            // The switch is itself a container element — wrap the chosen
+            // child in a Group carrying the switch's own transform /
+            // opacity so authored grouping survives the parse → encode
+            // round-trip (mirrors the `<g>` arm).
+            let state = parent_state.merged_with_mctx(mctx, &ctx.stylesheet)?;
+            let saved_ctx = ctx.resolve_ctx;
+            ctx.resolve_ctx = derive_child_ctx(el, mctx, &ctx.stylesheet, &saved_ctx);
+            let transform = match attr(el, "transform") {
+                Some(v) => parse_transform(v)?,
+                None => Transform2D::identity(),
+            };
+            let mut group = Group {
+                transform,
+                opacity: state.opacity,
+                clip: None,
+                children: Vec::new(),
+                cache_key: None,
+            };
+            let (total, tag_totals) = child_sibling_totals(el);
+            let mut child_idx = 0usize;
+            let mut tag_seen: HashMap<String, usize> = HashMap::new();
+            for child in &el.children {
+                if let XmlNode::Element(c) = child {
+                    let lower = tag_local(&c.name).to_ascii_lowercase();
+                    let of_idx = *tag_seen.entry(lower.clone()).or_insert(0);
+                    *tag_seen.get_mut(&lower).unwrap() += 1;
+                    let of_count = *tag_totals.get(&lower).unwrap_or(&0);
+                    child_idx += 1;
+                    // §5.7.1: conditional processing "does not affect
+                    // the processing of a `style` or `script` element"
+                    // and has "no effect on never-rendered elements".
+                    // Such children are not switch candidates — they are
+                    // skipped without consuming the "first match" slot.
+                    // (Animation elements never produce a scene node in
+                    // our model, so excluding them here also matches
+                    // "conditional processing prevents animation
+                    // elements from playing".)
+                    if !is_switch_candidate(&lower) {
+                        continue;
+                    }
+                    // §5.7.3: render the first child whose conditional
+                    // processing attributes all test true; bypass the
+                    // rest.
+                    if !crate::conditional::passes_conditional(c, &ctx.system_language) {
+                        continue;
+                    }
+                    let cmctx =
+                        child_match_context(mctx, c, child_idx - 1, of_idx, total, of_count);
+                    let scene_idx = group.children.len();
+                    ctx.current_path.push(scene_idx);
+                    let result = parse_element_to_node_ctx(c, &state, ctx, &cmctx);
+                    ctx.current_path.pop();
+                    match result? {
+                        Some(node) => {
+                            group.children.push(node);
+                            // First matching, renderable child wins —
+                            // stop scanning.
+                            break;
+                        }
+                        // A candidate that passed the tests but produced
+                        // no scene node (e.g. an empty `<g>`): per §5.7.3
+                        // it is still "the first child for which these
+                        // attributes evaluate to true", so it is chosen
+                        // and the remaining children are bypassed.
+                        None => break,
+                    }
+                }
+            }
             ctx.resolve_ctx = saved_ctx;
             Some(Node::Group(group))
         }
