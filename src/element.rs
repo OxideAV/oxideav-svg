@@ -1152,6 +1152,48 @@ pub fn parse_element_to_node_ctx(
         // and instantiates it as a child node, applying the use's
         // x / y / transform / width / height. See `parse_use_element`.
         "use" => parse_use_element(el, parent_state, ctx, mctx)?,
+        // Round-98: `<switch>` (SVG 2 §5.7.3) renders the first direct
+        // child whose conditional processing attributes
+        // (`requiredFeatures` / `requiredExtensions` / `systemLanguage`)
+        // all evaluate to true; every other branch is bypassed. The
+        // selected branch is parsed and wrapped in a Group carrying the
+        // switch's own `transform` / `opacity` so the static snapshot is
+        // a plain `<g>` on round-trip. A switch with no matching branch
+        // renders nothing (returns `None`).
+        "switch" => {
+            match crate::conditional::select_switch_child(el) {
+                None => None,
+                Some(chosen) => {
+                    let state = parent_state.merged_with_mctx(mctx, &ctx.stylesheet)?;
+                    let transform = match attr(el, "transform") {
+                        Some(v) => parse_transform(v)?,
+                        None => Transform2D::identity(),
+                    };
+                    // The chosen branch occupies index 0 of the wrapping
+                    // group. Build a MatchContext for it so CSS / nth
+                    // selectors resolve against the real child (with the
+                    // switch as its parent in the chain).
+                    let (total, tag_totals) = child_sibling_totals(el);
+                    let lower = tag_local(&chosen.name).to_ascii_lowercase();
+                    let of_count = *tag_totals.get(&lower).unwrap_or(&1);
+                    let cmctx =
+                        child_match_context(mctx, chosen, 0, 0, total.max(1), of_count.max(1));
+                    ctx.current_path.push(0);
+                    let child = parse_element_to_node_ctx(chosen, &state, ctx, &cmctx);
+                    ctx.current_path.pop();
+                    match child? {
+                        Some(node) => Some(Node::Group(Group {
+                            transform,
+                            opacity: state.opacity,
+                            clip: None,
+                            children: vec![node],
+                            cache_key: None,
+                        })),
+                        None => None,
+                    }
+                }
+            }
+        }
         "rect" | "circle" | "ellipse" | "line" | "polyline" | "polygon" | "path" => {
             let state = parent_state.merged_with_mctx(mctx, &ctx.stylesheet)?;
             // Round 19 — derive the per-element resolve context: any

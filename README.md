@@ -153,6 +153,37 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
+## Round 98 additions
+
+- **SVG 2 §5.7 conditional processing — the `<switch>` element**. A
+  `<switch>` renders the *first* of its direct child elements for which
+  **all** conditional processing attributes test true; every other
+  branch is bypassed (per §5.7.3, "the entire subtree is either
+  processed/rendered or bypassed/not rendered"). The selected branch is
+  parsed and wrapped in a `Group` carrying the switch's own `transform`
+  / `opacity`, so the static snapshot round-trips as a plain `<g>`. A
+  switch with no matching branch renders nothing. Ids inside *any*
+  branch (matched or not) stay referenceable by `<use href="#id">` —
+  the pre-walk captures every branch (§5.7.1: conditional processing
+  "does not prevent elements from being successfully referenced").
+- **Conditional processing test attributes** on the new
+  `crate::conditional` module:
+  - **`requiredExtensions`** (§5.7.4) — space-separated URL tokens.
+    oxideav supports no proprietary extensions, so the test fails
+    whenever the attribute is *present* in any form (a non-empty list
+    names extensions we lack; an empty value is explicitly "false").
+    Absent → true.
+  - **`systemLanguage`** (§5.7.5) — comma-separated BCP 47 tags;
+    case-insensitive exact-or-`-`-boundary-prefix match against the
+    user's preferred-language list (default `["en"]`, override once via
+    the new `oxideav_svg::set_system_languages` startup hook, mirroring
+    the `<text>` font-resolver pattern). Absent → true; empty → false.
+  - **`requiredFeatures`** — removed in SVG 2 (§5.7.1 documents the
+    deprecation); for SVG 1.1 content compatibility a non-empty value
+    passes (oxideav implements the static feature set the attribute
+    gated, matching modern UAs that always evaluate it true), while an
+    explicitly empty value still fails per the SVG 1.1 §5.8.6 rule.
+
 ## Round 95 additions
 
 - **SVG 2 §16.3 `<view>` element + fragment-identifier routing**.

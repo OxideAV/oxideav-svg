@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 98** — SVG 2 §5.7 conditional processing: the `<switch>`
+  element + the `requiredFeatures` / `requiredExtensions` /
+  `systemLanguage` test attributes.
+  - New `crate::conditional` module. `<switch>` (§5.7.3) renders the
+    first direct child element for which **all** conditional processing
+    attributes evaluate to true; the rest are bypassed. The selected
+    branch is wrapped in a `Group` carrying the switch's own `transform`
+    / `opacity`, so the static snapshot round-trips as a `<g>`. A
+    switch with no matching branch renders nothing.
+  - `requiredExtensions` (§5.7.4) — present-in-any-form → false (no
+    proprietary extensions supported); absent → true.
+  - `systemLanguage` (§5.7.5) — comma-separated BCP 47 tags,
+    case-insensitive exact-or-prefix (`-` boundary) match against the
+    user's preferred-language list; absent → true, empty → false.
+  - `requiredFeatures` (SVG 1.1 §5.8.5; removed in SVG 2) — non-empty
+    → true (static feature set implemented), empty → false, absent →
+    true.
+  - New `oxideav_svg::set_system_languages(langs)` one-shot startup
+    hook (default `["en"]`) + `oxideav_svg::LanguagesAlreadySet`,
+    mirroring the `<text>` font-resolver pattern.
+  - Ids inside any switch branch stay referenceable by `<use>` per
+    §5.7.1.
 - **Round 95** — SVG 2 §16.3 `<view>` element + fragment-identifier
   routing.
   - New [`crate::defs::ViewDef`] capturing the three typed `<view>`
