@@ -9,6 +9,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 104** — SVG 2 §13.7.1 `<marker>` definition capture.
+  - New typed [`crate::defs::MarkerDef`] carrying every §13.7.1
+    presentation attribute: `refX` / `refY` (with the SVG-2 geometric
+    keywords `left` / `center` / `right` and `top` / `center` /
+    `bottom` pre-resolved against the `viewBox` per the §13.7.1 mapping
+    table), `markerWidth` / `markerHeight` (default 3), `markerUnits`
+    (default `strokeWidth`), `orient` (default `0`), `viewBox`,
+    `preserveAspectRatio`, plus the parsed tile content as a `Group`.
+    Captured into `DefsTables::markers: HashMap<String, MarkerDef>`
+    during the pre-walk so a forward `marker-end="url(#arrow)"`
+    reference resolves regardless of source order.
+  - New [`crate::defs::MarkerUnits`] enum (`StrokeWidth` /
+    `UserSpaceOnUse`; default `StrokeWidth`) and
+    [`crate::defs::MarkerOrient`] enum (`Auto` / `AutoStartReverse` /
+    `Angle(f32)`; default `Angle(0.0)`). `MarkerOrient::parse` accepts
+    the two keywords plus an `<angle>` (with the CSS `deg` / `grad` /
+    `rad` / `turn` units) or a bare `<number>` interpreted as degrees.
+  - `<marker>` is a never-rendered element per §13.7.1 — the scene-walk
+    skips it (contributes no scene-graph node), exactly like
+    `<filter>` / `<mask>` / `<clipPath>` / `<symbol>`.
+  - [`PreservedExtras::markers: Vec<Element>`] — verbatim source XML of
+    every `<marker>` element. The encoder re-emits each in the
+    `<defs>` block (alongside `<pattern>` / `<filter>` extras) so a
+    `parse_svg_with_extras → write_svg_with_extras` round-trip
+    preserves the marker definition byte-faithfully.
+  - SVG 2 §13.2 `context-fill` / `context-stroke` `<paint>` keywords
+    (used by the spec's own `<marker>` examples to match marker colour
+    to the referencing element's stroke) are now accepted by
+    `parse_paint`. The static scene graph has no context element, so
+    they map to no paint per the spec rule "If there is no context
+    element and these keywords are used, then no paint is applied" —
+    instead of failing the document.
+  - `oxideav_core::Node` has no `Marker` construct, so vertex
+    placement + `orient` rotation + `markerUnits` scaling (§13.7.4)
+    and the per-shape `marker-start` / `marker-mid` / `marker-end` /
+    `marker` property binding remain a followup for once a `Marker`
+    node lands in core; round 104 delivers the typed definition + the
+    lossless round-trip.
+  - 10 integration tests in `tests/round104_marker.rs` (spec defaults,
+    explicit attributes, `markerUnits` / `orient` parsing, `refX` /
+    `refY` keyword resolution against the viewBox + fallback without a
+    viewBox, marker-with-no-id skip, never-rendered invariant,
+    verbatim round-trip through `PreservedExtras`) plus 4 unit tests in
+    `crate::defs::tests` (enum defaults, keyword + angle-unit parsing,
+    round-trip serialisation).
+
 - **Round 95** — SVG 2 §16.3 `<view>` element + fragment-identifier
   routing.
   - New [`crate::defs::ViewDef`] capturing the three typed `<view>`

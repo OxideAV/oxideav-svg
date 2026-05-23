@@ -1264,8 +1264,10 @@ pub fn parse_element_to_node_ctx(
         // produce visible output by themselves — they're consumed via
         // url(#id) references on other elements. The pre-walk in
         // `decoder::register_all_defs` already captured them, so just
-        // return None here.
-        "filter" | "mask" | "clippath" | "symbol" => None,
+        // return None here. Round 104 adds `<marker>` — a never-rendered
+        // element per SVG 2 §13.7.1, consumed via the `marker-*`
+        // properties on shapes (pre-walked into `ctx.defs.markers`).
+        "filter" | "mask" | "clippath" | "symbol" | "marker" => None,
         // Round-4: <style> is consumed by `css::collect_stylesheet`
         // during the pre-walk; it produces no scene-graph output.
         "style" => None,
@@ -1712,6 +1714,109 @@ pub fn parse_pattern_def(
             content,
         },
     )))
+}
+
+/// Round 104 — parse `<marker id="...">` into a typed
+/// [`crate::defs::MarkerDef`]. SVG 2 §13.7.1.
+///
+/// Returns `None` if the element lacks an `id` (then it can't be
+/// referenced via `marker-*="url(#id)"`). The marker content (shapes /
+/// groups / nested gradients / use) is parsed using the existing element
+/// pipeline so a `<marker>` containing a `<path>` round-trips faithfully.
+///
+/// `refX` / `refY` accept the SVG-2 geometric keywords
+/// (`left` / `center` / `right` for `refX`; `top` / `center` / `bottom`
+/// for `refY`); these resolve to a percentage of the `viewBox`
+/// width / height per the §13.7.1 mapping table (`left`/`top` 0%,
+/// `center` 50%, `right`/`bottom` 100%). Without a `viewBox` the keyword
+/// has no width/height to resolve against and falls back to 0.
+pub fn parse_marker_def(
+    el: &Element,
+    ctx: &mut ParseContext,
+) -> Result<Option<(String, crate::defs::MarkerDef)>> {
+    use crate::defs::{MarkerDef, MarkerOrient, MarkerUnits};
+    let id = match attr(el, "id") {
+        Some(v) => v.to_string(),
+        None => return Ok(None),
+    };
+
+    let view_box = match attr(el, "viewBox") {
+        Some(s) => parse_symbol_view_box(s),
+        None => None,
+    };
+    // refX/refY default to 0 per §13.7.1; geometric keywords resolve
+    // against the viewBox.
+    let ref_x = parse_marker_ref(attr(el, "refX"), view_box.map(|v| (v.min_x, v.width)));
+    let ref_y = parse_marker_ref(attr(el, "refY"), view_box.map(|v| (v.min_y, v.height)));
+    // markerWidth / markerHeight default to 3 per §13.7.1.
+    let marker_width = parse_number(attr(el, "markerWidth"), 3.0)?;
+    let marker_height = parse_number(attr(el, "markerHeight"), 3.0)?;
+    let marker_units = MarkerUnits::parse(attr(el, "markerUnits"));
+    let orient = MarkerOrient::parse(attr(el, "orient"));
+    let preserve_aspect_ratio = match attr(el, "preserveAspectRatio") {
+        Some(s) => crate::filter::PreserveAspectRatio::from_str(s),
+        None => crate::filter::PreserveAspectRatio::default(),
+    };
+
+    // Parse the marker content using the standard pipeline. Per §13.7.1
+    // the content model allows shapes / groups / use / nested paint
+    // servers; reuse the element parser so we get all of them (any
+    // nested defs were already registered into `ctx` by the pre-walk).
+    let parent_state = PaintState::default();
+    let mut content = Group::default();
+    for child in &el.children {
+        if let XmlNode::Element(c) = child {
+            if let Some(node) = parse_element_to_node(c, &parent_state, ctx)? {
+                content.children.push(node);
+            }
+        }
+    }
+
+    Ok(Some((
+        id,
+        MarkerDef {
+            ref_x,
+            ref_y,
+            marker_width,
+            marker_height,
+            marker_units,
+            orient,
+            view_box,
+            preserve_aspect_ratio,
+            content,
+        },
+    )))
+}
+
+/// Parse a `refX` / `refY` value per SVG 2 §13.7.1. Accepts a
+/// `<number>` (user units) or one of the geometric keywords. Keywords
+/// resolve to `min + percentage * extent` where `(min, extent)` is the
+/// viewBox `(min_x, width)` for `refX` or `(min_y, height)` for `refY`;
+/// `None` extent (no viewBox) collapses a keyword to 0. An absent /
+/// malformed value defaults to 0.
+fn parse_marker_ref(v: Option<&str>, extent: Option<(f32, f32)>) -> f32 {
+    let s = match v {
+        None => return 0.0,
+        Some(s) => s.trim(),
+    };
+    // Geometric keywords (§13.7.1 mapping table). `left`/`top` → 0%,
+    // `center` → 50%, `right`/`bottom` → 100% of the viewBox extent.
+    let pct = match s {
+        "left" | "top" => Some(0.0),
+        "center" => Some(0.5),
+        "right" | "bottom" => Some(1.0),
+        _ => None,
+    };
+    if let Some(p) = pct {
+        return match extent {
+            Some((min, ext)) => min + p * ext,
+            None => 0.0,
+        };
+    }
+    // Otherwise a number (a trailing unit suffix is tolerated by
+    // `parse_number` returning the default; markers are user-unit-only
+    // in practice).
+    parse_number(v, 0.0).unwrap_or(0.0)
 }
 
 /// Round 95 — parse `<view id="...">` into a typed

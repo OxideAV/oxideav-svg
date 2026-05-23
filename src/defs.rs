@@ -414,6 +414,179 @@ pub struct PatternDef {
     pub content: Group,
 }
 
+/// Round 104 — `markerUnits` keyword per SVG 2 §13.7.1. Defines the
+/// coordinate system for `markerWidth` / `markerHeight` and the marker
+/// contents. Default per spec is `strokeWidth`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MarkerUnits {
+    /// `markerUnits="strokeWidth"` — marker geometry is scaled by the
+    /// painted stroke width of the referencing element (§13.7.1).
+    #[default]
+    StrokeWidth,
+    /// `markerUnits="userSpaceOnUse"` — marker geometry is in the
+    /// current user coordinate system of the referencing element.
+    UserSpaceOnUse,
+}
+
+impl MarkerUnits {
+    /// Parse the `markerUnits` keyword. Unknown / malformed values fall
+    /// back to the spec default `strokeWidth` per the §13.7.1 tolerance
+    /// rule.
+    pub fn parse(v: Option<&str>) -> Self {
+        match v.map(str::trim) {
+            Some("userSpaceOnUse") => MarkerUnits::UserSpaceOnUse,
+            // `strokeWidth` and anything unrecognised collapse to the
+            // default.
+            _ => MarkerUnits::StrokeWidth,
+        }
+    }
+
+    /// Emit the canonical keyword for round-trip serialisation.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MarkerUnits::StrokeWidth => "strokeWidth",
+            MarkerUnits::UserSpaceOnUse => "userSpaceOnUse",
+        }
+    }
+}
+
+/// Round 104 — `orient` attribute value per SVG 2 §13.7.1. Indicates
+/// how the marker is rotated when placed at its position on the shape.
+/// `orient="auto | auto-start-reverse | <angle> | <number>"`; default
+/// `0` (a fixed zero-degree orientation).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MarkerOrient {
+    /// `orient="auto"` — the marker's positive x-axis points in the
+    /// path direction at the vertex (§13.7.4 rendering rules).
+    Auto,
+    /// `orient="auto-start-reverse"` — identical to `auto` except a
+    /// marker placed by `marker-start` is rotated 180°, so a single
+    /// arrowhead can serve both ends of a path (§13.7.1).
+    AutoStartReverse,
+    /// A fixed orientation in degrees (`orient="45"` or
+    /// `orient="45deg"`). A bare `<number>` is degrees per the spec.
+    Angle(f32),
+}
+
+impl Default for MarkerOrient {
+    /// Spec initial value is `0`, i.e. a fixed zero-degree angle.
+    fn default() -> Self {
+        MarkerOrient::Angle(0.0)
+    }
+}
+
+impl MarkerOrient {
+    /// Parse the `orient` value. Recognises the two keywords plus an
+    /// `<angle>` (with the CSS angle units `deg` / `grad` / `rad` /
+    /// `turn`) or a bare `<number>` (interpreted as degrees per
+    /// §13.7.1). Unknown / malformed values fall back to the spec
+    /// default `0` (`Angle(0.0)`).
+    pub fn parse(v: Option<&str>) -> Self {
+        let s = match v {
+            None => return MarkerOrient::default(),
+            Some(s) => s.trim(),
+        };
+        match s {
+            "auto" => MarkerOrient::Auto,
+            "auto-start-reverse" => MarkerOrient::AutoStartReverse,
+            _ => match parse_angle_deg(s) {
+                Some(deg) => MarkerOrient::Angle(deg),
+                None => MarkerOrient::default(),
+            },
+        }
+    }
+
+    /// Emit the canonical attribute value for round-trip serialisation.
+    /// Angles emit as a bare number (degrees), matching the spec's
+    /// `<number>` shorthand.
+    pub fn to_attr(self) -> String {
+        match self {
+            MarkerOrient::Auto => "auto".to_string(),
+            MarkerOrient::AutoStartReverse => "auto-start-reverse".to_string(),
+            MarkerOrient::Angle(deg) => trim_orient_float(deg),
+        }
+    }
+}
+
+/// Compact float formatter for the `orient` round-trip serialisation.
+/// Up to 6 significant decimals, trailing zeros trimmed, `-0` → `0`.
+fn trim_orient_float(v: f32) -> String {
+    if v == 0.0 {
+        return "0".to_string();
+    }
+    let s = format!("{v:.6}");
+    let trimmed = s.trim_end_matches('0').trim_end_matches('.');
+    if trimmed.is_empty() || trimmed == "-" {
+        "0".into()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Parse an `<angle>` to canonical degrees. Accepts the CSS angle units
+/// (`deg` / `grad` / `rad` / `turn`) and a bare number (degrees).
+/// Returns `None` for anything that doesn't parse as a number.
+fn parse_angle_deg(s: &str) -> Option<f32> {
+    let s = s.trim();
+    let lower = s.to_ascii_lowercase();
+    let (num_part, factor) = if let Some(n) = lower.strip_suffix("deg") {
+        (n, 1.0)
+    } else if let Some(n) = lower.strip_suffix("grad") {
+        (n, 0.9) // 400 grad = 360 deg
+    } else if let Some(n) = lower.strip_suffix("rad") {
+        (n, 180.0 / std::f32::consts::PI)
+    } else if let Some(n) = lower.strip_suffix("turn") {
+        (n, 360.0)
+    } else {
+        (lower.as_str(), 1.0)
+    };
+    num_part.trim().parse::<f32>().ok().map(|v| v * factor)
+}
+
+/// Round 104 — captured `<marker id="...">` definition. SVG 2 §13.7.1.
+///
+/// A `<marker>` is a never-rendered container whose graphics are painted
+/// at vertices of a referencing shape via the `marker-start` /
+/// `marker-mid` / `marker-end` properties. `oxideav_core::Node` has no
+/// `Marker` construct (the IR was frozen without one), so — mirroring the
+/// round-20 `<pattern>` capture — round 104 records a typed `MarkerDef`
+/// (consumable by a downstream rasterizer) plus the verbatim source XML
+/// on [`crate::preserved::PreservedExtras::markers`] (round-trip source
+/// of truth). The vertex placement + `orient` rotation + `markerUnits`
+/// scaling described in §13.7.4 are the rasterizer's job once a `Marker`
+/// node lands in oxideav-core.
+#[derive(Clone, Debug)]
+pub struct MarkerDef {
+    /// `refX` — x of the marker reference point, placed exactly at the
+    /// vertex. In the marker's content coordinate system (after
+    /// `viewBox` / `preserveAspectRatio`). Default 0 per §13.7.1. The
+    /// geometric keywords (`left` / `center` / `right`) are pre-resolved
+    /// to their percentage-of-viewBox equivalents by the parser.
+    pub ref_x: f32,
+    /// `refY` — y of the marker reference point. Default 0.
+    pub ref_y: f32,
+    /// `markerWidth` — width of the marker viewport. Default 3 per
+    /// §13.7.1. Zero suppresses the marker; a negative value is an
+    /// error (captured as-is; the rasterizer decides).
+    pub marker_width: f32,
+    /// `markerHeight` — height of the marker viewport. Default 3.
+    pub marker_height: f32,
+    /// `markerUnits` — coordinate system for `markerWidth` /
+    /// `markerHeight` and the contents. Default `strokeWidth`.
+    pub marker_units: MarkerUnits,
+    /// `orient` — marker rotation at the vertex. Default `0`.
+    pub orient: MarkerOrient,
+    /// `viewBox` mapping inside the marker viewport (§13.7.4 supplemental
+    /// transform). `None` when omitted.
+    pub view_box: Option<ViewBox>,
+    /// `preserveAspectRatio` inside the marker viewport (default
+    /// `xMidYMid meet`).
+    pub preserve_aspect_ratio: PreserveAspectRatio,
+    /// Parsed marker content as a `Group`. Empty group when the source
+    /// `<marker>` had no renderable children.
+    pub content: Group,
+}
+
 /// Round 95 — `zoomAndPan` attribute keyword per SVG 2 §16.3.3 / §16.3.2.
 ///
 /// SVG 2 carries the SVG 1.1 attribute forward as a no-op for `disable`
@@ -512,6 +685,15 @@ pub struct DefsTables {
     /// a `MyDrawing.svg#MyView` fragment to the correct initial-view
     /// parameters per §16.3.2.
     pub views: HashMap<String, ViewDef>,
+    /// Round 104 — typed `<marker>` definitions (SVG 2 §13.7.1) keyed by
+    /// `id`. Populated during the pre-walk so a forward
+    /// `marker-end="url(#arrow)"` reference resolves regardless of source
+    /// order. `oxideav_core::Node` has no `Marker` variant yet, so the
+    /// scene-walk skips `<marker>` (it's a never-rendered element per
+    /// §13.7.1); this typed table + the verbatim XML side-channel are the
+    /// inputs a downstream rasterizer consumes once a `Marker` construct
+    /// lands in oxideav-core.
+    pub markers: HashMap<String, MarkerDef>,
     /// Round 3: every `id`-bearing element in the source XML, captured
     /// for `<use href="#id">` resolution. Includes shapes, groups,
     /// symbols, defs children, etc. — anything addressable by id.
@@ -681,6 +863,45 @@ mod tests {
             }
             _ => panic!("expected radial"),
         }
+    }
+
+    #[test]
+    fn marker_units_default_and_parse() {
+        assert_eq!(MarkerUnits::default(), MarkerUnits::StrokeWidth);
+        assert_eq!(
+            MarkerUnits::parse(Some("userSpaceOnUse")),
+            MarkerUnits::UserSpaceOnUse
+        );
+        assert_eq!(MarkerUnits::parse(None), MarkerUnits::StrokeWidth);
+        assert_eq!(MarkerUnits::parse(Some(" bad ")), MarkerUnits::StrokeWidth);
+    }
+
+    #[test]
+    fn marker_orient_default_is_zero_angle() {
+        assert_eq!(MarkerOrient::default(), MarkerOrient::Angle(0.0));
+    }
+
+    #[test]
+    fn marker_orient_parses_keywords_and_angle_units() {
+        assert_eq!(MarkerOrient::parse(Some("auto")), MarkerOrient::Auto);
+        assert_eq!(
+            MarkerOrient::parse(Some("auto-start-reverse")),
+            MarkerOrient::AutoStartReverse
+        );
+        assert_eq!(MarkerOrient::parse(Some("30")), MarkerOrient::Angle(30.0));
+        match MarkerOrient::parse(Some("1turn")) {
+            MarkerOrient::Angle(d) => assert!((d - 360.0).abs() < 1e-3),
+            other => panic!("expected Angle(360), got {other:?}"),
+        }
+        // Malformed → spec default 0.
+        assert_eq!(MarkerOrient::parse(Some("xx")), MarkerOrient::Angle(0.0));
+    }
+
+    #[test]
+    fn marker_orient_round_trip_attr() {
+        assert_eq!(MarkerOrient::Auto.to_attr(), "auto");
+        assert_eq!(MarkerOrient::Angle(0.0).to_attr(), "0");
+        assert_eq!(MarkerOrient::Angle(-45.0).to_attr(), "-45");
     }
 
     #[test]

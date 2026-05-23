@@ -393,8 +393,13 @@
 //!
 //! * Actual filter-primitive rasterisation (the typed graph is
 //!   pre-rasteriser plumbing; pixel evaluation is oxideav-raster work).
-//! * `<marker>` defs + `marker-start` / `marker-mid` / `marker-end`
-//!   (needs a `Marker` construct in `oxideav-core`).
+//! * `marker-start` / `marker-mid` / `marker-end` *rendering* — painting
+//!   the marker graphics at shape vertices with `orient` rotation +
+//!   `markerUnits` scaling (SVG 2 §13.7.4) needs a `Marker` construct in
+//!   `oxideav-core`. Round 104 captures the `<marker>` *definition*
+//!   (typed [`crate::defs::MarkerDef`] + verbatim round-trip via
+//!   [`crate::preserved::PreservedExtras::markers`]); the vertex-binding
+//!   of the `marker-*` properties on shapes is the remaining followup.
 //! * `<text>` `textPath` (SVG 2 §11.3) — text-on-path layout via the
 //!   existing `oxideav-scribe` shaping path; touches scribe so
 //!   deferred to keep the round in-crate.

@@ -140,6 +140,7 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
         || !extras.styles.is_empty()
         || !extras.filters.is_empty()
         || !extras.patterns.is_empty()
+        || !extras.markers.is_empty()
         || !extras.gradients.is_empty();
     if has_defs {
         out.push_str("  <defs>\n");
@@ -159,6 +160,13 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
         // round-trip preserves them.
         for pattern in &extras.patterns {
             write_raw_element(&mut out, pattern, 2);
+        }
+        // Round 104 — `<marker>` definitions, re-emitted verbatim from
+        // the side-channel so a `parse → write` round-trip preserves
+        // them (SVG 2 §13.7.1). Markers are never-rendered defs, so
+        // they only appear here, not in the scene-walk output.
+        for marker in &extras.markers {
+            write_raw_element(&mut out, marker, 2);
         }
         // Round 81 — preserved-extras gradients re-emitted verbatim
         // *before* the flattened scene-walk gradients. Carrying the

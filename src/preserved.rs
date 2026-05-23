@@ -104,6 +104,17 @@ pub struct PreservedExtras {
     /// model). The encoder re-emits each in a `<defs>` block so a
     /// `parse → write` preserves the paint server.
     pub patterns: Vec<Element>,
+    /// Round 104 — `<marker>` definitions captured verbatim from the
+    /// source SVG (SVG 2 §13.7.1). The decoder also stores a typed view
+    /// on [`crate::defs::DefsTables::markers`] for downstream
+    /// consumption, but the verbatim element here is the round-trip
+    /// source of truth (preserves attribute ordering, descriptive
+    /// children, content shapes, and any attributes the typed view
+    /// doesn't model). The encoder re-emits each in a `<defs>` block so
+    /// a `parse → write` round-trip preserves the marker definition.
+    /// `oxideav_core::Node` has no `Marker` construct, so the marker is
+    /// never drawn into the rasterised scene graph — only preserved.
+    pub markers: Vec<Element>,
     /// Round 81 — `<linearGradient>` / `<radialGradient>` paint-server
     /// definitions captured verbatim from the source SVG. The typed
     /// view on [`crate::defs::DefsTables::gradients`] holds the
@@ -213,6 +224,7 @@ impl PreservedExtras {
             && self.id_paths.is_empty()
             && self.images.is_empty()
             && self.patterns.is_empty()
+            && self.markers.is_empty()
             && self.gradients.is_empty()
             && self.path_lengths.is_empty()
             && self.views.is_empty()

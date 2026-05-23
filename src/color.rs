@@ -70,6 +70,17 @@ pub fn parse_paint(src: &str) -> Result<PaintValue> {
         // back to opaque black (the default `color` value per CSS).
         return Ok(PaintValue::Color(Rgba::opaque(0, 0, 0)));
     }
+    if s.eq_ignore_ascii_case("context-fill") || s.eq_ignore_ascii_case("context-stroke") {
+        // SVG 2 §13.2 `context-fill` / `context-stroke` resolve to the
+        // fill / stroke of the *context element* (the shape referencing a
+        // `<marker>`, or the `<use>` whose shadow tree this element is
+        // in). The static scene graph carries no such back-reference, so
+        // per the spec — "If there is no context element and these
+        // keywords are used, then no paint is applied" — they map to no
+        // paint. Round 104 accepts the keyword (it appears in the SVG-2
+        // marker examples) instead of failing the whole document.
+        return Ok(PaintValue::None);
+    }
     if let Some(stripped) = s.strip_prefix('#') {
         return parse_hex(stripped).map(PaintValue::Color);
     }

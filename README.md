@@ -153,6 +153,45 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
+## Round 104 additions
+
+- **SVG 2 §13.7.1 `<marker>` definition capture.** `<marker
+  id="...">` definitions now parse into a typed
+  `crate::defs::MarkerDef` carrying every spec presentation
+  attribute: `refX` / `refY` (with the SVG-2 geometric keywords
+  `left` / `center` / `right` and `top` / `center` / `bottom`
+  pre-resolved against the `viewBox` per the §13.7.1 mapping table),
+  `markerWidth` / `markerHeight` (default 3), `markerUnits`
+  (`strokeWidth` / `userSpaceOnUse`; default `strokeWidth`), `orient`
+  (`auto` / `auto-start-reverse` / `<angle>` / `<number>`; default
+  `0`), `viewBox`, `preserveAspectRatio`, plus the parsed marker
+  content as a `Group`. Captured into
+  `DefsTables::markers: HashMap<String, MarkerDef>` during the
+  pre-walk so forward references resolve. The verbatim XML also rides
+  on `PreservedExtras::markers: Vec<Element>` so `parse → write_svg
+  _with_extras` round-trips the definition byte-faithfully (encoder
+  re-emits it inside the `<defs>` block alongside `<pattern>` /
+  `<filter>` extras).
+- **`<marker>` is never-rendered** per §13.7.1 — the scene-walk skips
+  it (no scene-graph node), exactly like `<filter>` / `<mask>` /
+  `<clipPath>` / `<symbol>`. A document that references a marker via
+  `marker-end="url(#arrow)"` therefore loads cleanly even though the
+  marker isn't yet painted into the scene.
+- **SVG 2 §13.2 `context-fill` / `context-stroke` `<paint>` keywords**
+  — used by the spec's own `<marker>` examples to match marker colour
+  to the referencing element's stroke — now parse gracefully. The
+  static scene graph has no context element, so they map to no paint
+  per the spec rule "If there is no context element and these
+  keywords are used, then no paint is applied" — instead of failing
+  the whole document.
+- `oxideav_core::Node` lacks a `Marker` variant, so the vertex
+  placement + `orient` rotation + `markerUnits` scaling (§13.7.4)
+  and the per-shape `marker-start` / `marker-mid` / `marker-end` /
+  `marker` shorthand property binding remain a followup for once a
+  `Marker` node lands in core. Round 104 delivers the typed
+  definition + lossless round-trip, mirroring the round-20
+  `<pattern>` capture pattern.
+
 ## Round 98 additions
 
 - **SVG 2 §5.7 `<switch>` conditional processing**. `<switch>` now
@@ -595,8 +634,11 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
 
 - Actual filter-primitive rasterisation (the typed graph is
   pre-rasteriser plumbing; pixel evaluation is `oxideav-raster` work).
-- `<marker>` defs + `marker-start` / `marker-mid` / `marker-end`
-  (needs a `Marker` construct in `oxideav-core`).
+- `marker-start` / `marker-mid` / `marker-end` *rendering* — round 104
+  captures the `<marker>` definition (typed `MarkerDef` + verbatim
+  round-trip via `PreservedExtras::markers`); painting the marker
+  graphics at shape vertices with the §13.7.4 `orient` / `markerUnits`
+  rules needs a `Marker` construct in `oxideav-core`.
 - `<text>` `textPath` (SVG 2 §11.3) — text-on-path layout via the
   existing `oxideav-scribe` shaping path.
 - `<image>` element with embedded data URIs / external href.

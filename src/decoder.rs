@@ -9,8 +9,9 @@ use oxideav_core::{
 use crate::css::MatchContext;
 use crate::element::{
     derive_child_ctx, flatten_gradient_to_paint, parse_clip_path_def, parse_element_to_node_ctx,
-    parse_filter_def, parse_linear_gradient_def, parse_mask_def, parse_number, parse_pattern_def,
-    parse_radial_gradient_def, parse_symbol_def, parse_view_def, PaintState, ParseContext,
+    parse_filter_def, parse_linear_gradient_def, parse_marker_def, parse_mask_def, parse_number,
+    parse_pattern_def, parse_radial_gradient_def, parse_symbol_def, parse_view_def, PaintState,
+    ParseContext,
 };
 use crate::filter::{MeetOrSlice, PreserveAspectRatio, PreserveAspectRatioAlign};
 use crate::length::ResolveContext;
@@ -163,6 +164,14 @@ fn collect_extras(el: &Element, extras: &mut PreservedExtras, current_id: Option
             // consumers, but the verbatim XML is the round-trip
             // source of truth.
             extras.patterns.push(el.clone());
+        }
+        "marker" => {
+            // Round 104 — capture the verbatim <marker> for round-trip
+            // re-emission (SVG 2 §13.7.1). The pre-walk separately
+            // builds a typed [`crate::defs::MarkerDef`]; this verbatim
+            // element is the round-trip source of truth (attribute
+            // ordering, descriptive children, content shapes).
+            extras.markers.push(el.clone());
         }
         "lineargradient" | "radialgradient" => {
             // Round 81 — verbatim gradient capture. The typed view on
@@ -518,6 +527,15 @@ fn register_all_defs(el: &Element, ctx: &mut ParseContext) -> Result<()> {
             // Round 20 — typed <pattern> capture (SVG 2 §14.3).
             if let Some((id, def)) = parse_pattern_def(el, ctx)? {
                 ctx.defs.patterns.insert(id, def);
+            }
+        }
+        "marker" => {
+            // Round 104 — typed <marker> capture (SVG 2 §13.7.1). The
+            // element is never-rendered on its own; capturing the typed
+            // def lets a downstream rasterizer paint vertex markers once
+            // a `Marker` construct lands in oxideav-core.
+            if let Some((id, def)) = parse_marker_def(el, ctx)? {
+                ctx.defs.markers.insert(id, def);
             }
         }
         "view" => {
