@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4](https://github.com/OxideAV/oxideav-svg/compare/v0.1.3...v0.1.4) - 2026-05-24
+
+### Added
+
+- round 115 — SVG 2 §16.5 <a> hyperlink element
+- round 104 — SVG 2 §13.7.1 <marker> definition capture
+- round 98 — SVG 2 §5.7 <switch> conditional processing
+- round 95 — SVG 2 §16.3 <view> element + fragment-identifier routing
+- round 21 — SVG 2 §9.6.1 pathLength attribute on every SVGGeometryElement
+- round 81 — SVG 2 §14.1.1 gradient href template inheritance + gradientUnits/gradientTransform capture
+
+### Other
+
+- Round 75: pattern fill + color/defs/element extensions
+
 ### Added
 
 - **Round 115** — SVG 2 §16.5 `<a>` hyperlink element.
