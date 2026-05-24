@@ -90,7 +90,34 @@ pub fn evaluate_at(el: &Element, t_seconds: f32) -> Option<(String, String)> {
 /// Evaluate every animation child of `parent` at `t_seconds` and return
 /// the merged attribute overrides. Designed for the parser to call
 /// before walking the parent element's own attrs.
+///
+/// Round 125: this is the legacy entry-point. `<animateMotion>`
+/// instances that carry an `<mpath xlink:href="#id">` child resolve
+/// **only** if the caller routes the call through
+/// [`snapshot_children_with_resolver`] and supplies an id lookup; a
+/// bare [`snapshot_children`] call falls back to evaluating the
+/// motion element's own `path=` / `values=` / `from`-`to`-`by`
+/// attributes (per the §19.2.14 override precedence: mpath overrides
+/// path overrides values overrides from/by/to).
 pub fn snapshot_children(parent: &Element, t_seconds: f32) -> Vec<(String, String)> {
+    snapshot_children_with_resolver(parent, t_seconds, &|_| None)
+}
+
+/// Round 125 — variant of [`snapshot_children`] that wires an id
+/// lookup into `<animateMotion>` evaluation so an `<mpath
+/// xlink:href="#path1">` child can resolve to the referenced
+/// `<path>` element's `d` attribute per SVG 1.1 §19.2.14.
+///
+/// Pass a closure that returns the source [`Element`] for a bare id
+/// (no leading `#`). [`crate::element::ParseContext::defs::elements`]
+/// is the natural source: it's the id-to-element table the rest of
+/// the decoder already populates during the pre-walk for `<use>` /
+/// `<linearGradient href>` etc.
+pub fn snapshot_children_with_resolver<'a>(
+    parent: &Element,
+    t_seconds: f32,
+    id_lookup: &dyn Fn(&str) -> Option<&'a Element>,
+) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
     for child in &parent.children {
         if let XmlNode::Element(c) = child {
@@ -101,7 +128,12 @@ pub fn snapshot_children(parent: &Element, t_seconds: f32) -> Vec<(String, Strin
             ) {
                 continue;
             }
-            if let Some((name, value)) = evaluate_at(c, t_seconds) {
+            let evaluated = if local == "animatemotion" {
+                evaluate_motion_at(c, t_seconds, id_lookup).map(|v| ("transform".into(), v))
+            } else {
+                evaluate_at(c, t_seconds)
+            };
+            if let Some((name, value)) = evaluated {
                 // Replace existing same-name override (last wins).
                 let lower_name = name.to_ascii_lowercase();
                 out.retain(|(k, _)| k.to_ascii_lowercase() != lower_name);
@@ -611,6 +643,599 @@ fn parse_numbers(s: &str) -> Vec<f32> {
         .filter(|p| !p.is_empty())
         .filter_map(|p| p.parse::<f32>().ok())
         .collect()
+}
+
+// ---------------------------------------------------------------------
+// Round 125 — SVG 1.1 §19.2.14 `<animateMotion>` + `<mpath>` evaluator.
+// ---------------------------------------------------------------------
+
+use oxideav_core::{Path, PathCommand, Point};
+
+/// Round 125 — evaluate an `<animateMotion>` element at `t_seconds`.
+///
+/// Returns the supplemental `transform=` value that should be folded
+/// into the parent element's attribute set per SVG 1.1 §19.2.14:
+///
+/// > The effect of a motion path animation is to add a supplemental
+/// > transformation matrix onto the CTM for the referenced object
+/// > which causes a translation along the x- and y-axes of the
+/// > current user coordinate system by the computed X and Y values
+/// > computed over time.
+///
+/// The string is always of the form
+/// `translate(<x>,<y>) rotate(<angle>)` (the rotate term is omitted
+/// when `rotate="0"` is the resolved value, keeping output lean for
+/// the common no-rotate case).
+///
+/// `id_lookup` resolves a bare id (no leading `#`) to its source
+/// [`Element`], used to find the `<path>` an inner `<mpath>` points
+/// at. Pass `&|_| None` if you want to ignore mpath references.
+///
+/// Returns `None` when the animation isn't active at `t_seconds`
+/// (before `begin`) or the motion path is empty / unparseable. The
+/// `fill="freeze"` default means a finished animation continues to
+/// report the last-frame transform.
+pub fn evaluate_motion_at<'a>(
+    el: &Element,
+    t_seconds: f32,
+    id_lookup: &dyn Fn(&str) -> Option<&'a Element>,
+) -> Option<String> {
+    let begin = parse_clock(attr(el, "begin")).unwrap_or(0.0);
+    let dur = parse_clock(attr(el, "dur"));
+    let repeat = parse_repeat_count(attr(el, "repeatCount"));
+    let local_t = local_time(t_seconds, begin, dur, repeat)?;
+
+    // Resolve the motion path per §19.2.14 precedence:
+    //   <mpath>  >  path=  >  values=  >  from/by/to
+    let path = motion_path_from_element(el, id_lookup)?;
+    if path.commands.len() < 2 {
+        // A bare MoveTo (or empty path) has no defined direction or
+        // length — no motion to apply.
+        let pos = match path.commands.first() {
+            Some(PathCommand::MoveTo(p)) => *p,
+            _ => return None,
+        };
+        return Some(format_motion_transform(pos, 0.0));
+    }
+
+    // Default calcMode for animateMotion is `paced` (§19.2.14 — the
+    // only difference from animateTransform). `paced` walks the path
+    // at constant velocity, which is the natural arc-length sampling.
+    let mode = calc_mode_with_default(el, CalcMode::Paced);
+
+    // Fraction along the motion path (0..=1).
+    let t01 = match dur {
+        Some(d) if d > 0.0 => (local_t / d).clamp(0.0, 1.0),
+        _ => 0.0,
+    };
+
+    // `keyPoints` overrides every other position->time mapping per
+    // §19.2.14. When present together with `keyTimes` the (keyTimes,
+    // keyPoints) pair maps document time to path-fraction.
+    let frac = if let Some(kp_frac) = key_points_mapping(el, t01, mode) {
+        kp_frac
+    } else {
+        // Without keyPoints the fraction along the path is just t01
+        // for the paced default. For discrete/linear/spline, the
+        // segment boundaries fall on equally-spaced keyTimes by
+        // default, but for a single supplemental matrix this still
+        // reduces to t01 along the arc length per the "find the
+        // point (x,y) which is t/dur distance along the motion path"
+        // rule at the end of §19.2.14.
+        match mode {
+            CalcMode::Discrete => {
+                // Snap to the start of the path segment in
+                // path-distance space.
+                (t01 - t01.fract()).max(0.0)
+            }
+            _ => t01,
+        }
+    };
+
+    let (pos, tangent_angle_deg) = sample_path_at_fraction(&path, frac);
+
+    let rot_attr = attr(el, "rotate").map(str::trim).unwrap_or("0");
+    let rotation_deg = match rot_attr {
+        "auto" => tangent_angle_deg,
+        "auto-reverse" => tangent_angle_deg + 180.0,
+        s => s.parse::<f32>().unwrap_or(0.0),
+    };
+
+    Some(format_motion_transform(pos, rotation_deg))
+}
+
+/// Resolve the motion path for an `<animateMotion>` element per the
+/// §19.2.14 precedence: `<mpath>` (inner element) > `path=` attr >
+/// `values=` (polyline) > `from`/`by`/`to` (single segment).
+fn motion_path_from_element<'a>(
+    el: &Element,
+    id_lookup: &dyn Fn(&str) -> Option<&'a Element>,
+) -> Option<Path> {
+    // 1. <mpath xlink:href="#path1"> → look up the referenced <path>
+    //    element's `d` attribute.
+    for child in &el.children {
+        if let XmlNode::Element(c) = child {
+            if tag_local(&c.name) == "mpath" {
+                let href = attr(c, "href").or_else(|| attr(c, "xlink:href"))?;
+                let id = href.trim().strip_prefix('#')?;
+                let target = id_lookup(id)?;
+                let d = attr(target, "d")?;
+                return path_from_d(d);
+            }
+        }
+    }
+    // 2. path="..."
+    if let Some(d) = attr(el, "path") {
+        return path_from_d(d);
+    }
+    // 3. values="x0,y0; x1,y1; ..." → polyline.
+    if let Some(values) = attr(el, "values") {
+        let pts: Vec<Point> = values
+            .split(';')
+            .filter_map(|seg| parse_xy(seg.trim()))
+            .collect();
+        if pts.is_empty() {
+            return None;
+        }
+        let mut p = Path::new();
+        p.move_to(pts[0]);
+        for pt in &pts[1..] {
+            p.line_to(*pt);
+        }
+        return Some(p);
+    }
+    // 4. from/to (or from/by, or to-only).
+    let from = attr(el, "from").and_then(parse_xy);
+    let to = attr(el, "to").and_then(parse_xy);
+    let by = attr(el, "by").and_then(parse_xy);
+    let mut p = Path::new();
+    match (from, to, by) {
+        (Some(f), Some(t), _) => {
+            p.move_to(f);
+            p.line_to(t);
+            Some(p)
+        }
+        (Some(f), None, Some(b)) => {
+            p.move_to(f);
+            p.line_to(Point::new(f.x + b.x, f.y + b.y));
+            Some(p)
+        }
+        (None, Some(t), _) => {
+            // to-only: SMIL describes this as "from the underlying
+            // value to t". The underlying value for animateMotion is
+            // the origin offset (0,0).
+            p.move_to(Point::new(0.0, 0.0));
+            p.line_to(t);
+            Some(p)
+        }
+        (Some(f), None, None) => {
+            // from-only: degenerate — single position, no motion.
+            p.move_to(f);
+            Some(p)
+        }
+        _ => None,
+    }
+}
+
+/// Parse one `x,y` pair (commas and/or whitespace separated). Returns
+/// `None` on any parse failure.
+fn parse_xy(s: &str) -> Option<Point> {
+    let nums = parse_numbers(s);
+    if nums.len() < 2 {
+        return None;
+    }
+    Some(Point::new(nums[0], nums[1]))
+}
+
+/// Construct a [`Path`] from a `d`-attribute string. Failures (bad
+/// command sequence) collapse to `None` rather than poison the
+/// document — `<animateMotion>` skips and the parent renders at its
+/// declared transform.
+fn path_from_d(d: &str) -> Option<Path> {
+    let cmds = crate::path_data::parse_path_data(d).ok()?;
+    if cmds.is_empty() {
+        return None;
+    }
+    let mut path = Path::new();
+    for c in cmds {
+        path.commands.push(c);
+    }
+    Some(path)
+}
+
+/// Map document-time fraction `t01` to a path-distance fraction
+/// when `keyPoints` is present. Returns `None` if `keyPoints` is
+/// absent or doesn't pair correctly with `keyTimes`.
+fn key_points_mapping(el: &Element, t01: f32, mode: CalcMode) -> Option<f32> {
+    let kp_attr = attr(el, "keyPoints")?;
+    let key_points: Vec<f32> = kp_attr
+        .split(';')
+        .map(|s| s.trim().parse::<f32>().ok())
+        .collect::<Option<Vec<_>>>()?;
+    if key_points.is_empty() {
+        return None;
+    }
+    // keyTimes is required to be present + same length per §19.2.14:
+    // "there must be exactly as many values in the keyPoints list as
+    // in the keyTimes list".
+    let kt_attr = attr(el, "keyTimes")?;
+    let key_times: Vec<f32> = kt_attr
+        .split(';')
+        .map(|s| s.trim().parse::<f32>().ok())
+        .collect::<Option<Vec<_>>>()?;
+    if key_times.len() != key_points.len() {
+        return None;
+    }
+    // Find segment containing t01.
+    if t01 <= key_times[0] {
+        return Some(key_points[0]);
+    }
+    if let Some(&last) = key_times.last() {
+        if t01 >= last {
+            return Some(*key_points.last().unwrap());
+        }
+    }
+    let mut idx = 0;
+    for (i, kt) in key_times.iter().enumerate() {
+        if *kt > t01 {
+            idx = i.saturating_sub(1);
+            break;
+        }
+    }
+    let next = (idx + 1).min(key_times.len() - 1);
+    match mode {
+        CalcMode::Discrete => Some(key_points[idx]),
+        _ => {
+            // Linear / paced / spline all reduce to linear within
+            // the (key_times[idx], key_times[next]) segment for the
+            // round-125 path-fraction calculation; full spline
+            // easing on the keyPoints sweep is a later refinement.
+            let span = (key_times[next] - key_times[idx]).max(f32::EPSILON);
+            let local = ((t01 - key_times[idx]) / span).clamp(0.0, 1.0);
+            Some(key_points[idx] + (key_points[next] - key_points[idx]) * local)
+        }
+    }
+}
+
+/// Like [`calc_mode`] but with a caller-supplied default. Used to
+/// match the spec rule that `<animateMotion>` defaults to `paced`
+/// while the rest of the SMIL animation family defaults to `linear`.
+fn calc_mode_with_default(el: &Element, default: CalcMode) -> CalcMode {
+    match attr(el, "calcMode").map(str::trim) {
+        Some("discrete") => CalcMode::Discrete,
+        Some("linear") => CalcMode::Linear,
+        Some("paced") => CalcMode::Paced,
+        Some("spline") => CalcMode::Spline,
+        _ => default,
+    }
+}
+
+/// Sample a path at fraction `frac` of its total arc length.
+/// Returns `(position, tangent_angle_degrees)`.
+///
+/// The tangent angle is in degrees, measured from +X axis (matches
+/// the SVG `rotate(<angle>)` convention).
+fn sample_path_at_fraction(path: &Path, frac: f32) -> (Point, f32) {
+    let frac = frac.clamp(0.0, 1.0);
+    let total = crate::path_length::compute_path_length(path);
+    let target = total * frac;
+
+    let mut acc = 0.0_f32;
+    let mut cur = Point::default();
+    let mut subpath_start = Point::default();
+    // Track the previous-segment tangent so a hit at the very start
+    // can re-use it (per §19.2.14 the tangent of the first sample
+    // matches the first non-zero-length segment).
+    let mut last_tangent = 0.0_f32;
+    let mut first_segment = true;
+
+    for cmd in &path.commands {
+        match *cmd {
+            PathCommand::MoveTo(p) => {
+                cur = p;
+                subpath_start = p;
+            }
+            PathCommand::LineTo(p) => {
+                let seg_len = dist(cur, p);
+                if seg_len > 0.0 {
+                    let tan = (p.y - cur.y).atan2(p.x - cur.x).to_degrees();
+                    first_segment = false;
+                    if acc + seg_len >= target {
+                        let local = ((target - acc) / seg_len).clamp(0.0, 1.0);
+                        let x = cur.x + (p.x - cur.x) * local;
+                        let y = cur.y + (p.y - cur.y) * local;
+                        return (Point::new(x, y), tan);
+                    }
+                    acc += seg_len;
+                    last_tangent = tan;
+                }
+                cur = p;
+            }
+            PathCommand::QuadCurveTo { control, end } => {
+                let (hit, tan, advanced) =
+                    sample_quad(cur, control, end, target - acc, first_segment, last_tangent);
+                if let Some(p) = hit {
+                    return (p, tan);
+                }
+                acc += advanced;
+                last_tangent = tan;
+                first_segment = false;
+                cur = end;
+            }
+            PathCommand::CubicCurveTo { c1, c2, end } => {
+                let (hit, tan, advanced) =
+                    sample_cubic(cur, c1, c2, end, target - acc, first_segment, last_tangent);
+                if let Some(p) = hit {
+                    return (p, tan);
+                }
+                acc += advanced;
+                last_tangent = tan;
+                first_segment = false;
+                cur = end;
+            }
+            PathCommand::ArcTo {
+                rx,
+                ry,
+                x_axis_rot,
+                large_arc,
+                sweep,
+                end,
+            } => {
+                // Round 125: sample the elliptical arc at 64 chord
+                // steps and walk segment-by-segment, matching the
+                // sampling density `path_length::compute_path_length`
+                // uses so the arc-length total agrees with the
+                // running accumulator. This keeps `sample_at(0.5)`
+                // landing at the geometric midpoint of the arc.
+                let arc_pts = flatten_arc(cur, rx, ry, x_axis_rot, large_arc, sweep, end);
+                let mut prev = cur;
+                let mut hit = None;
+                let mut last_tan = last_tangent;
+                for p in &arc_pts {
+                    let seg = dist(prev, *p);
+                    if seg > 0.0 {
+                        let tan = (p.y - prev.y).atan2(p.x - prev.x).to_degrees();
+                        first_segment = false;
+                        last_tan = tan;
+                        if acc + seg >= target {
+                            let local = ((target - acc) / seg).clamp(0.0, 1.0);
+                            let x = prev.x + (p.x - prev.x) * local;
+                            let y = prev.y + (p.y - prev.y) * local;
+                            hit = Some((Point::new(x, y), tan));
+                            break;
+                        }
+                        acc += seg;
+                    }
+                    prev = *p;
+                }
+                if let Some((p, tan)) = hit {
+                    return (p, tan);
+                }
+                last_tangent = last_tan;
+                cur = end;
+            }
+            PathCommand::Close => {
+                let p = subpath_start;
+                let seg_len = dist(cur, p);
+                if seg_len > 0.0 {
+                    let tan = (p.y - cur.y).atan2(p.x - cur.x).to_degrees();
+                    first_segment = false;
+                    if acc + seg_len >= target {
+                        let local = ((target - acc) / seg_len).clamp(0.0, 1.0);
+                        let x = cur.x + (p.x - cur.x) * local;
+                        let y = cur.y + (p.y - cur.y) * local;
+                        return (Point::new(x, y), tan);
+                    }
+                    acc += seg_len;
+                    last_tangent = tan;
+                }
+                cur = p;
+            }
+            _ => {}
+        }
+    }
+    // Past the end of the path → return the final pen position with
+    // the last computed tangent.
+    (cur, last_tangent)
+}
+
+/// Sample a quadratic Bezier by chord-walking 32 steps. Returns the
+/// hit point + tangent (degrees) when the target distance falls
+/// inside this segment; otherwise the full segment length advanced
+/// and the segment's end tangent so the outer loop can keep walking.
+fn sample_quad(
+    p0: Point,
+    pc: Point,
+    p1: Point,
+    target_remaining: f32,
+    first_segment: bool,
+    last_tangent: f32,
+) -> (Option<Point>, f32, f32) {
+    let _ = (first_segment, last_tangent);
+    const N: usize = 32;
+    let mut prev = p0;
+    let mut acc = 0.0_f32;
+    let mut tan = (p1.y - p0.y).atan2(p1.x - p0.x).to_degrees();
+    for i in 1..=N {
+        let t = i as f32 / N as f32;
+        let omt = 1.0 - t;
+        let x = omt * omt * p0.x + 2.0 * omt * t * pc.x + t * t * p1.x;
+        let y = omt * omt * p0.y + 2.0 * omt * t * pc.y + t * t * p1.y;
+        let p = Point::new(x, y);
+        let seg = dist(prev, p);
+        if seg > 0.0 {
+            tan = (p.y - prev.y).atan2(p.x - prev.x).to_degrees();
+        }
+        if acc + seg >= target_remaining && target_remaining > 0.0 {
+            let local = ((target_remaining - acc) / seg.max(f32::EPSILON)).clamp(0.0, 1.0);
+            let x = prev.x + (p.x - prev.x) * local;
+            let y = prev.y + (p.y - prev.y) * local;
+            return (Some(Point::new(x, y)), tan, acc + seg);
+        }
+        acc += seg;
+        prev = p;
+    }
+    (None, tan, acc)
+}
+
+/// Sample a cubic Bezier by chord-walking 32 steps. Same shape as
+/// [`sample_quad`].
+fn sample_cubic(
+    p0: Point,
+    c1: Point,
+    c2: Point,
+    p1: Point,
+    target_remaining: f32,
+    first_segment: bool,
+    last_tangent: f32,
+) -> (Option<Point>, f32, f32) {
+    let _ = (first_segment, last_tangent);
+    const N: usize = 32;
+    let mut prev = p0;
+    let mut acc = 0.0_f32;
+    let mut tan = (p1.y - p0.y).atan2(p1.x - p0.x).to_degrees();
+    for i in 1..=N {
+        let t = i as f32 / N as f32;
+        let omt = 1.0 - t;
+        let omt2 = omt * omt;
+        let omt3 = omt2 * omt;
+        let t2 = t * t;
+        let t3 = t2 * t;
+        let x = omt3 * p0.x + 3.0 * omt2 * t * c1.x + 3.0 * omt * t2 * c2.x + t3 * p1.x;
+        let y = omt3 * p0.y + 3.0 * omt2 * t * c1.y + 3.0 * omt * t2 * c2.y + t3 * p1.y;
+        let p = Point::new(x, y);
+        let seg = dist(prev, p);
+        if seg > 0.0 {
+            tan = (p.y - prev.y).atan2(p.x - prev.x).to_degrees();
+        }
+        if acc + seg >= target_remaining && target_remaining > 0.0 {
+            let local = ((target_remaining - acc) / seg.max(f32::EPSILON)).clamp(0.0, 1.0);
+            let x = prev.x + (p.x - prev.x) * local;
+            let y = prev.y + (p.y - prev.y) * local;
+            return (Some(Point::new(x, y)), tan, acc + seg);
+        }
+        acc += seg;
+        prev = p;
+    }
+    (None, tan, acc)
+}
+
+fn dist(a: Point, b: Point) -> f32 {
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    (dx * dx + dy * dy).sqrt()
+}
+
+/// Flatten an SVG endpoint-form elliptical arc into a 64-segment
+/// polyline (the same sampling density used by
+/// [`crate::path_length::compute_path_length`]). Returns the sampled
+/// points after the start — i.e. the start point is *not* included.
+fn flatten_arc(
+    start: Point,
+    rx: f32,
+    ry: f32,
+    x_axis_rot_rad: f32,
+    large_arc: bool,
+    sweep: bool,
+    end: Point,
+) -> Vec<Point> {
+    // Degenerate cases per §F.6.2 — collapse to a chord.
+    if rx == 0.0 || ry == 0.0 || (start.x == end.x && start.y == end.y) {
+        return vec![end];
+    }
+    let rx = rx.abs();
+    let ry = ry.abs();
+
+    let cos_phi = x_axis_rot_rad.cos();
+    let sin_phi = x_axis_rot_rad.sin();
+    let dx = (start.x - end.x) * 0.5;
+    let dy = (start.y - end.y) * 0.5;
+    let x1p = cos_phi * dx + sin_phi * dy;
+    let y1p = -sin_phi * dx + cos_phi * dy;
+
+    let lambda = (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry);
+    let (rx, ry) = if lambda > 1.0 {
+        let s = lambda.sqrt();
+        (rx * s, ry * s)
+    } else {
+        (rx, ry)
+    };
+
+    let rx2 = rx * rx;
+    let ry2 = ry * ry;
+    let x1p2 = x1p * x1p;
+    let y1p2 = y1p * y1p;
+    let denom = rx2 * y1p2 + ry2 * x1p2;
+    let mut factor = (rx2 * ry2 - denom) / denom;
+    if factor < 0.0 {
+        factor = 0.0;
+    }
+    let coef = factor.sqrt() * if large_arc == sweep { -1.0 } else { 1.0 };
+    let cxp = coef * (rx * y1p) / ry;
+    let cyp = coef * -(ry * x1p) / rx;
+
+    let cx = cos_phi * cxp - sin_phi * cyp + (start.x + end.x) * 0.5;
+    let cy = sin_phi * cxp + cos_phi * cyp + (start.y + end.y) * 0.5;
+
+    let ux = (x1p - cxp) / rx;
+    let uy = (y1p - cyp) / ry;
+    let vx = (-x1p - cxp) / rx;
+    let vy = (-y1p - cyp) / ry;
+    let theta1 = arc_angle(1.0, 0.0, ux, uy);
+    let mut delta = arc_angle(ux, uy, vx, vy);
+    if !sweep && delta > 0.0 {
+        delta -= std::f32::consts::TAU;
+    } else if sweep && delta < 0.0 {
+        delta += std::f32::consts::TAU;
+    }
+
+    const N: usize = 64;
+    let mut pts = Vec::with_capacity(N);
+    for i in 1..=N {
+        let t = i as f32 / N as f32;
+        let theta = theta1 + delta * t;
+        let x = cos_phi * rx * theta.cos() - sin_phi * ry * theta.sin() + cx;
+        let y = sin_phi * rx * theta.cos() + cos_phi * ry * theta.sin() + cy;
+        pts.push(Point::new(x, y));
+    }
+    pts
+}
+
+/// Signed angle between two 2-vectors per SVG 1.1 §F.6.5 (eqn
+/// F.6.5.4). Same definition used by [`crate::path_length`].
+fn arc_angle(ux: f32, uy: f32, vx: f32, vy: f32) -> f32 {
+    let sign = if ux * vy - uy * vx >= 0.0 { 1.0 } else { -1.0 };
+    let dot = ux * vx + uy * vy;
+    let nu = (ux * ux + uy * uy).sqrt();
+    let nv = (vx * vx + vy * vy).sqrt();
+    let cos_a = (dot / (nu * nv)).clamp(-1.0, 1.0);
+    sign * cos_a.acos()
+}
+
+/// Render the supplemental transform as `translate(x,y) rotate(deg)`,
+/// dropping the `rotate(0)` term for the common no-rotate case.
+fn format_motion_transform(pos: Point, rotation_deg: f32) -> String {
+    if rotation_deg.abs() < 1e-3 {
+        format!("translate({},{})", trim_f(pos.x), trim_f(pos.y))
+    } else {
+        format!(
+            "translate({},{}) rotate({})",
+            trim_f(pos.x),
+            trim_f(pos.y),
+            trim_f(rotation_deg)
+        )
+    }
+}
+
+/// Format an `f32` without trailing ".0" zeros for compact output.
+fn trim_f(v: f32) -> String {
+    let s = format!("{:.6}", v);
+    let trimmed = s.trim_end_matches('0').trim_end_matches('.');
+    if trimmed.is_empty() || trimmed == "-" {
+        "0".into()
+    } else {
+        trimmed.into()
+    }
 }
 
 #[cfg(test)]

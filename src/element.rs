@@ -1324,8 +1324,12 @@ pub fn parse_element_to_node_ctx(
     // into the parent element's attribute set before we look at the
     // attrs. Round 3 hard-coded `t=0`; round 4 picks the time from the
     // ParseContext so `parse_svg_at(bytes, t)` produces a stable
-    // snapshot at any point on the timeline.
-    let with_anim = apply_animation_overrides(el, ctx.animation_t);
+    // snapshot at any point on the timeline. Round 125 widened the
+    // helper to also evaluate `<animateMotion>` — and that branch
+    // needs the id table so an `<mpath xlink:href="#path1">` can
+    // resolve to the referenced `<path>`. We pass `&ctx.defs.elements`
+    // (already populated by the pre-walk) as the id-lookup.
+    let with_anim = apply_animation_overrides(el, ctx.animation_t, &ctx.defs.elements);
     // Round 16: also fold any CSS `@keyframes`-driven animation that
     // targets this element. The SMIL pass above handles `<animate>` /
     // `<set>`; the keyframe pass below handles `animation-name: <kf>;
@@ -2665,13 +2669,25 @@ fn apply_keyframe_overrides(
 }
 
 /// Walk `el`'s children for `<animate>` / `<set>` / `<animateTransform>`
-/// tags, evaluate each at `t_seconds`, and return a clone of `el` with
-/// the snapshot values spliced into its attrs (taking precedence over
-/// any existing attribute of the same name). Returns `None` when there
-/// are no animation children, so the caller can keep using the
-/// original element by reference for the common case.
-fn apply_animation_overrides(el: &Element, t_seconds: f32) -> Option<Element> {
-    let overrides = crate::animation::snapshot_children(el, t_seconds);
+/// / `<animateMotion>` tags, evaluate each at `t_seconds`, and return
+/// a clone of `el` with the snapshot values spliced into its attrs
+/// (taking precedence over any existing attribute of the same name).
+/// Returns `None` when there are no animation children, so the caller
+/// can keep using the original element by reference for the common
+/// case.
+///
+/// Round 125: `id_lookup` resolves `<mpath xlink:href="#id">`
+/// references inside an `<animateMotion>` child to the corresponding
+/// source `<path>` element. The caller should pass the
+/// `ParseContext::defs::elements` table that the pre-walk already
+/// populated.
+fn apply_animation_overrides(
+    el: &Element,
+    t_seconds: f32,
+    id_lookup: &std::collections::HashMap<String, Element>,
+) -> Option<Element> {
+    let overrides =
+        crate::animation::snapshot_children_with_resolver(el, t_seconds, &|id| id_lookup.get(id));
     if overrides.is_empty() {
         return None;
     }

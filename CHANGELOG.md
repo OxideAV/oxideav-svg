@@ -9,6 +9,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 125** — SVG 1.1 §19.2.14 `<animateMotion>` snapshot evaluator
+  with `<mpath>` resolution + `rotate="auto"` / `auto-reverse` /
+  numeric + `keyPoints` / `keyTimes` remapping.
+  - The animation now folds a supplemental `translate(x,y) rotate(angle)`
+    matrix into the parent element's `transform=` attribute set per
+    §19.2.14, matching the spec's "supplemental transformation matrix
+    onto the CTM" rule. Earlier rounds captured `<animateMotion>`
+    verbatim for round-trip preservation but its scene-graph
+    contribution was silently dropped at snapshot time.
+  - **Motion-path resolution precedence** (§19.2.14): `<mpath>`
+    overrides `path=` overrides `values=` overrides `from`/`by`/`to`.
+    `<mpath xlink:href="#id">` and the SVG-2 bare-`href` form both
+    resolve the referenced `<path>` via the pre-walked
+    [`crate::defs::DefsTables::elements`] id table.
+  - **Tangent-aware rotation**: `rotate="auto"` reads the path
+    tangent at the sampled position; `auto-reverse` adds 180°;
+    a numeric value holds constant; the default `0` emits no
+    `rotate` term (keeping the common-case output as a plain
+    `translate(...)`).
+  - **`calcMode` defaults to `paced`** per the §19.2.14 difference
+    from the rest of the SMIL animation family. Arc-length sampling
+    uses 32-chord flattening for cubics / quadratics and 64-chord
+    flattening for elliptic arcs (matching the
+    [`crate::path_length`] density so the running accumulator and
+    the total arc length agree).
+  - **`keyPoints` + `keyTimes` override** the natural arc-length
+    fraction mapping per §19.2.14: the (keyTimes, keyPoints) pair
+    remaps document time to path-distance.
+  - **Public API**: new
+    [`crate::animation::evaluate_motion_at(el, t, id_lookup)`] +
+    [`crate::animation::snapshot_children_with_resolver(parent, t, id_lookup)`].
+    The legacy `snapshot_children(parent, t)` keeps working but
+    resolves `<mpath>` references only when the caller threads an
+    id-lookup closure through. The decoder routes through the
+    resolver variant with `&ctx.defs.elements`.
+  - **Round-trip preservation** continues via
+    [`PreservedExtras::animations`] (the existing animation capture
+    path already covered `<animateMotion>` verbatim — round 125 just
+    starts honouring it in scene-graph evaluation, not only in the
+    round-trip output).
+  - 26 integration tests in `tests/round125_animate_motion.rs`
+    (straight-line / cubic / arc paths, `<mpath>` via both
+    `xlink:href` and SVG-2 `href`, all four `rotate` modes,
+    `repeatCount="indefinite"`, `begin` delay, `fill="freeze"`
+    end-of-anim hold, `keyPoints`/`keyTimes` remapping, malformed
+    input recovery, override precedence, round-trip preservation).
+
 - **Round 122** — SVG 2 §5.8 `<title>` / `<desc>` and §5.9 `<metadata>`
   descriptive-element capture + round-trip preservation.
   - **`<title>` / `<desc>`** are *never-rendered* elements per the §5.8

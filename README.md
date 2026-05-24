@@ -153,6 +153,51 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
+## Round 125 additions
+
+- **SVG 1.1 §19.2.14 `<animateMotion>` snapshot evaluator** —
+  earlier rounds captured `<animateMotion>` verbatim for round-trip
+  preservation but its contribution to the parent shape's transform
+  was silently dropped at snapshot time. Round 125 evaluates the
+  element at the caller's `t_seconds` and folds the supplemental
+  `translate(x,y) rotate(angle)` matrix into the parent element's
+  attribute set, matching the spec's "the effect of a motion path
+  animation is to add a supplemental transformation matrix onto the
+  CTM" rule. The §19.2.14 motion-path resolution precedence is
+  honoured: `<mpath>` overrides `path=` overrides `values=` overrides
+  `from`/`by`/`to`. Both SVG-2 `href` and SVG-1.1 `xlink:href` work
+  on `<mpath>`; the referenced `<path>` is looked up via the
+  pre-walked `DefsTables::elements` id table.
+  - **`rotate="auto"` / `"auto-reverse"` / `<number>` / default `0`**
+    — `auto` aligns the rotation with the path's tangent at the
+    sampled position; `auto-reverse` adds 180°; a numeric value
+    holds constant; the implicit default emits no `rotate` term so
+    the output stays a plain `translate(...)` in the common case.
+  - **`keyPoints` + `keyTimes` override** the natural arc-length
+    fraction mapping per §19.2.14: the (keyTimes, keyPoints) pair
+    remaps document time to path-distance.
+  - **`calcMode` defaults to `paced`** per the §19.2.14 difference
+    from the rest of the SMIL animation family — paced traverses
+    the motion path at constant arc-length velocity.
+  - **Arc-length aware sampling** — straight segments use exact
+    geometry; cubic / quadratic Béziers use 32-chord flattening;
+    elliptic arcs use 64-chord flattening (matching the
+    `path_length` module's density, so the running accumulator and
+    the total arc length agree).
+  - **Public API**: new
+    `oxideav_svg::animation::evaluate_motion_at(el, t, id_lookup)`
+    + `snapshot_children_with_resolver(parent, t, id_lookup)`. The
+    legacy `snapshot_children(parent, t)` keeps working but resolves
+    `<mpath>` references only when the caller threads an id-lookup
+    closure through.
+  - 26 integration tests in `tests/round125_animate_motion.rs`
+    (straight-line / cubic / arc paths, `<mpath>` resolution via
+    both `xlink:href` and SVG-2 `href`, all four `rotate` modes,
+    `repeatCount="indefinite"`, `begin` delay, `fill="freeze"`
+    end-of-anim hold, `keyPoints`/`keyTimes` remapping, malformed
+    input recovery, override precedence, round-trip preservation
+    via `PreservedExtras`).
+
 ## Round 122 additions
 
 - **SVG 2 §5.8 `<title>` / `<desc>` + §5.9 `<metadata>` descriptive
