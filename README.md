@@ -153,6 +153,33 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
+## Round 115 additions
+
+- **SVG 2 §16.5 `<a>` hyperlink element.** `<a>` is categorised as both
+  a *container element* and a *renderable element*, so it now renders
+  its children into an `oxideav_core::Node::Group` exactly like `<g>` —
+  honouring `transform` (§8.5 presentation property), `opacity`, the
+  paint cascade, and the per-element `em` / `rem` length-resolution
+  context. Earlier rounds dropped the whole `<a>` subtree (it fell
+  through to the no-op default arm), so a shape wrapped in an
+  `<a href="…">` was silently invisible; round 115 paints it.
+- **Hyperlink preservation via `PreservedExtras::links`.**
+  `oxideav_core::Group` has no hyperlink field, so the link target and
+  its HTML companion attributes (`href` — SVG-2 `href` with SVG-1.1
+  `xlink:href` fallback — plus `target` / `download` / `ping` / `rel` /
+  `hreflang` / `type` / `referrerpolicy`) are stowed on the new
+  `crate::preserved::LinkBinding`, keyed by the group's scene-graph
+  tree-path (same layout as the round-13 `id_paths` / round-21
+  `path_lengths` side-channels). `parse_svg_with_extras` populates the
+  table; `write_svg_with_extras` re-wraps the matching `<g>` in its
+  `<a href="…">…</a>` element on round-trip. A bare `<a>` (no `href`)
+  still groups its children and round-trips as `<a>`.
+- 12 integration tests in `tests/round115_anchor.rs` (child renders,
+  group node shape, `transform` / `opacity` on the group, link-binding
+  capture, `xlink:href` fallback + `href`-wins precedence, full
+  attribute round-trip, nested-`<a>`-inside-`<g>` tree-path targeting,
+  bare-`<a>` grouping, multi-child grouping).
+
 ## Round 104 additions
 
 - **SVG 2 §13.7.1 `<marker>` definition capture.** `<marker

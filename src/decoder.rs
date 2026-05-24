@@ -19,7 +19,9 @@ use crate::parser::{
     attr, decode_utf8_lossy_stripping_bom, inflate_gzip, is_gzip, parse_xml, tag_local, Element,
     Node as XmlNode,
 };
-use crate::preserved::{AnimationFragment, IdScenePath, PathLengthBinding, PreservedExtras};
+use crate::preserved::{
+    AnimationFragment, IdScenePath, LinkBinding, PathLengthBinding, PreservedExtras,
+};
 
 /// Codec id string for SVG vector frames.
 pub const CODEC_ID_STR: &str = "svg";
@@ -75,7 +77,7 @@ pub fn parse_svg_at_with_languages(
     let svg =
         find_svg_root(&nodes).ok_or_else(|| Error::invalid("SVG: missing <svg> root element"))?;
     let langs: Vec<String> = system_language.iter().map(|s| s.to_string()).collect();
-    let (frame, _, _) = parse_svg_root(svg, t_seconds, false, &langs)?;
+    let (frame, _, _, _) = parse_svg_root(svg, t_seconds, false, &langs)?;
     Ok(frame)
 }
 
@@ -107,9 +109,10 @@ pub fn parse_svg_with_extras(bytes: &[u8]) -> Result<(VectorFrame, PreservedExtr
     // `<view>` capture in [`collect_extras`] takes care of round-trip
     // emission; this pass populates the typed mirror keyed by id.
     collect_typed_views(svg, &mut extras.typed_views);
-    let (frame, id_paths, path_lengths) = parse_svg_root(svg, 0.0, true, &[])?;
+    let (frame, id_paths, path_lengths, links) = parse_svg_root(svg, 0.0, true, &[])?;
     extras.id_paths = id_paths;
     extras.path_lengths = path_lengths;
+    extras.links = links;
     Ok((frame, extras))
 }
 
@@ -234,12 +237,19 @@ fn find_svg_root(nodes: &[XmlNode]) -> Option<&Element> {
     None
 }
 
+type SvgRootParse = (
+    VectorFrame,
+    Vec<IdScenePath>,
+    Vec<PathLengthBinding>,
+    Vec<LinkBinding>,
+);
+
 fn parse_svg_root(
     svg: &Element,
     t_seconds: f32,
     track_id_paths: bool,
     system_language: &[String],
-) -> Result<(VectorFrame, Vec<IdScenePath>, Vec<PathLengthBinding>)> {
+) -> Result<SvgRootParse> {
     let view_box = match attr(svg, "viewBox") {
         Some(v) => Some(parse_view_box(v)?),
         None => None,
@@ -383,7 +393,7 @@ fn parse_svg_root(
         pts: None,
         time_base: TimeBase::new(1, 1),
     };
-    Ok((frame, ctx.id_paths, ctx.path_lengths))
+    Ok((frame, ctx.id_paths, ctx.path_lengths, ctx.links))
 }
 
 /// Round-12 — given the root viewport (`width` × `height`), the source

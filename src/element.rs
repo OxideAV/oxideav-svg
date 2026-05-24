@@ -343,6 +343,12 @@ pub struct ParseContext {
     /// `systemLanguage` then matches nothing, while an absent attribute
     /// still implicitly evaluates to true per §5.7.5).
     pub system_language: Vec<String>,
+    /// Round 115 — collected `(scene_path, <a> hyperlink)` mappings
+    /// (SVG 2 §16.5). Populated only when the caller opted in via
+    /// [`crate::decoder::parse_svg_with_extras`] (same gate as
+    /// [`Self::track_id_paths`]); the encoder re-wraps each recorded
+    /// `Node::Group` in its `<a href="…">…</a>` element on round-trip.
+    pub links: Vec<crate::preserved::LinkBinding>,
 }
 
 impl Default for ParseContext {
@@ -366,6 +372,7 @@ impl ParseContext {
             path_lengths: Vec::new(),
             pending_path_length: None,
             system_language: Vec::new(),
+            links: Vec::new(),
         }
     }
 
@@ -422,6 +429,39 @@ impl ParseContext {
             path: self.current_path.clone(),
             path_length,
         });
+    }
+
+    /// Round 115 — record an `<a>` hyperlink binding at the current
+    /// scene-graph path (SVG 2 §16.5). Gated behind the same
+    /// [`Self::track_id_paths`] flag as [`Self::record_id_path`]; the
+    /// encoder consumes the table on the `parse_svg_with_extras`
+    /// round-trip path to re-wrap the matching `Node::Group` in `<a>`.
+    pub fn record_link(&mut self, mut link: crate::preserved::LinkBinding) {
+        if !self.track_id_paths {
+            return;
+        }
+        link.path = self.current_path.clone();
+        self.links.push(link);
+    }
+}
+
+/// Round 115 — extract the SVG 2 §16.5 `<a>` hyperlink attributes into a
+/// [`crate::preserved::LinkBinding`] (the `path` is filled in by the
+/// caller via [`ParseContext::record_link`]). `href` prefers the SVG-2
+/// `href` and falls back to the deprecated SVG-1.1 `xlink:href`.
+fn parse_link_binding(el: &Element) -> crate::preserved::LinkBinding {
+    crate::preserved::LinkBinding {
+        path: Vec::new(),
+        href: attr(el, "href")
+            .or_else(|| attr(el, "xlink:href"))
+            .map(str::to_string),
+        target: attr(el, "target").map(str::to_string),
+        download: attr(el, "download").map(str::to_string),
+        ping: attr(el, "ping").map(str::to_string),
+        rel: attr(el, "rel").map(str::to_string),
+        hreflang: attr(el, "hreflang").map(str::to_string),
+        type_: attr(el, "type").map(str::to_string),
+        referrerpolicy: attr(el, "referrerpolicy").map(str::to_string),
     }
 }
 
@@ -1163,6 +1203,64 @@ pub fn parse_element_to_node_ctx(
             // Restore the parent's resolve context — em-cascade is
             // strictly per-subtree.
             ctx.resolve_ctx = saved_ctx;
+            Some(Node::Group(group))
+        }
+        // Round 115 — SVG 2 §16.5 `<a>` hyperlink. The `<a>` element is
+        // categorised as both a *container element* and a *renderable
+        // element*: it groups + renders its children exactly like `<g>`
+        // (transform / opacity / paint cascade / per-element `em`
+        // cascade), and merely *also* establishes a hyperlink. So we
+        // build a `Node::Group` identical to the `<g>` arm; the
+        // hyperlink target + its HTML companion attributes (`href` /
+        // `target` / `download` / `ping` / `rel` / `hreflang` / `type`
+        // / `referrerpolicy`) are stowed on `ctx.links` for the encoder
+        // to re-wrap in `<a>` on round-trip (`oxideav_core::Group` has
+        // no hyperlink field). Per the §16.5 content model an `<a>` may
+        // not contain another `<a>`, but a UA still renders nested
+        // anchor content; we render it and simply record the inner
+        // link too (the outer wins navigationally, but both groups
+        // round-trip).
+        "a" => {
+            let state = parent_state.merged_with_mctx(mctx, &ctx.stylesheet)?;
+            let saved_ctx = ctx.resolve_ctx;
+            ctx.resolve_ctx = derive_child_ctx(el, mctx, &ctx.stylesheet, &saved_ctx);
+            let transform = match attr(el, "transform") {
+                Some(v) => parse_transform(v)?,
+                None => Transform2D::identity(),
+            };
+            let mut group = Group {
+                transform,
+                opacity: state.opacity,
+                clip: None,
+                children: Vec::new(),
+                cache_key: None,
+            };
+            let (total, tag_totals) = child_sibling_totals(el);
+            let mut child_idx = 0usize;
+            let mut tag_seen: HashMap<String, usize> = HashMap::new();
+            for child in &el.children {
+                if let XmlNode::Element(c) = child {
+                    let lower = tag_local(&c.name).to_ascii_lowercase();
+                    let of_idx = *tag_seen.entry(lower.clone()).or_insert(0);
+                    *tag_seen.get_mut(&lower).unwrap() += 1;
+                    let of_count = *tag_totals.get(&lower).unwrap_or(&0);
+                    let cmctx = child_match_context(mctx, c, child_idx, of_idx, total, of_count);
+                    let scene_idx = group.children.len();
+                    ctx.current_path.push(scene_idx);
+                    let result = parse_element_to_node_ctx(c, &state, ctx, &cmctx);
+                    ctx.current_path.pop();
+                    if let Some(node) = result? {
+                        group.children.push(node);
+                    }
+                    child_idx += 1;
+                }
+            }
+            ctx.resolve_ctx = saved_ctx;
+            // Record the hyperlink at this group's own scene-graph path
+            // so the encoder re-wraps it in `<a>`. `current_path` here
+            // points at the `<a>`'s own slot (the caller pushed the
+            // scene index before invoking us).
+            ctx.record_link(parse_link_binding(el));
             Some(Node::Group(group))
         }
         // Round 98 — SVG 2 §5.7.3 `<switch>` conditional processing.

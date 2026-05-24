@@ -168,6 +168,20 @@ pub struct PreservedExtras {
     /// bare-name routing). Empty when the source SVG had no
     /// id-bearing `<view>` elements.
     pub typed_views: HashMap<String, ViewDef>,
+    /// Round 115 — SVG 2 §16.5 `<a>` hyperlink bindings, recorded per
+    /// emitted [`oxideav_core::Node::Group`] so the encoder can wrap the
+    /// `<g>` back in its `<a href="...">…</a>` element on round-trip.
+    ///
+    /// `<a>` is a *container + renderable* element: it renders its
+    /// children exactly like `<g>` (transform / opacity / paint
+    /// cascade), so the decoder produces a `Node::Group` for it. But
+    /// `oxideav_core::Group` has no hyperlink field, so the link target
+    /// and its companion HTML attributes (`target` / `download` /
+    /// `ping` / `rel` / `hreflang` / `type` / `referrerpolicy`) are
+    /// stowed here keyed by the group's scene-graph tree-path (same
+    /// layout as [`id_paths`](Self::id_paths)). Populated only by
+    /// [`crate::decoder::parse_svg_with_extras`].
+    pub links: Vec<LinkBinding>,
 }
 
 /// One captured animation child of a known-id parent element.
@@ -208,6 +222,42 @@ pub struct PathLengthBinding {
     pub path_length: f32,
 }
 
+/// Round 115 — one captured `<a>` hyperlink, keyed by the scene-graph
+/// tree-path of the [`oxideav_core::Node::Group`] the decoder produced
+/// for it. SVG 2 §16.5 defines the `<a>` element + the HTML-aligned
+/// link attributes; only the `href` is structurally required, the rest
+/// are optional descriptors the encoder re-emits verbatim on the
+/// re-wrapping `<a>` element.
+#[derive(Clone, Debug, Default)]
+pub struct LinkBinding {
+    /// Tree-path through the scene graph; matches the layout of
+    /// [`IdScenePath::path`]. Identifies the `<g>` the encoder wraps in
+    /// `<a>…</a>`.
+    pub path: Vec<usize>,
+    /// `href` (SVG 2 `href`, falling back to the deprecated SVG 1.1
+    /// `xlink:href`). `None` when the source `<a>` carried neither — a
+    /// bare `<a>` with no target still groups its children but the
+    /// encoder re-emits `<a>` without an `href` attribute.
+    pub href: Option<String>,
+    /// `target` browsing-context name (`_self` / `_blank` / …; SVG 2
+    /// §16.5). `None` = attribute absent (initial value `_self`).
+    pub target: Option<String>,
+    /// `download` — suggested file name (HTML link attribute).
+    pub download: Option<String>,
+    /// `ping` — space-separated URL tokens (HTML link attribute).
+    pub ping: Option<String>,
+    /// `rel` — space-separated relationship keywords (HTML link
+    /// attribute).
+    pub rel: Option<String>,
+    /// `hreflang` — BCP 47 language tag of the target (HTML link
+    /// attribute).
+    pub hreflang: Option<String>,
+    /// `type` — MIME type of the target (HTML link attribute).
+    pub type_: Option<String>,
+    /// `referrerpolicy` — referrer-policy string (HTML link attribute).
+    pub referrerpolicy: Option<String>,
+}
+
 impl PreservedExtras {
     pub fn new() -> Self {
         Self::default()
@@ -229,5 +279,6 @@ impl PreservedExtras {
             && self.path_lengths.is_empty()
             && self.views.is_empty()
             && self.typed_views.is_empty()
+            && self.links.is_empty()
     }
 }

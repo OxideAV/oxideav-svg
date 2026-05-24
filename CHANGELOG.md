@@ -9,6 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 115** — SVG 2 §16.5 `<a>` hyperlink element.
+  - `<a>` is categorised as both a *container element* and a
+    *renderable element*. The decoder now renders its children into an
+    `oxideav_core::Node::Group` exactly like `<g>` (honouring
+    `transform` per §8.5, `opacity`, the paint cascade, and the
+    per-element `em` / `rem` resolution context) instead of dropping
+    the whole subtree. A shape wrapped in `<a href="…">` is therefore
+    painted rather than silently invisible.
+  - New [`crate::preserved::LinkBinding`] carries the SVG 2 §16.5 link
+    target + HTML companion attributes: `href` (SVG-2 `href` with
+    SVG-1.1 `xlink:href` fallback; `href` wins when both present),
+    `target`, `download`, `ping`, `rel`, `hreflang`, `type`,
+    `referrerpolicy`. Keyed by the group's scene-graph tree-path,
+    mirroring the round-13 `id_paths` / round-21 `path_lengths`
+    side-channels. Exposed via the new
+    [`PreservedExtras::links: Vec<LinkBinding>`] field +
+    [`ParseContext::record_link`].
+  - `parse_svg_with_extras` populates the table;
+    `write_svg_with_extras` re-wraps the matching `<g>` in its
+    `<a href="…">…</a>` element so a `parse_svg_with_extras →
+    write_svg_with_extras` round-trip preserves the hyperlink + every
+    captured attribute. A bare `<a>` (no `href`) still groups its
+    children and round-trips as `<a>`. New `write_link_attrs` encoder
+    helper.
+  - 12 integration tests in `tests/round115_anchor.rs` (child renders,
+    group-node shape, `transform` / `opacity` on the group, link-binding
+    capture, `xlink:href` fallback + `href`-precedence, full attribute
+    round-trip, nested `<a>` inside `<g>` tree-path targeting, bare-`<a>`
+    grouping, multi-child grouping).
+
 - **Round 104** — SVG 2 §13.7.1 `<marker>` definition capture.
   - New typed [`crate::defs::MarkerDef`] carrying every §13.7.1
     presentation attribute: `refX` / `refY` (with the SVG-2 geometric

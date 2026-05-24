@@ -16,7 +16,7 @@ use oxideav_core::{
 
 use crate::decoder::CODEC_ID_STR;
 use crate::parser::{escape_attr, Element, Node as XmlNode};
-use crate::preserved::{AnimationFragment, PreservedExtras};
+use crate::preserved::{AnimationFragment, LinkBinding, PreservedExtras};
 
 /// Round 3: serialise a [`VectorFrame`] into a gzip-compressed
 /// `.svgz` byte buffer. Equivalent to `gzip(write_svg(frame))`.
@@ -64,6 +64,14 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
     let mut path_to_path_length: HashMap<Vec<usize>, f32> = HashMap::new();
     for entry in &extras.path_lengths {
         path_to_path_length.insert(entry.path.clone(), entry.path_length);
+    }
+    // Round 115 — index `<a>` hyperlink bindings (SVG 2 §16.5) by
+    // scene-graph tree-path so `write_node`'s `Node::Group` arm can
+    // re-wrap the matching `<g>` in its `<a href="…">…</a>` element on
+    // round-trip.
+    let mut path_to_link: HashMap<Vec<usize>, &LinkBinding> = HashMap::new();
+    for entry in &extras.links {
+        path_to_link.insert(entry.path.clone(), entry);
     }
     let mut anim_by_parent: HashMap<String, Vec<&AnimationFragment>> = HashMap::new();
     let mut anim_orphan: Vec<&AnimationFragment> = Vec::new();
@@ -202,6 +210,7 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
         &masks,
         &path_to_id,
         &path_to_path_length,
+        &path_to_link,
         &anim_by_parent,
         &mut path_stack,
     );
@@ -252,6 +261,39 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
 
     out.push_str("</svg>\n");
     out.into_bytes()
+}
+
+/// Round 115 — emit the SVG 2 §16.5 `<a>` hyperlink attributes onto an
+/// already-opened `<a` tag (caller has written `<a`, this appends
+/// ` href="…" target="…" …` and the caller closes with `>`). Each
+/// attribute is emitted only when the source `<a>` carried it, so a
+/// bare `<a>` round-trips as `<a>` and an `<a href>` round-trips with
+/// just its href.
+fn write_link_attrs(out: &mut String, link: &LinkBinding) {
+    if let Some(href) = &link.href {
+        out.push_str(&format!(" href=\"{}\"", escape_attr(href)));
+    }
+    if let Some(target) = &link.target {
+        out.push_str(&format!(" target=\"{}\"", escape_attr(target)));
+    }
+    if let Some(download) = &link.download {
+        out.push_str(&format!(" download=\"{}\"", escape_attr(download)));
+    }
+    if let Some(ping) = &link.ping {
+        out.push_str(&format!(" ping=\"{}\"", escape_attr(ping)));
+    }
+    if let Some(rel) = &link.rel {
+        out.push_str(&format!(" rel=\"{}\"", escape_attr(rel)));
+    }
+    if let Some(hreflang) = &link.hreflang {
+        out.push_str(&format!(" hreflang=\"{}\"", escape_attr(hreflang)));
+    }
+    if let Some(type_) = &link.type_ {
+        out.push_str(&format!(" type=\"{}\"", escape_attr(type_)));
+    }
+    if let Some(rp) = &link.referrerpolicy {
+        out.push_str(&format!(" referrerpolicy=\"{}\"", escape_attr(rp)));
+    }
 }
 
 /// Serialise an [`Element`] verbatim. Used to re-emit preserved-XML
@@ -350,6 +392,7 @@ fn write_group_children(
     masks: &MaskCollector,
     path_to_id: &HashMap<Vec<usize>, String>,
     path_to_path_length: &HashMap<Vec<usize>, f32>,
+    path_to_link: &HashMap<Vec<usize>, &LinkBinding>,
     anim_by_parent: &HashMap<String, Vec<&AnimationFragment>>,
     path_stack: &mut Vec<usize>,
 ) {
@@ -364,6 +407,7 @@ fn write_group_children(
             masks,
             path_to_id,
             path_to_path_length,
+            path_to_link,
             anim_by_parent,
             path_stack,
         );
@@ -381,6 +425,7 @@ fn write_node(
     masks: &MaskCollector,
     path_to_id: &HashMap<Vec<usize>, String>,
     path_to_path_length: &HashMap<Vec<usize>, f32>,
+    path_to_link: &HashMap<Vec<usize>, &LinkBinding>,
     anim_by_parent: &HashMap<String, Vec<&AnimationFragment>>,
     path_stack: &mut Vec<usize>,
 ) {
@@ -394,13 +439,36 @@ fn write_node(
     // below carries `pathLength="..."` so a re-parse of the output
     // recovers the same calibration.
     let path_length_here: Option<f32> = path_to_path_length.get(path_stack.as_slice()).copied();
+    // Round 115 — does this scene-graph position carry a recorded
+    // `<a>` hyperlink (SVG 2 §16.5)? If so the `Node::Group` arm wraps
+    // the emitted `<g>` in `<a href="…">…</a>`.
+    let link_here: Option<&LinkBinding> = path_to_link.get(path_stack.as_slice()).copied();
     let inline_anims: &[&AnimationFragment] = id_here
         .and_then(|id| anim_by_parent.get(id))
         .map(Vec::as_slice)
         .unwrap_or(&[]);
     match node {
         Node::Group(g) => {
-            out.push_str(&indent);
+            // Round 115 — open the wrapping `<a>` element if this group
+            // came from an `<a>` in the source. The hyperlink attributes
+            // ride on the `<a>`; the group's own transform / opacity /
+            // clip stay on the inner `<g>` so the visual nesting is
+            // identical to the source.
+            let a_indent = if let Some(link) = link_here {
+                out.push_str(&indent);
+                out.push_str("<a");
+                write_link_attrs(out, link);
+                out.push_str(">\n");
+                "  ".repeat(depth + 1)
+            } else {
+                indent.clone()
+            };
+            let g_depth = if link_here.is_some() {
+                depth + 1
+            } else {
+                depth
+            };
+            out.push_str(&a_indent);
             out.push_str("<g");
             if let Some(id) = id_here {
                 out.push_str(&format!(" id=\"{}\"", escape_attr(id)));
@@ -423,12 +491,13 @@ fn write_node(
             write_group_children(
                 out,
                 g,
-                depth + 1,
+                g_depth + 1,
                 gradients,
                 clips,
                 masks,
                 path_to_id,
                 path_to_path_length,
+                path_to_link,
                 anim_by_parent,
                 path_stack,
             );
@@ -438,10 +507,15 @@ fn write_node(
             // matches the order browsers typically produce on
             // serialisation and keeps the static visual identical.
             for anim in inline_anims {
-                write_raw_element(out, &anim.element, depth + 1);
+                write_raw_element(out, &anim.element, g_depth + 1);
             }
-            out.push_str(&indent);
+            out.push_str(&a_indent);
             out.push_str("</g>\n");
+            // Round 115 — close the wrapping `<a>`.
+            if link_here.is_some() {
+                out.push_str(&indent);
+                out.push_str("</a>\n");
+            }
         }
         Node::Path(p) => {
             // If we have inline animations for this path, emit it as
@@ -514,6 +588,7 @@ fn write_node(
                 masks,
                 path_to_id,
                 path_to_path_length,
+                path_to_link,
                 anim_by_parent,
                 path_stack,
             );
@@ -1029,6 +1104,7 @@ fn write_mask(
     let empty_masks = MaskCollector::default();
     let empty_path_to_id: HashMap<Vec<usize>, String> = HashMap::new();
     let empty_path_to_pl: HashMap<Vec<usize>, f32> = HashMap::new();
+    let empty_path_to_link: HashMap<Vec<usize>, &LinkBinding> = HashMap::new();
     let empty_anims: HashMap<String, Vec<&AnimationFragment>> = HashMap::new();
     let mut empty_stack: Vec<usize> = Vec::new();
     write_node(
@@ -1040,6 +1116,7 @@ fn write_mask(
         &empty_masks,
         &empty_path_to_id,
         &empty_path_to_pl,
+        &empty_path_to_link,
         &empty_anims,
         &mut empty_stack,
     );
