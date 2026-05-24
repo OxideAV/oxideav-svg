@@ -20,7 +20,8 @@ use crate::parser::{
     Node as XmlNode,
 };
 use crate::preserved::{
-    AnimationFragment, IdScenePath, LinkBinding, PathLengthBinding, PreservedExtras,
+    AnimationFragment, DescriptiveBinding, IdScenePath, LinkBinding, PathLengthBinding,
+    PreservedExtras,
 };
 
 /// Codec id string for SVG vector frames.
@@ -77,7 +78,7 @@ pub fn parse_svg_at_with_languages(
     let svg =
         find_svg_root(&nodes).ok_or_else(|| Error::invalid("SVG: missing <svg> root element"))?;
     let langs: Vec<String> = system_language.iter().map(|s| s.to_string()).collect();
-    let (frame, _, _, _) = parse_svg_root(svg, t_seconds, false, &langs)?;
+    let (frame, _, _, _, _, _) = parse_svg_root(svg, t_seconds, false, &langs)?;
     Ok(frame)
 }
 
@@ -109,10 +110,13 @@ pub fn parse_svg_with_extras(bytes: &[u8]) -> Result<(VectorFrame, PreservedExtr
     // `<view>` capture in [`collect_extras`] takes care of round-trip
     // emission; this pass populates the typed mirror keyed by id.
     collect_typed_views(svg, &mut extras.typed_views);
-    let (frame, id_paths, path_lengths, links) = parse_svg_root(svg, 0.0, true, &[])?;
+    let (frame, id_paths, path_lengths, links, titles, descs) =
+        parse_svg_root(svg, 0.0, true, &[])?;
     extras.id_paths = id_paths;
     extras.path_lengths = path_lengths;
     extras.links = links;
+    extras.titles = titles;
+    extras.descs = descs;
     Ok((frame, extras))
 }
 
@@ -217,6 +221,19 @@ fn collect_extras(el: &Element, extras: &mut PreservedExtras, current_id: Option
             // `write_svg_with_extras`.
             extras.views.push(el.clone());
         }
+        "metadata" => {
+            // Round 122 — SVG 2 §5.9 `<metadata>` content model is "any
+            // elements or character data" (typically RDF / Dublin Core
+            // / foreign-namespace markup from authoring tools like
+            // Inkscape / Sodipodi). A structured parse is out of scope
+            // — we capture the whole element verbatim and re-emit at
+            // the trailing edge of the document so a `parse → write`
+            // round-trip preserves embedded provenance / licensing /
+            // catalogue metadata. Per §5.9 the UA stylesheet forces
+            // `display:none`, so the element never enters the
+            // rendering tree.
+            extras.metadata.push(el.clone());
+        }
         _ => {}
     }
     for child in &el.children {
@@ -242,6 +259,8 @@ type SvgRootParse = (
     Vec<IdScenePath>,
     Vec<PathLengthBinding>,
     Vec<LinkBinding>,
+    Vec<DescriptiveBinding>,
+    Vec<DescriptiveBinding>,
 );
 
 fn parse_svg_root(
@@ -393,7 +412,14 @@ fn parse_svg_root(
         pts: None,
         time_base: TimeBase::new(1, 1),
     };
-    Ok((frame, ctx.id_paths, ctx.path_lengths, ctx.links))
+    Ok((
+        frame,
+        ctx.id_paths,
+        ctx.path_lengths,
+        ctx.links,
+        ctx.titles,
+        ctx.descs,
+    ))
 }
 
 /// Round-12 — given the root viewport (`width` × `height`), the source

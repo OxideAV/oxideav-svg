@@ -541,7 +541,7 @@ pub use decoder::{
     CODEC_ID_STR,
 };
 pub use encoder::{make_encoder, write_svg, write_svg_with_extras, write_svgz};
-pub use preserved::{LinkBinding, PreservedExtras};
+pub use preserved::{DescriptiveBinding, DescriptiveText, LinkBinding, PreservedExtras};
 
 // Round 95 — fragment-identifier routing (SVG 2 §16.3.2 / §16.3.3).
 mod fragment;

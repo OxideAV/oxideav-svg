@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 122** — SVG 2 §5.8 `<title>` / `<desc>` and §5.9 `<metadata>`
+  descriptive-element capture + round-trip preservation.
+  - **`<title>` / `<desc>`** are *never-rendered* elements per the §5.8
+    dfn block (UA stylesheet forces `display:none` with importance over
+    any other CSS rule); they MUST NOT contribute scene-graph nodes.
+    Round 122 captures each occurrence into a new typed
+    `crate::preserved::DescriptiveText { text, lang }`, keyed by the
+    **parent** container's scene-graph tree-path on the new
+    `PreservedExtras::titles` / `PreservedExtras::descs:
+    Vec<DescriptiveBinding>` side-channels. Multiple sibling `<title>`s
+    under the same parent (the §5.8 multilingual-alternative pattern)
+    append to the same binding's `items` list in document order so the
+    consumer can run the §5.8 best-language selection algorithm itself.
+  - **`lang` / `xml:lang` capture** — SVG-2 `lang` is the canonical
+    form; round 122 falls back to the deprecated `xml:lang` only when
+    `lang` is absent, matching the round-trip-preserving convention
+    used by other side-channels in this crate.
+  - **Encoder** — `write_svg_with_extras` re-emits captured titles +
+    descs as the **first children** of the matching `<g>` (or, for the
+    root-`<svg>` empty path, at the top of the output) so an SVG 1.1
+    reader that "may not recognize a title element that is not the
+    first child of its parent" still picks them up. `<title>` precedes
+    `<desc>` per the §5.8 example.
+  - **`<metadata>`** (§5.9) — opaque foreign-namespace XML body
+    (typically RDF / Dublin Core / Inkscape extensions); captured
+    verbatim on `PreservedExtras::metadata: Vec<Element>` and re-emitted
+    at the trailing edge of the document on round-trip. Like `<title>`
+    / `<desc>` it carries the UA `display:none` rule, so it never
+    enters the rendering tree.
+  - 15 integration tests in `tests/round122_descriptive.rs`.
+
 - **Round 118** — SVG 1.1 §11.5 `display` + `visibility` presentation
   properties.
   - `display: none` removes the element **and its children** from the

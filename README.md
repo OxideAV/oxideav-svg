@@ -153,6 +153,38 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
+## Round 122 additions
+
+- **SVG 2 §5.8 `<title>` / `<desc>` + §5.9 `<metadata>` descriptive
+  elements.** All three are *never-rendered* per the §5.8 / §5.9 dfn
+  blocks (the UA stylesheet forces `display:none` with importance over
+  any other CSS rule), so they MUST NOT contribute scene-graph nodes.
+  Round 122 captures them on side-channels for lossless round-trip.
+  - **`<title>` / `<desc>`** capture into a typed
+    `crate::preserved::DescriptiveText { text, lang }`, keyed by the
+    **parent** container's scene-graph tree-path on the new
+    `PreservedExtras::titles` / `PreservedExtras::descs:
+    Vec<DescriptiveBinding>` side-channels (same layout as the round-13
+    `id_paths` / round-115 `links`). Multiple sibling `<title>`s under
+    the same parent (the §5.8 multilingual-alternative pattern,
+    `<title lang="en">…</title> <title lang="nl">…</title>`) append to
+    the same binding's `items` list in document order so a downstream
+    consumer can run the §5.8 best-language selection algorithm.
+    `lang` (SVG-2 canonical) is captured first; `xml:lang` (deprecated)
+    is the fallback when `lang` is absent.
+  - **`<metadata>`** captures verbatim on
+    `PreservedExtras::metadata: Vec<Element>` — the content model is
+    "any elements or character data" (typically RDF / Dublin Core /
+    Inkscape extensions), so a structured parse is out of scope.
+  - **Encoder** — `write_svg_with_extras` re-emits captured titles +
+    descs as the **first children** of the matching `<g>` (or, for the
+    root-`<svg>` empty path, at the top of the output document) so an
+    SVG 1.1 reader that "may not recognize a title element that is not
+    the first child of its parent" still picks them up. `<title>`
+    precedes `<desc>` per the §5.8 example structure. `<metadata>`
+    re-emits at the trailing edge of the output.
+  - 15 integration tests in `tests/round122_descriptive.rs`.
+
 ## Round 118 additions
 
 - **SVG 1.1 §11.5 `display` + `visibility` presentation properties.**

@@ -182,6 +182,37 @@ pub struct PreservedExtras {
     /// layout as [`id_paths`](Self::id_paths)). Populated only by
     /// [`crate::decoder::parse_svg_with_extras`].
     pub links: Vec<LinkBinding>,
+    /// Round 122 — SVG 2 §5.8 `<title>` descriptive-element bindings,
+    /// keyed by the scene-graph tree-path of the *parent* container
+    /// (root `<svg>` → empty path; nested `<g>` / `<a>` / `<switch>` /
+    /// `<symbol>` / `<defs>` → its own scene-graph slot). Each binding
+    /// carries every sibling `<title>` (in document order, with the
+    /// optional `lang` / `xml:lang` attribute captured) so the
+    /// multilingual selection algorithm in §5.8 can pick the best match
+    /// at render / serialise time. `<title>` is never-rendered (the UA
+    /// stylesheet forces `display:none`), so it produces no scene-graph
+    /// node — the binding is the round-trip source of truth.
+    /// Populated only by [`crate::decoder::parse_svg_with_extras`].
+    pub titles: Vec<DescriptiveBinding>,
+    /// Round 122 — SVG 2 §5.8 `<desc>` descriptive-element bindings.
+    /// Same layout as [`titles`](Self::titles) — keyed by the parent
+    /// container's scene-graph tree-path, carries every sibling `<desc>`
+    /// in document order with its optional `lang` / `xml:lang`. `<desc>`
+    /// is never-rendered (same UA `display:none` rule) so the binding
+    /// is the only round-trip carrier. Populated only by
+    /// [`crate::decoder::parse_svg_with_extras`].
+    pub descs: Vec<DescriptiveBinding>,
+    /// Round 122 — SVG 2 §5.9 `<metadata>` element trees captured
+    /// verbatim from the source SVG. The `<metadata>` content model is
+    /// "any elements or character data" (typically RDF / Dublin Core /
+    /// arbitrary XML from other namespaces), so a structured parse is
+    /// out of scope — we round-trip the whole element. Per §5.9 the
+    /// UA stylesheet forces `display:none`, so the element never enters
+    /// the rendering tree. The encoder re-emits each at the trailing
+    /// edge of the document so a `parse → write` round-trip preserves
+    /// embedded metadata blocks (Dublin Core, RDF, Inkscape /
+    /// Sodipodi extensions in foreign namespaces, etc.).
+    pub metadata: Vec<Element>,
 }
 
 /// One captured animation child of a known-id parent element.
@@ -280,5 +311,52 @@ impl PreservedExtras {
             && self.views.is_empty()
             && self.typed_views.is_empty()
             && self.links.is_empty()
+            && self.titles.is_empty()
+            && self.descs.is_empty()
+            && self.metadata.is_empty()
     }
+}
+
+/// Round 122 — one captured `<title>` or `<desc>` element body. Per SVG
+/// 2 §5.8 the descriptive element's content model is "any elements or
+/// character data", but the spec only mandates the *plain text* content
+/// be exposed to assistive technologies; we capture the concatenated
+/// text-runs of the immediate children for the structural round-trip.
+/// Foreign-namespace markup inside descriptive elements is dropped to
+/// the side-channel `metadata` queue if it is `<metadata>`; otherwise
+/// it is reduced to plain text.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DescriptiveText {
+    /// Concatenated text content of the descriptive element. Per §5.8
+    /// authoring guidance "SVG generators must not include empty title
+    /// or desc elements with no text content"; we still record an empty
+    /// string so a hand-authored empty element round-trips unchanged.
+    pub text: String,
+    /// `lang` (HTML-style) or `xml:lang` (legacy SVG / XML 1.0) tag
+    /// captured verbatim. Per §5.8 multilingual selection: an empty
+    /// language tag is "a lowest-priority match for any user, ranked
+    /// below all user-specified language preferences"; an absent
+    /// language tag inherits from the nearest ancestor (we record
+    /// `None` here and leave inheritance to the renderer / language-
+    /// match consumer).
+    pub lang: Option<String>,
+}
+
+/// Round 122 — one (parent scene-graph tree-path, ordered list of
+/// `<title>` or `<desc>` elements) pair. Per SVG 2 §5.8 a container
+/// element may carry zero or more title / desc children; the multiple
+/// case is for language-tagged alternatives. The encoder re-emits the
+/// list in source order as the first children of the matching `<g>`
+/// (or, for an empty path, before all top-level scene children of the
+/// root `<svg>`).
+#[derive(Clone, Debug)]
+pub struct DescriptiveBinding {
+    /// Tree-path through the scene graph of the *parent* container of
+    /// the descriptive elements. Same layout as [`IdScenePath::path`].
+    /// Empty path = root `<svg>` (direct child of the document root).
+    pub parent_path: Vec<usize>,
+    /// Descriptive elements in document order. Per §5.8 the UA selects
+    /// the best language match; we preserve every entry so the consumer
+    /// can run the §5.8 selection algorithm itself.
+    pub items: Vec<DescriptiveText>,
 }

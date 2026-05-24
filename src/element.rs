@@ -417,6 +417,17 @@ pub struct ParseContext {
     /// [`Self::track_id_paths`]); the encoder re-wraps each recorded
     /// `Node::Group` in its `<a href="…">…</a>` element on round-trip.
     pub links: Vec<crate::preserved::LinkBinding>,
+    /// Round 122 — collected `(parent_scene_path, [<title>])` bindings
+    /// (SVG 2 §5.8). Populated only when the caller opted in via
+    /// [`crate::decoder::parse_svg_with_extras`] (same gate as
+    /// [`Self::track_id_paths`]). One entry per container that carries
+    /// at least one `<title>` child; the encoder re-emits the list as
+    /// the first children of the matching `<g>` / root `<svg>` on
+    /// round-trip.
+    pub titles: Vec<crate::preserved::DescriptiveBinding>,
+    /// Round 122 — collected `(parent_scene_path, [<desc>])` bindings
+    /// (SVG 2 §5.8). Same gate + layout as [`Self::titles`].
+    pub descs: Vec<crate::preserved::DescriptiveBinding>,
     /// Round 118 — "next element is a `<use>` instance root" flag.
     /// SVG 1.1 §11.5: "setting display: none on a `<path>` element will
     /// prevent that element from getting rendered directly onto the
@@ -454,6 +465,8 @@ impl ParseContext {
             pending_path_length: None,
             system_language: Vec::new(),
             links: Vec::new(),
+            titles: Vec::new(),
+            descs: Vec::new(),
             use_instance_root_pending: false,
         }
     }
@@ -525,6 +538,70 @@ impl ParseContext {
         link.path = self.current_path.clone();
         self.links.push(link);
     }
+
+    /// Round 122 — record a `<title>` or `<desc>` against the *parent*
+    /// container's scene-graph path (SVG 2 §5.8). `is_title=true` routes
+    /// to `self.titles`; `false` routes to `self.descs`. The
+    /// `parent_path` is the caller's current scene-graph path with the
+    /// last index stripped — that index belongs to the descriptive
+    /// element itself, but `<title>` / `<desc>` are never-rendered so
+    /// they never become scene-graph nodes; we attach to the parent
+    /// container instead. Successive siblings of the same kind under
+    /// the same parent append to the existing binding's `items` list,
+    /// preserving source order for §5.8 multilingual selection.
+    /// Gated behind [`Self::track_id_paths`] like the other side-channel
+    /// recorders.
+    pub fn record_descriptive(&mut self, el: &Element, is_title: bool) {
+        if !self.track_id_paths {
+            return;
+        }
+        // The descriptive element's own slot was pushed by the caller;
+        // strip it to get the parent container's scene path.
+        let mut parent_path = self.current_path.clone();
+        parent_path.pop();
+        let item = parse_descriptive_text(el);
+        let bucket = if is_title {
+            &mut self.titles
+        } else {
+            &mut self.descs
+        };
+        // Append to an existing binding for the same parent if one
+        // exists (multi-sibling §5.8 case); otherwise create a new one.
+        if let Some(b) = bucket.iter_mut().find(|b| b.parent_path == parent_path) {
+            b.items.push(item);
+        } else {
+            bucket.push(crate::preserved::DescriptiveBinding {
+                parent_path,
+                items: vec![item],
+            });
+        }
+    }
+}
+
+/// Round 122 — extract the plain-text content and the optional `lang` /
+/// `xml:lang` of a `<title>` or `<desc>` element per SVG 2 §5.8. Per
+/// the spec only the plain text is exposed to assistive technologies,
+/// so we flatten the element's direct text-child runs (children that
+/// are markup nodes contribute the empty string here — a structured
+/// foreign-namespace capture is out of scope for this round and would
+/// fall to a future revision of [`crate::preserved::DescriptiveText`]).
+fn parse_descriptive_text(el: &Element) -> crate::preserved::DescriptiveText {
+    let mut text = String::new();
+    for child in &el.children {
+        if let XmlNode::Text(t) = child {
+            text.push_str(t);
+        }
+    }
+    // Per SVG 2 §5.12.3 the SVG `lang` attribute mirrors HTML `lang`;
+    // the deprecated `xml:lang` survives in legacy SVG 1.1 documents
+    // and per §5.12.3 wins when both are present and disagree (we
+    // surface the SVG-2 `lang` first and only fall back to `xml:lang`
+    // when `lang` is absent, matching the round-trip-preserving
+    // convention used by other side-channels in this crate).
+    let lang = attr(el, "lang")
+        .or_else(|| attr(el, "xml:lang"))
+        .map(str::to_string);
+    crate::preserved::DescriptiveText { text, lang }
 }
 
 /// Round 115 — extract the SVG 2 §16.5 `<a>` hyperlink attributes into a
@@ -1520,6 +1597,33 @@ pub fn parse_element_to_node_ctx(
         // `parse_g_children` / `parse_shape_children`). Drop them
         // here so they don't appear in the scene graph.
         "animate" | "animatetransform" | "animatemotion" | "set" => None,
+        // Round 122 — SVG 2 §5.8 descriptive elements. `<title>` and
+        // `<desc>` are categorised as `never-rendered element`s per the
+        // §5.8 dfn block; the UA stylesheet forces `display:none` "with
+        // importance over any other CSS rule or presentation attribute"
+        // so they MUST NOT contribute a scene-graph node. Capture the
+        // text + optional `lang` against the *parent* container's
+        // scene-graph path so the encoder can re-emit them as the first
+        // children of the matching `<g>` on round-trip (the spec
+        // multilingual selection algorithm runs at the consumer side
+        // against the captured list).
+        //
+        // `<metadata>` (§5.9) is also a descriptive / never-rendered
+        // element; it carries arbitrary foreign-namespace XML
+        // (RDF / Dublin Core / Inkscape extensions). It rides on
+        // `PreservedExtras::metadata` via the pre-walk in
+        // `decoder::collect_extras` and re-emits verbatim at the
+        // trailing edge of the document — no parse-side capture needed
+        // here.
+        "title" => {
+            ctx.record_descriptive(el, true);
+            None
+        }
+        "desc" => {
+            ctx.record_descriptive(el, false);
+            None
+        }
+        "metadata" => None,
         // Round-3: `<use href="#id">` resolves the referenced element
         // and instantiates it as a child node, applying the use's
         // x / y / transform / width / height. See `parse_use_element`.

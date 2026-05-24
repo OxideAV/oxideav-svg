@@ -16,7 +16,9 @@ use oxideav_core::{
 
 use crate::decoder::CODEC_ID_STR;
 use crate::parser::{escape_attr, Element, Node as XmlNode};
-use crate::preserved::{AnimationFragment, LinkBinding, PreservedExtras};
+use crate::preserved::{
+    AnimationFragment, DescriptiveBinding, DescriptiveText, LinkBinding, PreservedExtras,
+};
 
 /// Round 3: serialise a [`VectorFrame`] into a gzip-compressed
 /// `.svgz` byte buffer. Equivalent to `gzip(write_svg(frame))`.
@@ -72,6 +74,20 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
     let mut path_to_link: HashMap<Vec<usize>, &LinkBinding> = HashMap::new();
     for entry in &extras.links {
         path_to_link.insert(entry.path.clone(), entry);
+    }
+    // Round 122 — index `<title>` / `<desc>` bindings (SVG 2 §5.8) by
+    // their *parent* container's scene-graph tree-path so `write_node`
+    // can re-emit them as the first children of the matching `<g>` on
+    // round-trip. The root-`<svg>` slot (empty path) is handled
+    // separately below so descriptive children of the root render at
+    // the top of the output document.
+    let mut parent_to_titles: HashMap<Vec<usize>, &DescriptiveBinding> = HashMap::new();
+    for entry in &extras.titles {
+        parent_to_titles.insert(entry.parent_path.clone(), entry);
+    }
+    let mut parent_to_descs: HashMap<Vec<usize>, &DescriptiveBinding> = HashMap::new();
+    for entry in &extras.descs {
+        parent_to_descs.insert(entry.parent_path.clone(), entry);
     }
     let mut anim_by_parent: HashMap<String, Vec<&AnimationFragment>> = HashMap::new();
     let mut anim_orphan: Vec<&AnimationFragment> = Vec::new();
@@ -200,6 +216,26 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
         out.push_str("  </defs>\n");
     }
 
+    // Round 122 — SVG 2 §5.8 root-level `<title>` / `<desc>`. The empty
+    // parent_path (`[]`) keys the descriptive elements that were
+    // direct children of the source root `<svg>`. They're emitted
+    // before the scene-walk children so the output's first child of
+    // `<svg>` is `<title>` (matching authoring guidance "Authors
+    // should provide a `<title>` child element to the root svg
+    // element"). `<title>` is emitted before `<desc>` per the §5.8
+    // example structure.
+    let root_path: Vec<usize> = Vec::new();
+    if let Some(b) = parent_to_titles.get(&root_path) {
+        for item in &b.items {
+            write_descriptive(&mut out, "title", item, 1);
+        }
+    }
+    if let Some(b) = parent_to_descs.get(&root_path) {
+        for item in &b.items {
+            write_descriptive(&mut out, "desc", item, 1);
+        }
+    }
+
     let mut path_stack: Vec<usize> = Vec::new();
     write_group_children(
         &mut out,
@@ -211,6 +247,8 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
         &path_to_id,
         &path_to_path_length,
         &path_to_link,
+        &parent_to_titles,
+        &parent_to_descs,
         &anim_by_parent,
         &mut path_stack,
     );
@@ -228,6 +266,14 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
     // trailing edge keeps the defs block tidy.
     for view in &extras.views {
         write_raw_element(&mut out, view, 1);
+    }
+    // Round 122 — re-emit captured `<metadata>` elements verbatim at
+    // the trailing edge. Per SVG 2 §5.9 metadata content is opaque
+    // foreign-namespace markup (RDF / Dublin Core / authoring-tool
+    // extensions) and the UA stylesheet forces `display:none`, so
+    // positioning has no visual effect.
+    for md in &extras.metadata {
+        write_raw_element(&mut out, md, 1);
     }
     // Round-12: re-emit captured <script> elements. The body is
     // wrapped in `<![CDATA[...]]>` so unescaped `<` characters
@@ -294,6 +340,32 @@ fn write_link_attrs(out: &mut String, link: &LinkBinding) {
     if let Some(rp) = &link.referrerpolicy {
         out.push_str(&format!(" referrerpolicy=\"{}\"", escape_attr(rp)));
     }
+}
+
+/// Round 122 — emit a `<title>` or `<desc>` descriptive element per SVG
+/// 2 §5.8. `tag` is `"title"` or `"desc"`; the optional `lang` attribute
+/// is round-tripped if the source carried one (SVG-2 `lang`, not the
+/// deprecated `xml:lang`, on round-trip per the §5.12.3 normative
+/// guidance). An empty text body emits as self-closing (matches the
+/// canonicalising behaviour the rest of the encoder uses for empty
+/// containers).
+fn write_descriptive(out: &mut String, tag: &str, item: &DescriptiveText, depth: usize) {
+    let indent = "  ".repeat(depth);
+    out.push_str(&indent);
+    out.push('<');
+    out.push_str(tag);
+    if let Some(lang) = &item.lang {
+        out.push_str(&format!(" lang=\"{}\"", escape_attr(lang)));
+    }
+    if item.text.is_empty() {
+        out.push_str("/>\n");
+        return;
+    }
+    out.push('>');
+    out.push_str(&escape_text(&item.text));
+    out.push_str("</");
+    out.push_str(tag);
+    out.push_str(">\n");
 }
 
 /// Serialise an [`Element`] verbatim. Used to re-emit preserved-XML
@@ -393,6 +465,8 @@ fn write_group_children(
     path_to_id: &HashMap<Vec<usize>, String>,
     path_to_path_length: &HashMap<Vec<usize>, f32>,
     path_to_link: &HashMap<Vec<usize>, &LinkBinding>,
+    parent_to_titles: &HashMap<Vec<usize>, &DescriptiveBinding>,
+    parent_to_descs: &HashMap<Vec<usize>, &DescriptiveBinding>,
     anim_by_parent: &HashMap<String, Vec<&AnimationFragment>>,
     path_stack: &mut Vec<usize>,
 ) {
@@ -408,6 +482,8 @@ fn write_group_children(
             path_to_id,
             path_to_path_length,
             path_to_link,
+            parent_to_titles,
+            parent_to_descs,
             anim_by_parent,
             path_stack,
         );
@@ -426,6 +502,8 @@ fn write_node(
     path_to_id: &HashMap<Vec<usize>, String>,
     path_to_path_length: &HashMap<Vec<usize>, f32>,
     path_to_link: &HashMap<Vec<usize>, &LinkBinding>,
+    parent_to_titles: &HashMap<Vec<usize>, &DescriptiveBinding>,
+    parent_to_descs: &HashMap<Vec<usize>, &DescriptiveBinding>,
     anim_by_parent: &HashMap<String, Vec<&AnimationFragment>>,
     path_stack: &mut Vec<usize>,
 ) {
@@ -488,6 +566,23 @@ fn write_node(
                 }
             }
             out.push_str(">\n");
+            // Round 122 — SVG 2 §5.8: emit captured `<title>` /
+            // `<desc>` children of this group as the *first* children
+            // of `<g>`, matching the spec's "the rendered element is
+            // of semantic importance" placement and the SVG 1.1
+            // legacy rule that the user agent "may not recognize a
+            // title element that is not the first child of its
+            // parent". Title precedes desc per the §5.8 example.
+            if let Some(b) = parent_to_titles.get(path_stack.as_slice()) {
+                for item in &b.items {
+                    write_descriptive(out, "title", item, g_depth + 1);
+                }
+            }
+            if let Some(b) = parent_to_descs.get(path_stack.as_slice()) {
+                for item in &b.items {
+                    write_descriptive(out, "desc", item, g_depth + 1);
+                }
+            }
             write_group_children(
                 out,
                 g,
@@ -498,6 +593,8 @@ fn write_node(
                 path_to_id,
                 path_to_path_length,
                 path_to_link,
+                parent_to_titles,
+                parent_to_descs,
                 anim_by_parent,
                 path_stack,
             );
@@ -589,6 +686,8 @@ fn write_node(
                 path_to_id,
                 path_to_path_length,
                 path_to_link,
+                parent_to_titles,
+                parent_to_descs,
                 anim_by_parent,
                 path_stack,
             );
@@ -1105,6 +1204,8 @@ fn write_mask(
     let empty_path_to_id: HashMap<Vec<usize>, String> = HashMap::new();
     let empty_path_to_pl: HashMap<Vec<usize>, f32> = HashMap::new();
     let empty_path_to_link: HashMap<Vec<usize>, &LinkBinding> = HashMap::new();
+    let empty_titles: HashMap<Vec<usize>, &DescriptiveBinding> = HashMap::new();
+    let empty_descs: HashMap<Vec<usize>, &DescriptiveBinding> = HashMap::new();
     let empty_anims: HashMap<String, Vec<&AnimationFragment>> = HashMap::new();
     let mut empty_stack: Vec<usize> = Vec::new();
     write_node(
@@ -1117,6 +1218,8 @@ fn write_mask(
         &empty_path_to_id,
         &empty_path_to_pl,
         &empty_path_to_link,
+        &empty_titles,
+        &empty_descs,
         &empty_anims,
         &mut empty_stack,
     );
