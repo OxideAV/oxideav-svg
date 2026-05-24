@@ -238,6 +238,14 @@ fn parse_coord(s: Option<&str>, default: f32) -> f32 {
 // fills without needing a gradient table.
 impl crate::element::PaintState {
     pub(crate) fn solid_fill_public(&self) -> Option<oxideav_core::Paint> {
+        // Round 118 — SVG 1.1 §11.5 `visibility: hidden | collapse`:
+        // hidden text "is invisible but still takes up space in text
+        // layout calculations". We emit the glyph geometry but with no
+        // fill, mirroring the shape branch (geometry preserved,
+        // nothing painted).
+        if self.visibility == crate::element::Visibility::Hidden {
+            return None;
+        }
         // Only solid colours apply to text in round 2; gradient fills
         // on text are deferred (the SVG <text> case is `fill="..."`
         // resolved as a Paint, but with no gradient the round-2 path

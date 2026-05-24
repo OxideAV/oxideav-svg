@@ -153,6 +153,33 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
+## Round 118 additions
+
+- **SVG 1.1 §11.5 `display` + `visibility` presentation properties.**
+  - **`display: none`** removes the element *and its whole subtree* from
+    the rendering tree — no scene-graph node is produced. Resolved
+    through both presentation attributes and the CSS cascade. `display`
+    is *not* inherited (§11.5, Inherited: no), so the cascade resets it
+    to the initial `inline` before each element applies its own value.
+    Applies to `<svg>` / `<g>` / `<switch>` / `<a>` / `<foreignObject>`
+    / `<use>` / the graphics elements (`<rect>` / `<circle>` /
+    `<ellipse>` / `<line>` / `<polyline>` / `<polygon>` / `<path>` /
+    `<text>`); never-rendered elements (`<defs>`, gradients, `<marker>`,
+    `<symbol>`, `<mask>`, `<clipPath>`, `<style>`, animation) are
+    excluded per the spec.
+  - **Referencing still works.** §11.5: a `display:none` definition
+    "can still be referenced." A `<use href="#hidden">` of a
+    `display:none` element renders its instance; only the *instance
+    root* is exempt, so a `display:none` descendant inside the
+    instantiated subtree still drops.
+  - **`visibility: hidden | collapse`** keeps the node in the tree (its
+    geometry still contributes to bounding-box / clipping calculations
+    per §11.5) but paints nothing — fill + stroke are dropped.
+    `visibility` *is* inherited, so a `<g visibility="hidden">` hides
+    its children while a descendant may flip back to
+    `visibility="visible"`. Text glyphs honour the same suppression.
+  - 13 integration tests in `tests/round118_display_visibility.rs`.
+
 ## Round 115 additions
 
 - **SVG 2 §16.5 `<a>` hyperlink element.** `<a>` is categorised as both

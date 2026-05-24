@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Round 118** — SVG 1.1 §11.5 `display` + `visibility` presentation
+  properties.
+  - `display: none` removes the element **and its children** from the
+    rendering tree (no scene-graph node at all). `display` is NOT
+    inherited (§11.5, Inherited: no), so the cascade resets it to the
+    initial `inline` before applying each element's own value. Resolved
+    via both presentation attributes and the CSS cascade. Applies to
+    `<svg>`, `<g>`, `<switch>`, `<a>`, `<foreignObject>`, `<use>`, and
+    the graphics elements (`<rect>`, `<circle>`, `<ellipse>`, `<line>`,
+    `<polyline>`, `<polygon>`, `<path>`, `<text>`) — never-rendered
+    elements (`<defs>`, gradients, `<marker>`, `<symbol>`, `<mask>`,
+    `<clipPath>`, `<style>`, animation) are excluded per the spec.
+  - `display: none` does **not** prevent referencing: a `<use>` of a
+    `display:none` definition still renders the instance (§11.5: "the
+    path element can still be referenced"). A new
+    `ParseContext::use_instance_root_pending` flag exempts the
+    instance *root* from the drop while a nested `display:none`
+    *descendant* inside the instantiated subtree still drops.
+  - `visibility: hidden | collapse` keeps the element in the rendering
+    tree — its geometry still contributes to bounding-box / clipping
+    calculations (§11.5) — but paints nothing (fill + stroke dropped).
+    `visibility` IS inherited, so a `<g visibility="hidden">` makes its
+    children invisible while a descendant may flip back to
+    `visibility="visible"`. Text glyphs honour the same suppression via
+    `PaintState::solid_fill_public`.
+  - New `crate::element::Visibility` enum + `PaintState::display` /
+    `PaintState::visibility` fields. 13 integration tests in
+    `tests/round118_display_visibility.rs`.
+
 ## [0.1.4](https://github.com/OxideAV/oxideav-svg/compare/v0.1.3...v0.1.4) - 2026-05-24
 
 ### Added

@@ -28,6 +28,20 @@ use crate::path_data::parse_path_data;
 use crate::preserved::IdScenePath;
 use crate::transform::parse_transform;
 
+/// Round 118 — SVG 1.1 §11.5 `visibility` property
+/// (`visible | hidden | collapse | inherit`). Unlike `display`,
+/// `visibility` IS an inherited property, so it lives on the cascaded
+/// [`PaintState`]; a descendant may flip a `hidden` ancestor back to
+/// `visible`. `hidden` and `collapse` are visually identical for SVG
+/// (the spec note: "The current graphics element is invisible") — the
+/// distinction only matters for CSS table layout, which SVG doesn't
+/// model — so we collapse them to a single `Hidden` variant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Visibility {
+    Visible,
+    Hidden,
+}
+
 /// Inherited paint / stroke / opacity / fill-rule state. Round 1
 /// keeps this minimal — full CSS inheritance lives in round 2 (text /
 /// `<style>`).
@@ -45,6 +59,15 @@ pub struct PaintState {
     pub stroke_dashoffset: f32,
     pub opacity: f32,
     pub fill_rule: FillRule,
+    /// Round 118 — SVG 1.1 §11.5 `display`. `false` means
+    /// `display: none` was resolved on *this* element. `display` is
+    /// NOT inherited (Inherited: no), so [`PaintState::merged_with_mctx`]
+    /// resets it to `true` before applying the element's own value —
+    /// a child of a `display:none` ancestor would never be reached
+    /// anyway because the ancestor is dropped from the rendering tree.
+    pub display: bool,
+    /// Round 118 — SVG 1.1 §11.5 `visibility` (inherited).
+    pub visibility: Visibility,
 }
 
 impl Default for PaintState {
@@ -64,6 +87,10 @@ impl Default for PaintState {
             stroke_dashoffset: 0.0,
             opacity: 1.0,
             fill_rule: FillRule::NonZero,
+            // §11.5 — `display` initial is `inline` (rendered);
+            // `visibility` initial is `visible`.
+            display: true,
+            visibility: Visibility::Visible,
         }
     }
 }
@@ -97,6 +124,14 @@ impl PaintState {
     /// classes (`:nth-child`, `:first-of-type`, …) can match.
     pub fn merged_with_mctx(&self, mctx: &MatchContext<'_>, sheet: &Stylesheet) -> Result<Self> {
         let mut s = self.clone();
+        // Round 118 — `display` is NOT inherited (SVG 1.1 §11.5,
+        // Inherited: no). Reset it to the initial `true` before the
+        // element's own `display` (if any) is applied below. Without
+        // the reset, a `<g display="none">` parent's state would
+        // (incorrectly) carry `display:false` into a child we *do*
+        // reach via a `<use>` of the inner element. `visibility` is
+        // inherited, so it is left as cloned from `self`.
+        s.display = true;
         let el = mctx.el;
         // 1) presentation attributes from `el`.
         for (name, _) in &el.attrs {
@@ -176,6 +211,39 @@ impl PaintState {
                     "evenodd" => FillRule::EvenOdd,
                     _ => return Err(Error::invalid("SVG: bad fill-rule")),
                 };
+            }
+            // Round 118 — SVG 1.1 §11.5 `display`. A value of `none`
+            // removes the element + its children from the rendering
+            // tree; `inherit` keeps the (already-reset) inherited
+            // value; any other CSS2 display keyword (`inline`,
+            // `block`, `list-item`, table-*, …) means "rendered".
+            // Unknown / malformed values fall through to "rendered"
+            // rather than failing the document.
+            "display" => {
+                let v = value.trim();
+                if v.eq_ignore_ascii_case("none") {
+                    s.display = false;
+                } else if v.eq_ignore_ascii_case("inherit") {
+                    // Leave `s.display` as-is. (`merged_with_mctx`
+                    // reset it to the initial `true` before this loop;
+                    // `inherit` therefore behaves like the default.)
+                } else {
+                    s.display = true;
+                }
+            }
+            // Round 118 — SVG 1.1 §11.5 `visibility`
+            // (`visible | hidden | collapse | inherit`). `hidden` and
+            // `collapse` both make the graphics element invisible;
+            // `inherit` keeps the inherited value already in `s`.
+            "visibility" => {
+                let v = value.trim();
+                if v.eq_ignore_ascii_case("visible") {
+                    s.visibility = Visibility::Visible;
+                } else if v.eq_ignore_ascii_case("hidden") || v.eq_ignore_ascii_case("collapse") {
+                    s.visibility = Visibility::Hidden;
+                } else {
+                    // `inherit` or unrecognised — keep inherited value.
+                }
             }
             // Round-4 CSS may carry properties we don't yet model
             // (font-family, transform, …). Ignore them rather than
@@ -349,6 +417,19 @@ pub struct ParseContext {
     /// [`Self::track_id_paths`]); the encoder re-wraps each recorded
     /// `Node::Group` in its `<a href="…">…</a>` element on round-trip.
     pub links: Vec<crate::preserved::LinkBinding>,
+    /// Round 118 — "next element is a `<use>` instance root" flag.
+    /// SVG 1.1 §11.5: "setting display: none on a `<path>` element will
+    /// prevent that element from getting rendered directly onto the
+    /// canvas, but the `<path>` element can still be referenced". So
+    /// when a `<use>` re-parses its referenced source, the source's own
+    /// `display:none` must NOT drop the instance — the author asked for
+    /// it to be drawn here. The `<use>` resolver sets this flag right
+    /// before re-parsing the source; the top-level `display:none`
+    /// short-circuit in [`parse_element_to_node_ctx`] consumes (clears)
+    /// it and skips the drop for that single element only. Cleared
+    /// immediately so a `display:none` *descendant* inside the
+    /// instantiated subtree still drops, matching a direct render.
+    pub use_instance_root_pending: bool,
 }
 
 impl Default for ParseContext {
@@ -373,6 +454,7 @@ impl ParseContext {
             pending_path_length: None,
             system_language: Vec::new(),
             links: Vec::new(),
+            use_instance_root_pending: false,
         }
     }
 
@@ -1052,6 +1134,34 @@ pub fn parse_element_to_node(
     parse_element_to_node_ctx(el, parent_state, ctx, &mctx)
 }
 
+/// Round 118 — does SVG 1.1 §11.5 `display` apply to this element?
+/// Per the property table, `display` applies to `svg`, `g`, `switch`,
+/// `a`, `foreignObject`, graphics elements (incl. `text`), and the
+/// text sub-elements (`tspan`, …). SVG 2 also lists `use`. We
+/// enumerate the renderable / container tags this crate produces a
+/// scene node for; never-rendered tags (`defs`, gradients, `marker`,
+/// `symbol`, `mask`, `clipPath`, `style`, animation) are excluded
+/// because §11.5 states `display` "does not apply" to them — and they
+/// return `None` from their own match arms regardless.
+fn display_applies(local_lower: &str) -> bool {
+    matches!(
+        local_lower,
+        "g" | "a"
+            | "switch"
+            | "foreignobject"
+            | "use"
+            | "rect"
+            | "circle"
+            | "ellipse"
+            | "line"
+            | "polyline"
+            | "polygon"
+            | "path"
+            | "text"
+            | "image"
+    )
+}
+
 /// Per-element-child sibling info — count of element-only children +
 /// per-tag totals — pre-computed once per parent so each child's
 /// MatchContext has accurate `:nth-child` / `:nth-of-type` numbers.
@@ -1156,6 +1266,38 @@ pub fn parse_element_to_node_ctx(
     let mctx_local = MatchContext { el, ..*mctx };
     let mctx = &mctx_local;
     let local = tag_local(&el.name);
+    // Round 118 — SVG 1.1 §11.5 `display:none`. The property applies to
+    // `svg`, `g`, `switch`, `a`, `foreignObject`, graphics elements
+    // (incl. `text`) and `use`. When resolved to `none`, the element
+    // and its children "do not become part of the rendering tree" —
+    // drop the node here so neither it nor its subtree is walked. The
+    // never-rendered elements (`defs`, gradients, `marker`, `symbol`,
+    // `mask`, `clipPath`, `style`, animation) are excluded: §11.5 says
+    // `display` "does not apply" to them, and they already return
+    // `None` via their own match arms regardless.
+    //
+    // Suppressed for the *root* of a `<use>` instance (§11.5: a
+    // `display:none` definition "can still be referenced"). The `<use>`
+    // resolver sets `ctx.use_instance_root_pending` before re-parsing
+    // the source; we consume it here so only the instance root is
+    // exempted — a nested `display:none` *inside* the instantiated
+    // subtree still drops, matching how a direct render would behave.
+    if display_applies(&local) {
+        let exempt = std::mem::take(&mut ctx.use_instance_root_pending);
+        if !exempt
+            && !parent_state
+                .merged_with_mctx(mctx, &ctx.stylesheet)?
+                .display
+        {
+            return Ok(None);
+        }
+    } else {
+        // A never-rendered element should not consume the instance-root
+        // exemption (a `<use href="#defs-child">` wouldn't reach one,
+        // but keep the flag honest in case the source root is such an
+        // element — it returns `None` anyway).
+        ctx.use_instance_root_pending = false;
+    }
     let node_opt = match local.as_str() {
         "g" => {
             let state = parent_state.merged_with_mctx(mctx, &ctx.stylesheet)?;
@@ -1413,8 +1555,26 @@ pub fn parse_element_to_node_ctx(
             // We follow the spec literally; users who don't want a
             // fill set fill="none".
             let transform = attr(el, "transform").map(parse_transform).transpose()?;
-            let fill = state.solid_fill(&ctx.gradients, &ctx.defs);
-            let mut stroke = state.solid_stroke(&ctx.gradients, &ctx.defs);
+            // Round 118 — SVG 1.1 §11.5 `visibility: hidden | collapse`.
+            // The graphics element is "invisible (i.e., nothing is
+            // painted on the canvas)" but, unlike `display:none`, "the
+            // geometry of the graphics element still contributes to
+            // bounding box and clipping path calculations". So we keep
+            // the `Path` node (geometry intact) but drop its fill and
+            // stroke paint. `visibility` is inherited, so a hidden `<g>`
+            // ancestor reaches here via `state.visibility`; a descendant
+            // that set `visibility="visible"` overrides it back on.
+            let hidden = state.visibility == Visibility::Hidden;
+            let fill = if hidden {
+                None
+            } else {
+                state.solid_fill(&ctx.gradients, &ctx.defs)
+            };
+            let mut stroke = if hidden {
+                None
+            } else {
+                state.solid_stroke(&ctx.gradients, &ctx.defs)
+            };
             // Round 21 — SVG 2 §9.6.1: the `pathLength` attribute
             // re-scales `stroke-dasharray` / `stroke-dashoffset` so a
             // downstream rasteriser that only knows user units paints
@@ -2186,8 +2346,20 @@ pub fn parse_use_element(
                 }
             }
         }
-    } else if let Some(node) = parse_element_to_node(&source, &state, ctx)? {
-        children.push(node);
+    } else {
+        // Round 118 — `<use>` references its target *directly*: per
+        // SVG 1.1 §11.5 a `display:none` reference target still renders
+        // when instantiated. Mark the next element (the instance root)
+        // exempt from the `display:none` drop. (Symbol children above
+        // are NOT exempted — only the named reference target is.)
+        ctx.use_instance_root_pending = true;
+        let node = parse_element_to_node(&source, &state, ctx)?;
+        // Defensive: clear in case the source root was a never-rendered
+        // element that returned `None` without consuming the flag.
+        ctx.use_instance_root_pending = false;
+        if let Some(node) = node {
+            children.push(node);
+        }
     }
     ctx.use_stack.remove(id);
 
