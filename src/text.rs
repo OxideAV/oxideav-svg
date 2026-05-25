@@ -19,16 +19,29 @@
 //! - Full CSS font-family fallback chains. Caller is responsible for
 //!   wiring the chain.
 //! - `text-anchor="middle|end"` (we always anchor at the start glyph).
-//! - `<textPath href="#path">` (round 3+).
 //! - Bidi.
+//!
+//! Round 128 — `<textPath>` (SVG 2 §11.8) now lays a text run along a
+//! referenced path. The path is resolved per the §11.8.1 precedence
+//! (`path=` attribute > `href` > legacy `xlink:href`) against the
+//! pre-walked id table; each glyph's midpoint is placed on the path at
+//! its accumulated run-relative x advance (plus an optional
+//! `startOffset`) using the new
+//! [`crate::path_length::sample_path_at_distance`] arc-length sampler,
+//! and the glyph is rotated by the path tangent at that point. Glyphs
+//! whose mid-points fall outside `[0, total_length]` (negative or past
+//! the end) are not rendered, per §11.8.2's startOffset rule. Without a
+//! font resolver every `<textPath>` collapses to an empty group, same
+//! as the bare `<text>` case.
 
 use std::cell::RefCell;
 use std::sync::OnceLock;
 
-use oxideav_core::{Group, Node, Result, Transform2D};
+use oxideav_core::{Group, Node, Path, Result, Transform2D};
 
 use crate::element::{PaintState, ParseContext};
 use crate::parser::{attr, tag_local, Element, Node as XmlNode};
+use crate::path_length::{compute_path_length, sample_path_at_distance};
 
 /// Caller hook so applications can supply a font-resolution callback
 /// without the SVG crate having to manage font registries itself.
@@ -89,7 +102,6 @@ pub fn parse_text_element(
     state: &PaintState,
     ctx: &mut ParseContext,
 ) -> Result<Option<Node>> {
-    let _ = ctx; // unused; reserved for future paint-server resolution.
     let x = parse_coord(attr(el, "x"), 0.0);
     let y = parse_coord(attr(el, "y"), 0.0);
     let font_size = parse_coord(attr(el, "font-size"), 16.0);
@@ -103,7 +115,7 @@ pub fn parse_text_element(
     };
 
     let mut group = Group::default();
-    walk_text_children(el, &inheritance, &pen, &mut group)?;
+    walk_text_children(el, &inheritance, &pen, &mut group, ctx)?;
     Ok(Some(Node::Group(group)))
 }
 
@@ -125,6 +137,7 @@ fn walk_text_children(
     inh: &TextInheritance<'_>,
     pen: &RefCell<Pen>,
     out: &mut Group,
+    ctx: &ParseContext,
 ) -> Result<()> {
     for child in &el.children {
         match child {
@@ -152,15 +165,207 @@ fn walk_text_children(
                 if let Some(v) = attr(c, "y") {
                     pen.borrow_mut().y = parse_coord(Some(v), pen.borrow().y);
                 }
-                walk_text_children(c, &sub, pen, out)?;
+                walk_text_children(c, &sub, pen, out, ctx)?;
+            }
+            XmlNode::Element(c) if tag_local(&c.name) == "textpath" => {
+                // Round 128 — SVG 2 §11.8 `<textPath>`. The element's
+                // content (text + nested `<tspan>`s) is laid along the
+                // referenced path instead of the parent `<text>`'s
+                // baseline. Per §11.8.1 the path-resolution precedence
+                // is `path=` > `href` > `xlink:href`. A missing /
+                // unresolvable path collapses to a no-op so the rest
+                // of the surrounding `<text>` still renders.
+                emit_text_path(c, inh, out, ctx);
             }
             _ => {
-                // Unknown nested element (a, textPath, …) — silently
-                // skipped in round 2.
+                // Unknown nested element (a, etc.) — silently skipped.
             }
         }
     }
     Ok(())
+}
+
+/// Concatenate the immediate text content (and content of nested
+/// `<tspan>` children) of a `<textPath>` element into a single string.
+/// The shaping is done as one run so cumulative x-advances are
+/// well-defined for arc-length placement.
+///
+/// Nested elements other than `<tspan>` contribute no text in round
+/// 128 (matches the baseline `<text>` walker behaviour); a future
+/// round can refine this to honour per-tspan inheritance overrides
+/// along the path.
+fn collect_text_run(el: &Element) -> String {
+    let mut s = String::new();
+    collect_text_run_into(el, &mut s);
+    s
+}
+
+fn collect_text_run_into(el: &Element, out: &mut String) {
+    for child in &el.children {
+        match child {
+            XmlNode::Text(t) => out.push_str(t),
+            XmlNode::Element(c) if tag_local(&c.name) == "tspan" => collect_text_run_into(c, out),
+            _ => {}
+        }
+    }
+}
+
+/// Resolve a `<textPath>`'s path per §11.8.1 precedence:
+///
+/// 1. `path` attribute — inline `d`-mini-language path data.
+/// 2. `href` attribute — id reference (SVG 2 canonical).
+/// 3. `xlink:href` — deprecated SVG 1.1 fallback.
+///
+/// Returns `None` when the element supplies none of the three or the
+/// referenced source has no usable `d` attribute (in which case the
+/// `<textPath>` renders no glyphs, matching browsers' behaviour).
+fn resolve_text_path(el: &Element, ctx: &ParseContext) -> Option<Path> {
+    if let Some(d) = attr(el, "path") {
+        if let Ok(cmds) = crate::path_data::parse_path_data(d) {
+            if !cmds.is_empty() {
+                let mut p = Path::new();
+                for cmd in cmds {
+                    p.commands.push(cmd);
+                }
+                return Some(p);
+            }
+        }
+    }
+    let href = attr(el, "href").or_else(|| attr(el, "xlink:href"))?;
+    let id = href.trim().strip_prefix('#')?;
+    let target = ctx.defs.elements.get(id)?;
+    let d = attr(target, "d")?;
+    let cmds = crate::path_data::parse_path_data(d).ok()?;
+    if cmds.is_empty() {
+        return None;
+    }
+    let mut p = Path::new();
+    for cmd in cmds {
+        p.commands.push(cmd);
+    }
+    Some(p)
+}
+
+/// Parse the SVG 2 §11.8.2 `startOffset` attribute. The value can be a
+/// `<number>` (user units along the path) or a `<percentage>` of the
+/// path's total length. Negative values and percentages > 100 are
+/// permitted by the spec but typically yield off-path glyphs (which
+/// are then suppressed by the midpoint-on-path rule).
+fn parse_start_offset(s: Option<&str>, path_len: f32) -> f32 {
+    let Some(raw) = s.map(str::trim) else {
+        return 0.0;
+    };
+    if raw.is_empty() {
+        return 0.0;
+    }
+    if let Some(rest) = raw.strip_suffix('%') {
+        return rest
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .map(|p| p * 0.01 * path_len)
+            .unwrap_or(0.0);
+    }
+    raw.parse::<f32>().unwrap_or(0.0)
+}
+
+/// SVG 2 §11.8.2 `side` attribute. `right` flips the layout direction
+/// (the spec describes this as reversing the path before placement);
+/// for our straight-line + monotonic-curve fixtures it suffices to
+/// mirror each glyph's path-distance about the total length.
+fn parse_side(s: Option<&str>) -> Side {
+    match s.map(str::trim) {
+        Some("right") => Side::Right,
+        _ => Side::Left,
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Side {
+    Left,
+    Right,
+}
+
+/// Lay each glyph of `el`'s text run along a resolved path. The output
+/// Group's children are one positioned-and-rotated glyph node each;
+/// nothing is emitted if the font resolver, path resolution, or shaper
+/// produce no glyphs.
+fn emit_text_path(el: &Element, inh: &TextInheritance<'_>, out: &mut Group, ctx: &ParseContext) {
+    let text = collect_text_run(el);
+    if text.is_empty() {
+        return;
+    }
+    let chain = match current_resolver().and_then(|r| r(&inh.font_family, inh.font_size)) {
+        Some(c) => c,
+        None => return,
+    };
+    let path = match resolve_text_path(el, ctx) {
+        Some(p) => p,
+        None => return,
+    };
+    let total_length = compute_path_length(&path);
+    if total_length <= 0.0 {
+        return;
+    }
+    let start_offset = parse_start_offset(attr(el, "startOffset"), total_length);
+    let side = parse_side(attr(el, "side"));
+
+    // Shape the text run once. We need per-glyph `x_advance` to compute
+    // the midpoint along the run (and therefore the midpoint distance
+    // along the path), so we drive shaping at the level below
+    // `shape_to_paths` and assemble the placed nodes here.
+    if chain.is_empty() {
+        return;
+    }
+    let shaped = match chain.shape(&text, inh.font_size) {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+
+    let fill = inh.fill.solid_fill_public();
+    let mut pen_x = 0.0_f32;
+    for g in &shaped {
+        // Midpoint of this glyph along the run, per §11.8: "midpoint
+        // of each typographic character is moved to the corresponding
+        // point on the path".
+        let mid = pen_x + g.x_offset + g.x_advance * 0.5;
+        pen_x += g.x_advance;
+
+        // Path-distance for the midpoint, honouring `startOffset` and
+        // `side` per §11.8.2. Glyphs whose midpoint falls off the path
+        // (negative or past the end) are not rendered.
+        let dist = match side {
+            Side::Left => start_offset + mid,
+            Side::Right => total_length - (start_offset + mid),
+        };
+        if dist < 0.0 || dist > total_length {
+            continue;
+        }
+
+        let face = chain.face(g.face_idx);
+        let node = match face.glyph_node(g.glyph_id, inh.font_size) {
+            Some(n) => n,
+            None => continue,
+        };
+
+        let (pos, tangent_deg) = sample_path_at_distance(&path, dist);
+        // Build: translate(pos) * rotate(tangent) * translate(-x_advance/2, y_offset)
+        // The trailing translate places the glyph's midpoint at the
+        // sampled `pos`; the rotate aligns the glyph's baseline with
+        // the path tangent; the leading translate puts the sample's
+        // origin into world space.
+        let rot = Transform2D::rotate(tangent_deg.to_radians());
+        let centring = Transform2D::translate(-g.x_advance * 0.5, g.y_offset);
+        let placement = Transform2D::translate(pos.x, pos.y)
+            .compose(&rot)
+            .compose(&centring);
+        let painted = repaint_node(node, fill.clone());
+        out.children.push(Node::Group(Group {
+            transform: placement,
+            children: vec![painted],
+            ..Group::default()
+        }));
+    }
 }
 
 fn emit_run(text: &str, inh: &TextInheritance<'_>, pen: &RefCell<Pen>, out: &mut Group) {

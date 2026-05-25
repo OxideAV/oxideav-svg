@@ -212,6 +212,283 @@ pub fn apply_to_path_node(
     Some(pl)
 }
 
+/// Round 128 — sample a path at an absolute arc-length `distance` from
+/// its start, returning the world-space `(point, tangent_angle_degrees)`.
+///
+/// Used by `<textPath>` glyph placement (SVG 2 §11.8) per the spec's
+/// "midpoint of each typographic character is moved to the
+/// corresponding point on the path" rule. The same sampling cadence
+/// as [`compute_path_length`] (32 chord steps per Bézier, 64 per arc)
+/// is used so cumulative distance and the running advance agree.
+///
+/// `distance` clamps to `[0, total_length]`; queries past the end of
+/// the path return the final pen position with the last computed
+/// tangent (which is what `<textPath>` consults to position any
+/// trailing glyphs whose mid-points have run off the end).
+///
+/// The tangent angle is measured in degrees from the +X axis (matches
+/// the SVG `rotate(<angle>)` convention).
+pub fn sample_path_at_distance(path: &Path, distance: f32) -> (Point, f32) {
+    let target = distance.max(0.0);
+    let mut acc = 0.0_f32;
+    let mut cur = Point::default();
+    let mut subpath_start = Point::default();
+    let mut last_tangent = 0.0_f32;
+
+    for cmd in &path.commands {
+        match *cmd {
+            PathCommand::MoveTo(p) => {
+                cur = p;
+                subpath_start = p;
+            }
+            PathCommand::LineTo(p) => {
+                let seg = dist(cur, p);
+                if seg > 0.0 {
+                    let tan = (p.y - cur.y).atan2(p.x - cur.x).to_degrees();
+                    if acc + seg >= target {
+                        let local = ((target - acc) / seg).clamp(0.0, 1.0);
+                        let x = cur.x + (p.x - cur.x) * local;
+                        let y = cur.y + (p.y - cur.y) * local;
+                        return (Point::new(x, y), tan);
+                    }
+                    acc += seg;
+                    last_tangent = tan;
+                }
+                cur = p;
+            }
+            PathCommand::QuadCurveTo { control, end } => {
+                if let Some((p, tan)) = sample_quad(cur, control, end, target - acc) {
+                    return (p, tan);
+                }
+                // Whole segment consumed — advance accumulator by its full length.
+                let advanced = quad_length(cur, control, end);
+                if advanced > 0.0 {
+                    last_tangent = (end.y - cur.y).atan2(end.x - cur.x).to_degrees();
+                    acc += advanced;
+                }
+                cur = end;
+            }
+            PathCommand::CubicCurveTo { c1, c2, end } => {
+                if let Some((p, tan)) = sample_cubic(cur, c1, c2, end, target - acc) {
+                    return (p, tan);
+                }
+                let advanced = cubic_length(cur, c1, c2, end);
+                if advanced > 0.0 {
+                    last_tangent = (end.y - cur.y).atan2(end.x - cur.x).to_degrees();
+                    acc += advanced;
+                }
+                cur = end;
+            }
+            PathCommand::ArcTo {
+                rx,
+                ry,
+                x_axis_rot,
+                large_arc,
+                sweep,
+                end,
+            } => {
+                if let Some((p, tan)) =
+                    sample_arc(cur, rx, ry, x_axis_rot, large_arc, sweep, end, target - acc)
+                {
+                    return (p, tan);
+                }
+                let advanced = arc_length(cur, rx, ry, x_axis_rot, large_arc, sweep, end);
+                if advanced > 0.0 {
+                    last_tangent = (end.y - cur.y).atan2(end.x - cur.x).to_degrees();
+                    acc += advanced;
+                }
+                cur = end;
+            }
+            PathCommand::Close => {
+                let p = subpath_start;
+                let seg = dist(cur, p);
+                if seg > 0.0 {
+                    let tan = (p.y - cur.y).atan2(p.x - cur.x).to_degrees();
+                    if acc + seg >= target {
+                        let local = ((target - acc) / seg).clamp(0.0, 1.0);
+                        let x = cur.x + (p.x - cur.x) * local;
+                        let y = cur.y + (p.y - cur.y) * local;
+                        return (Point::new(x, y), tan);
+                    }
+                    acc += seg;
+                    last_tangent = tan;
+                }
+                cur = p;
+            }
+            _ => {}
+        }
+    }
+    // Past the end → return the final pen with the last tangent.
+    (cur, last_tangent)
+}
+
+/// Sample a quadratic Bézier looking for an arc-length hit. Returns
+/// `Some((point, tangent_deg))` if `target_remaining` lands within the
+/// segment, otherwise `None` (caller advances by full segment length).
+fn sample_quad(p0: Point, pc: Point, p1: Point, target_remaining: f32) -> Option<(Point, f32)> {
+    if target_remaining < 0.0 {
+        return None;
+    }
+    let mut prev = p0;
+    let mut acc = 0.0_f32;
+    for i in 1..=CURVE_SAMPLES {
+        let t = i as f32 / CURVE_SAMPLES as f32;
+        let omt = 1.0 - t;
+        let x = omt * omt * p0.x + 2.0 * omt * t * pc.x + t * t * p1.x;
+        let y = omt * omt * p0.y + 2.0 * omt * t * pc.y + t * t * p1.y;
+        let p = Point::new(x, y);
+        let seg = dist(prev, p);
+        if seg > 0.0 && acc + seg >= target_remaining {
+            let local = ((target_remaining - acc) / seg).clamp(0.0, 1.0);
+            let xh = prev.x + (p.x - prev.x) * local;
+            let yh = prev.y + (p.y - prev.y) * local;
+            let tan = (p.y - prev.y).atan2(p.x - prev.x).to_degrees();
+            return Some((Point::new(xh, yh), tan));
+        }
+        acc += seg;
+        prev = p;
+    }
+    None
+}
+
+/// Sample a cubic Bézier looking for an arc-length hit. Shape matches
+/// [`sample_quad`].
+fn sample_cubic(
+    p0: Point,
+    c1: Point,
+    c2: Point,
+    p1: Point,
+    target_remaining: f32,
+) -> Option<(Point, f32)> {
+    if target_remaining < 0.0 {
+        return None;
+    }
+    let mut prev = p0;
+    let mut acc = 0.0_f32;
+    for i in 1..=CURVE_SAMPLES {
+        let t = i as f32 / CURVE_SAMPLES as f32;
+        let omt = 1.0 - t;
+        let omt2 = omt * omt;
+        let omt3 = omt2 * omt;
+        let t2 = t * t;
+        let t3 = t2 * t;
+        let x = omt3 * p0.x + 3.0 * omt2 * t * c1.x + 3.0 * omt * t2 * c2.x + t3 * p1.x;
+        let y = omt3 * p0.y + 3.0 * omt2 * t * c1.y + 3.0 * omt * t2 * c2.y + t3 * p1.y;
+        let p = Point::new(x, y);
+        let seg = dist(prev, p);
+        if seg > 0.0 && acc + seg >= target_remaining {
+            let local = ((target_remaining - acc) / seg).clamp(0.0, 1.0);
+            let xh = prev.x + (p.x - prev.x) * local;
+            let yh = prev.y + (p.y - prev.y) * local;
+            let tan = (p.y - prev.y).atan2(p.x - prev.x).to_degrees();
+            return Some((Point::new(xh, yh), tan));
+        }
+        acc += seg;
+        prev = p;
+    }
+    None
+}
+
+/// Sample an elliptical arc looking for an arc-length hit. Uses 64
+/// chord steps (matches the density of `arc_length`).
+#[allow(clippy::too_many_arguments)]
+fn sample_arc(
+    start: Point,
+    rx: f32,
+    ry: f32,
+    x_axis_rot: f32,
+    large_arc: bool,
+    sweep: bool,
+    end: Point,
+    target_remaining: f32,
+) -> Option<(Point, f32)> {
+    if target_remaining < 0.0 {
+        return None;
+    }
+    if rx == 0.0 || ry == 0.0 {
+        // Degenerate — line.
+        let seg = dist(start, end);
+        if seg > 0.0 && target_remaining <= seg {
+            let local = (target_remaining / seg).clamp(0.0, 1.0);
+            let xh = start.x + (end.x - start.x) * local;
+            let yh = start.y + (end.y - start.y) * local;
+            let tan = (end.y - start.y).atan2(end.x - start.x).to_degrees();
+            return Some((Point::new(xh, yh), tan));
+        }
+        return None;
+    }
+    let rx = rx.abs();
+    let ry = ry.abs();
+    if (start.x - end.x).abs() < f32::EPSILON && (start.y - end.y).abs() < f32::EPSILON {
+        return None;
+    }
+
+    let cos_phi = x_axis_rot.cos();
+    let sin_phi = x_axis_rot.sin();
+    let dx = (start.x - end.x) * 0.5;
+    let dy = (start.y - end.y) * 0.5;
+    let x1p = cos_phi * dx + sin_phi * dy;
+    let y1p = -sin_phi * dx + cos_phi * dy;
+
+    let lambda = (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry);
+    let (rx, ry) = if lambda > 1.0 {
+        let s = lambda.sqrt();
+        (rx * s, ry * s)
+    } else {
+        (rx, ry)
+    };
+
+    let rx2 = rx * rx;
+    let ry2 = ry * ry;
+    let x1p2 = x1p * x1p;
+    let y1p2 = y1p * y1p;
+    let denom = rx2 * y1p2 + ry2 * x1p2;
+    let mut factor = (rx2 * ry2 - denom) / denom;
+    if factor < 0.0 {
+        factor = 0.0;
+    }
+    let coef = factor.sqrt() * if large_arc == sweep { -1.0 } else { 1.0 };
+    let cxp = coef * (rx * y1p) / ry;
+    let cyp = coef * -(ry * x1p) / rx;
+
+    let cx = cos_phi * cxp - sin_phi * cyp + (start.x + end.x) * 0.5;
+    let cy = sin_phi * cxp + cos_phi * cyp + (start.y + end.y) * 0.5;
+
+    let ux = (x1p - cxp) / rx;
+    let uy = (y1p - cyp) / ry;
+    let vx = (-x1p - cxp) / rx;
+    let vy = (-y1p - cyp) / ry;
+    let theta1 = angle(1.0, 0.0, ux, uy);
+    let mut delta = angle(ux, uy, vx, vy);
+    if !sweep && delta > 0.0 {
+        delta -= std::f32::consts::TAU;
+    } else if sweep && delta < 0.0 {
+        delta += std::f32::consts::TAU;
+    }
+
+    let n = 64;
+    let mut prev = start;
+    let mut acc = 0.0_f32;
+    for i in 1..=n {
+        let t = i as f32 / n as f32;
+        let theta = theta1 + delta * t;
+        let x = cos_phi * rx * theta.cos() - sin_phi * ry * theta.sin() + cx;
+        let y = sin_phi * rx * theta.cos() + cos_phi * ry * theta.sin() + cy;
+        let p = Point::new(x, y);
+        let seg = dist(prev, p);
+        if seg > 0.0 && acc + seg >= target_remaining {
+            let local = ((target_remaining - acc) / seg).clamp(0.0, 1.0);
+            let xh = prev.x + (p.x - prev.x) * local;
+            let yh = prev.y + (p.y - prev.y) * local;
+            let tan = (p.y - prev.y).atan2(p.x - prev.x).to_degrees();
+            return Some((Point::new(xh, yh), tan));
+        }
+        acc += seg;
+        prev = p;
+    }
+    None
+}
+
 // ---------------------------------------------------------------------
 // Internals
 // ---------------------------------------------------------------------

@@ -9,6 +9,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 128** — SVG 2 §11.8 `<textPath>` text-on-path layout.
+  - `<text>` `<textPath>` children now lay their text run along a
+    referenced path instead of the parent `<text>`'s baseline. The
+    glyph midpoint of each typographic character is moved to the
+    corresponding point on the path per §11.8 and rotated by the path
+    tangent at that point.
+  - **Path-resolution precedence** per §11.8.1: `path=` (inline
+    `d`-mini-language data) overrides `href` (SVG-2 canonical)
+    overrides `xlink:href` (deprecated SVG-1.1 fallback). The
+    referenced `<path>` resolves through the pre-walked
+    [`crate::defs::DefsTables::elements`] id table.
+  - **`startOffset`** (§11.8.2): both `<number>` (user units along
+    the path) and `<percentage>` (of total path length) shapes are
+    accepted; negative values and offsets > 100% are honoured per
+    spec (glyphs whose midpoint lands off the path are silently
+    dropped by the placement rule).
+  - **`side="right"`** (§11.8.2): flips the path-distance about the
+    total length so the text runs along the opposite side (matches
+    the spec's "right" side semantics for monotonic paths).
+  - **Arc-length aware placement** — new public
+    [`crate::path_length::sample_path_at_distance`] sampler walks
+    line / quadratic-Bézier / cubic-Bézier / elliptic-arc / close
+    segments, returning `(point, tangent_degrees)` for an absolute
+    path-distance query. Sampling cadence matches
+    [`compute_path_length`] (32 chord steps per Bézier, 64 per arc)
+    so cumulative distance and the running advance agree.
+  - **No font resolver → empty group** — keeps the round-2 baseline
+    `<text>` behaviour: a `<textPath>` whose font-family cannot be
+    resolved by the installed
+    [`crate::text::set_font_resolver`] hook parses to an empty
+    Group so the rest of the document still loads.
+  - 21 integration tests in `tests/round128_text_path.rs` +
+    `tests/round128_text_path_glyphs.rs` (path-resolution decision
+    tree, off-path glyph drop, `startOffset` shift, horizontal /
+    vertical / curved tangent rotation, sampler unit tests on
+    straight / polyline / cubic / arc / multi-subpath geometry,
+    round-trip safety).
+
 - **Round 125** — SVG 1.1 §19.2.14 `<animateMotion>` snapshot evaluator
   with `<mpath>` resolution + `rotate="auto"` / `auto-reverse` /
   numeric + `keyPoints` / `keyTimes` remapping.

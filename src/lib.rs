@@ -400,9 +400,10 @@
 //!   (typed [`crate::defs::MarkerDef`] + verbatim round-trip via
 //!   [`crate::preserved::PreservedExtras::markers`]); the vertex-binding
 //!   of the `marker-*` properties on shapes is the remaining followup.
-//! * `<text>` `textPath` (SVG 2 §11.3) — text-on-path layout via the
-//!   existing `oxideav-scribe` shaping path; touches scribe so
-//!   deferred to keep the round in-crate.
+//! * `<text>` `textPath` (SVG 2 §11.8) — text-on-path layout **landed
+//!   in round 128** (`method="align"` semantics; the §11.8.2
+//!   `method="stretch"` per-glyph outline warping is the remaining
+//!   refinement).
 //! * Live evaluation of pseudo-elements (`::before` / `::after`) into
 //!   synthesised boxes — also a renderer-side concern (oxideav-raster).
 //!

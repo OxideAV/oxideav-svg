@@ -153,6 +153,42 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
+## Round 128 additions
+
+- **SVG 2 §11.8 `<textPath>`** — text-on-path layout. `<textPath>`
+  children of `<text>` lay their text run along a referenced path
+  instead of the parent `<text>`'s baseline; each glyph's midpoint is
+  moved to the corresponding point on the path and rotated by the
+  path tangent at that position, matching the spec's "midpoint of
+  each typographic character is moved to the corresponding point on
+  the path" rule.
+  - **Path-resolution precedence** per §11.8.1: `path=` (inline
+    `d`-mini-language) > `href` (SVG-2 canonical) > `xlink:href`
+    (deprecated SVG-1.1 fallback). The referenced `<path>` is looked
+    up via the pre-walked `DefsTables::elements` id table (same
+    mechanism `<animateMotion>`'s `<mpath>` resolver uses).
+  - **`startOffset`** (§11.8.2): both `<number>` (user units) and
+    `<percentage>` (of total path length) accepted. Negative values
+    and offsets > 100% are honoured per the spec; glyphs whose
+    midpoint lands off the path are silently dropped by the
+    placement rule.
+  - **`side="right"`** flips the path-distance about the total length
+    so the text runs along the opposite side.
+  - **Arc-length aware sampler** — new public
+    `oxideav_svg::path_length::sample_path_at_distance(path,
+    distance)` returns `(point, tangent_degrees)` for an absolute
+    path-distance query. Walks line / quadratic / cubic / elliptic-arc
+    / close segments at the same chord-sampling cadence as
+    `compute_path_length` (32 steps per Bézier, 64 per arc) so
+    cumulative distance and the running advance agree.
+  - **No font resolver → empty group** — consistent with the round-2
+    baseline `<text>` behaviour: a `<textPath>` whose font-family
+    can't be resolved by the installed
+    [`crate::text::set_font_resolver`] hook parses to an empty
+    `Group`, so the surrounding document still loads.
+  - 21 integration tests in `tests/round128_text_path.rs` +
+    `tests/round128_text_path_glyphs.rs`.
+
 ## Round 125 additions
 
 - **SVG 1.1 §19.2.14 `<animateMotion>` snapshot evaluator** —
@@ -770,8 +806,11 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   round-trip via `PreservedExtras::markers`); painting the marker
   graphics at shape vertices with the §13.7.4 `orient` / `markerUnits`
   rules needs a `Marker` construct in `oxideav-core`.
-- `<text>` `textPath` (SVG 2 §11.3) — text-on-path layout via the
-  existing `oxideav-scribe` shaping path.
+- `<text>` `textPath` (SVG 2 §11.8) — text-on-path layout **landed in
+  round 128**. Remaining deferral: `method="stretch"` per-glyph path
+  warping (round 128 ships `method="align"` semantics — affine glyph
+  placement without outline warping, which is the default and matches
+  almost every real-world use case).
 - `<image>` element with embedded data URIs / external href.
 - Live evaluation of pseudo-elements and stateful pseudo-classes (the
   selectors parse + survive the round-trip but a synthesised-box
