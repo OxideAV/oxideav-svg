@@ -42,6 +42,21 @@ pub enum Visibility {
     Hidden,
 }
 
+/// Round 172 — SVG 2 §11.10.1.1 `text-anchor` property (`start |
+/// middle | end`). Inherited, initial value `start`. Shifts a text
+/// chunk so the start / geometric middle / end of the rendered run
+/// aligns to the chunk's initial current text position. For an
+/// `<textPath>`, the same property biases the start-point-on-the-path
+/// per §11.8.3 (subtract half the total advance for `middle`, the full
+/// total for `end`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum TextAnchor {
+    #[default]
+    Start,
+    Middle,
+    End,
+}
+
 /// Inherited paint / stroke / opacity / fill-rule state. Round 1
 /// keeps this minimal — full CSS inheritance lives in round 2 (text /
 /// `<style>`).
@@ -68,6 +83,10 @@ pub struct PaintState {
     pub display: bool,
     /// Round 118 — SVG 1.1 §11.5 `visibility` (inherited).
     pub visibility: Visibility,
+    /// Round 172 — SVG 2 §11.10.1.1 `text-anchor` (inherited).
+    /// Initial value `start`. Consumed by [`crate::text`] when laying
+    /// glyphs for `<text>` / `<tspan>` / `<textPath>` runs.
+    pub text_anchor: TextAnchor,
 }
 
 impl Default for PaintState {
@@ -91,6 +110,8 @@ impl Default for PaintState {
             // `visibility` initial is `visible`.
             display: true,
             visibility: Visibility::Visible,
+            // §11.10.1.1 — initial value `start`.
+            text_anchor: TextAnchor::Start,
         }
     }
 }
@@ -241,6 +262,23 @@ impl PaintState {
                     s.visibility = Visibility::Visible;
                 } else if v.eq_ignore_ascii_case("hidden") || v.eq_ignore_ascii_case("collapse") {
                     s.visibility = Visibility::Hidden;
+                } else {
+                    // `inherit` or unrecognised — keep inherited value.
+                }
+            }
+            // Round 172 — SVG 2 §11.10.1.1 `text-anchor`
+            // (`start | middle | end`). Inherited; `inherit` /
+            // unrecognised values keep the inherited value already in
+            // `s`. Unknown keywords are tolerated rather than failing
+            // the document (matches the round-118 visibility branch).
+            "text-anchor" => {
+                let v = value.trim();
+                if v.eq_ignore_ascii_case("start") {
+                    s.text_anchor = TextAnchor::Start;
+                } else if v.eq_ignore_ascii_case("middle") {
+                    s.text_anchor = TextAnchor::Middle;
+                } else if v.eq_ignore_ascii_case("end") {
+                    s.text_anchor = TextAnchor::End;
                 } else {
                     // `inherit` or unrecognised — keep inherited value.
                 }

@@ -153,6 +153,50 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
+## Round 172 additions
+
+- **SVG 2 §11.10.1.1 `text-anchor` property** (`start | middle | end`).
+  Inherited via the round-118-style cascade: a new
+  [`crate::element::TextAnchor`] enum lands on
+  [`crate::element::PaintState::text_anchor`] (initial `Start` per the
+  spec's Initial table), the `apply_one` branch case-insensitively maps
+  the three keywords plus `inherit` (and tolerates unrecognised tokens
+  the same way the §11.5 `visibility` branch does), and the cascade
+  applies to presentation attributes, inline `style=` declarations, and
+  `<style>`-block tag / class / id rules without any other plumbing.
+  - **`<text>` chunk shift** — after walking the element's children the
+    text module computes the chunk's pre-anchor x extent
+    (`pen.x − x`) and shifts every emitted glyph's placement Group by
+    `0` / `−W/2` / `−W` for `start` / `middle` / `end`. Round 172 has
+    one chunk per `<text>` (the round-2 walker doesn't yet split on
+    author-supplied `<tspan x=…>` boundaries — that's the §11.5 chunk-
+    boundary work for a later round).
+  - **`<textPath>` start-point bias per §11.8.3** — the same
+    `0` / `−W/2` / `−W` term folds directly into `startOffset` before
+    glyphs are laid along the curve, matching the spec's "subtract half
+    of the total advance values for all of the glyphs … from the start
+    of the path" rule. Total advance sums every shaped glyph's
+    `x_advance` (whitespace included, since those glyphs still consume
+    horizontal space).
+  - **`<textPath>` children opt out of the outer `<text>` shift** —
+    the walker records each textPath's emitted-glyph indices so the
+    post-walk shift skips them; their §11.8.3 bias is applied inline.
+  - **Without a font resolver** the post-walk shift is a no-op (zero
+    glyphs in the chunk) and the document still loads cleanly, matching
+    the round-2 baseline.
+  - 11 parser-side tests in `tests/round172_text_anchor.rs` (default
+    value, three keyword variants via presentation attribute, `inherit`
+    + unrecognised-keyword tolerance, case-insensitive matching, parse-
+    no-crash without a resolver, `<g>`-cascade inheritance,
+    `style=`-attribute resolution, `<style>`-block rule resolution) +
+    5 glyph-emission tests in `tests/round172_text_anchor_glyphs.rs`
+    (three anchors shift the leftmost-glyph x by `0` / `−W/2` / `−W`,
+    default matches explicit `start`, `end` moves leftwards, `<g>`-
+    inherited middle matches inline middle, empty runs emit nothing
+    for every anchor) + 2 `<textPath>` anchor tests in
+    `tests/round172_text_path_anchor.rs` (§11.8.3 bias along a
+    horizontal path, default-vs-explicit-start parity).
+
 ## Round 128 additions
 
 - **SVG 2 §11.8 `<textPath>`** — text-on-path layout. `<textPath>`

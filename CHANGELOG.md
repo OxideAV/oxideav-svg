@@ -9,6 +9,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 172** — SVG 2 §11.10.1.1 `text-anchor` property
+  (`start | middle | end`).
+  - New [`crate::element::TextAnchor`] enum (initial `Start` per the
+    spec's Initial table). The property is inherited via the round-118-
+    style cascade onto [`crate::element::PaintState::text_anchor`];
+    presentation attributes, inline `style=` declarations, and
+    `<style>`-block tag / class / id rules all resolve through the
+    same `apply_one` branch. Case-insensitive keyword matching;
+    `inherit` and unrecognised tokens keep the inherited value rather
+    than failing the document.
+  - **`<text>` chunk shift** — after the text walker emits glyphs the
+    chunk's pre-anchor x extent (`pen.x − x`) is multiplied by the
+    `0` / `−0.5` / `−1` shift factor for `start` / `middle` / `end`
+    and applied as a pure x-translate to every glyph's placement
+    Group. Round 172 ships one chunk per `<text>` (multi-chunk
+    splitting on author-supplied `<tspan x=…>` boundaries per §11.5
+    is a later round's work).
+  - **`<textPath>` start-point bias per §11.8.3** — the same
+    `0` / `−W/2` / `−W` term (where `W` is the total of every shaped
+    glyph's `x_advance`, whitespace included) folds directly into
+    `startOffset` before glyphs are laid along the curve. The §11.8.3
+    rule is "subtract half the total advance values for all of the
+    glyphs … from the start of the path" for `middle` and the full
+    total for `end`.
+  - **`<textPath>` children inside a `<text>` opt out of the outer
+    chunk shift** — the walker records each `<textPath>`'s emitted-
+    glyph indices in a parallel skip-set so the outer post-walk shift
+    leaves them alone; the `<textPath>`'s own §11.8.3 bias is applied
+    inline by `emit_text_path`.
+  - **Without a font resolver** the shift collapses to a no-op (zero
+    glyphs in the chunk) and the document still loads, matching the
+    round-2 baseline `<text>` behaviour.
+  - 18 integration tests across `tests/round172_text_anchor.rs` (11
+    parser-side: default value, three keyword variants via
+    presentation attribute, `inherit` + unrecognised-keyword
+    tolerance, case-insensitive matching, no-crash without resolver,
+    `<g>`-cascade inheritance, `style=` resolution, `<style>`-block
+    rule resolution), `tests/round172_text_anchor_glyphs.rs` (5 glyph-
+    placement: leftmost-glyph x shifts by `0` / `−W/2` / `−W`,
+    default-vs-explicit-start parity, `end` moves leftwards, `<g>`-
+    inherited middle matches inline middle, empty runs emit nothing
+    for every anchor), and `tests/round172_text_path_anchor.rs` (2
+    `<textPath>` cases: §11.8.3 bias along a horizontal path,
+    default-vs-explicit-start parity).
+
 - **Round 128** — SVG 2 §11.8 `<textPath>` text-on-path layout.
   - `<text>` `<textPath>` children now lay their text run along a
     referenced path instead of the parent `<text>`'s baseline. The

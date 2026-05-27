@@ -18,7 +18,6 @@
 //!
 //! - Full CSS font-family fallback chains. Caller is responsible for
 //!   wiring the chain.
-//! - `text-anchor="middle|end"` (we always anchor at the start glyph).
 //! - Bidi.
 //!
 //! Round 128 — `<textPath>` (SVG 2 §11.8) now lays a text run along a
@@ -33,13 +32,27 @@
 //! the end) are not rendered, per §11.8.2's startOffset rule. Without a
 //! font resolver every `<textPath>` collapses to an empty group, same
 //! as the bare `<text>` case.
+//!
+//! Round 172 — SVG 2 §11.10.1.1 `text-anchor` (`start | middle | end`).
+//! The property is inherited via [`PaintState::text_anchor`] (parsed by
+//! the round-118-style cascade in [`crate::element`]) and consumed
+//! here:
+//!
+//! - For a plain `<text>` element the whole element forms a single
+//!   text chunk: we collect every emitted glyph during the walk, then
+//!   shift each glyph horizontally by `0` / `-W/2` / `-W` (where `W` is
+//!   the chunk's pre-anchor run width) for `start` / `middle` / `end`
+//!   respectively.
+//! - For `<textPath>`, §11.8.3 biases the start-point-on-the-path by
+//!   the same `0` / `-W/2` / `-W` term, so we fold the shift directly
+//!   into `start_offset` before laying glyphs along the curve.
 
 use std::cell::RefCell;
 use std::sync::OnceLock;
 
 use oxideav_core::{Group, Node, Path, Result, Transform2D};
 
-use crate::element::{PaintState, ParseContext};
+use crate::element::{PaintState, ParseContext, TextAnchor};
 use crate::parser::{attr, tag_local, Element, Node as XmlNode};
 use crate::path_length::{compute_path_length, sample_path_at_distance};
 
@@ -97,6 +110,16 @@ fn current_resolver() -> Option<&'static FontResolver> {
 /// Walk a `<text>` element + its nested `<tspan>` children, tracking a
 /// pen position that starts at the text's `(x, y)`. Returns the
 /// wrapped Group node.
+///
+/// Round 172 — after the walk, the SVG 2 §11.10.1.1 `text-anchor` shift
+/// is applied to every glyph emitted into the chunk. The chunk's pre-
+/// anchor x extent is `pen.x − x` (round-2 has one chunk per `<text>`
+/// because we don't yet support multi-x `<tspan>` chunk boundaries);
+/// `start` keeps the shift at 0, `middle` shifts by `-extent/2`, `end`
+/// shifts by `-extent`. `<textPath>` children opt out of the shared
+/// shift — they apply their own §11.8.3 bias inline via `emit_text_path`,
+/// since the shift biases the start-point-on-the-path rather than a
+/// post-hoc x translation.
 pub fn parse_text_element(
     el: &Element,
     state: &PaintState,
@@ -115,7 +138,52 @@ pub fn parse_text_element(
     };
 
     let mut group = Group::default();
-    walk_text_children(el, &inheritance, &pen, &mut group, ctx)?;
+    // Track child indices that belong to the chunk so the §11.10.1.1
+    // text-anchor shift can rewrite their transforms after the walk.
+    // `<textPath>` glyphs land in the same `group` but exit the chunk
+    // (they're stamped with their own path-relative placement), so the
+    // walker pushes their indices into a parallel skip-set.
+    let chunk_start_index = group.children.len();
+    let mut textpath_indices: Vec<usize> = Vec::new();
+    walk_text_children(
+        el,
+        &inheritance,
+        &pen,
+        &mut group,
+        ctx,
+        &mut textpath_indices,
+    )?;
+    // Compute pre-anchor chunk extent and apply the shift in place.
+    // The chunk's geometric extent is `pen.x − x` for round 172's
+    // single-chunk model (any author-supplied `<tspan x=…>` would start
+    // a new chunk per §11.5; the current walker simply moves the pen,
+    // which approximates the chunk-boundary semantics for the common
+    // case of one `<text>` = one chunk).
+    let extent = pen.borrow().x - x;
+    let shift = match state.text_anchor {
+        TextAnchor::Start => 0.0,
+        TextAnchor::Middle => -extent * 0.5,
+        TextAnchor::End => -extent,
+    };
+    if shift.abs() > 0.0 {
+        for (idx, child) in group
+            .children
+            .iter_mut()
+            .enumerate()
+            .skip(chunk_start_index)
+        {
+            if textpath_indices.contains(&idx) {
+                continue;
+            }
+            if let Node::Group(g) = child {
+                // Each emitted glyph is wrapped in a placement Group
+                // whose transform is `translate(origin_x + glyph_x,
+                // origin_y + glyph_y)`. A pure x-translate composes by
+                // adding to `e`.
+                g.transform = Transform2D::translate(shift, 0.0).compose(&g.transform);
+            }
+        }
+    }
     Ok(Some(Node::Group(group)))
 }
 
@@ -138,6 +206,7 @@ fn walk_text_children(
     pen: &RefCell<Pen>,
     out: &mut Group,
     ctx: &ParseContext,
+    textpath_indices: &mut Vec<usize>,
 ) -> Result<()> {
     for child in &el.children {
         match child {
@@ -165,7 +234,7 @@ fn walk_text_children(
                 if let Some(v) = attr(c, "y") {
                     pen.borrow_mut().y = parse_coord(Some(v), pen.borrow().y);
                 }
-                walk_text_children(c, &sub, pen, out, ctx)?;
+                walk_text_children(c, &sub, pen, out, ctx, textpath_indices)?;
             }
             XmlNode::Element(c) if tag_local(&c.name) == "textpath" => {
                 // Round 128 — SVG 2 §11.8 `<textPath>`. The element's
@@ -175,7 +244,15 @@ fn walk_text_children(
                 // is `path=` > `href` > `xlink:href`. A missing /
                 // unresolvable path collapses to a no-op so the rest
                 // of the surrounding `<text>` still renders.
+                let before = out.children.len();
                 emit_text_path(c, inh, out, ctx);
+                // Round 172 — record any glyphs the `<textPath>` just
+                // emitted so the outer `text-anchor` post-shift can
+                // skip them (they have already been biased per
+                // §11.8.3 by `emit_text_path` itself).
+                for i in before..out.children.len() {
+                    textpath_indices.push(i);
+                }
             }
             _ => {
                 // Unknown nested element (a, etc.) — silently skipped.
@@ -307,7 +384,7 @@ fn emit_text_path(el: &Element, inh: &TextInheritance<'_>, out: &mut Group, ctx:
     if total_length <= 0.0 {
         return;
     }
-    let start_offset = parse_start_offset(attr(el, "startOffset"), total_length);
+    let raw_start_offset = parse_start_offset(attr(el, "startOffset"), total_length);
     let side = parse_side(attr(el, "side"));
 
     // Shape the text run once. We need per-glyph `x_advance` to compute
@@ -321,6 +398,20 @@ fn emit_text_path(el: &Element, inh: &TextInheritance<'_>, out: &mut Group, ctx:
         Ok(g) => g,
         Err(_) => return,
     };
+
+    // Round 172 — §11.8.3 start-point-on-the-path bias by `text-anchor`.
+    // For `start`, the start-point is `startOffset` along the path; for
+    // `middle`, subtract half the run's total advance; for `end`,
+    // subtract the full total. The total advance is the sum of every
+    // shaped glyph's `x_advance` (whitespace included — those glyphs
+    // still consume horizontal space even when no Path is emitted).
+    let total_advance: f32 = shaped.iter().map(|g| g.x_advance).sum();
+    let anchor_shift = match inh.fill.text_anchor {
+        TextAnchor::Start => 0.0,
+        TextAnchor::Middle => -total_advance * 0.5,
+        TextAnchor::End => -total_advance,
+    };
+    let start_offset = raw_start_offset + anchor_shift;
 
     let fill = inh.fill.solid_fill_public();
     let mut pen_x = 0.0_f32;
