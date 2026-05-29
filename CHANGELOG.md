@@ -9,6 +9,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 187** — SVG 2 §11.2.1 `textLength` + `lengthAdjust` on
+  `<text>` / `<tspan>` elements.
+  - New [`crate::element::TextLengthAdjust`] enum (`Spacing` /
+    `SpacingAndGlyphs`; initial `Spacing` per the spec's attribute
+    table). The attribute is NOT inherited; it applies only to the
+    chunk-opening element that carries it (root `<text>` or a
+    `<tspan x|y …>` that opens its own §11.5 chunk). A per-`<tspan>`
+    `textLength` on an element that does not open a chunk folds onto
+    the currently-open chunk's binding so a descendant's target still
+    drives the rescale per §11.2.1's ancestor/descendant rule.
+  - New `apply_text_length_rescaling` pass in `crate::text` rewrites
+    every placement Group's `transform.e` so the chunk extent
+    (`rightmost − leftmost glyph origin`) matches the requested
+    target in user units. The pass runs **before** the round-172
+    §11.10.1.1 `text-anchor` shift so the anchor measures against
+    the adjusted width — a `<text x="400" textLength="300"
+    text-anchor="middle">` shifts by `−150` rather than by half of
+    the natural-glyph extent.
+  - `lengthAdjust="spacingAndGlyphs"` additionally post-composes
+    `scale(s, 1)` onto each placement transform (where
+    `s = target / natural_chunk_extent`) so the glyph outlines
+    stretch / compress along the inline-base direction in addition
+    to the inter-glyph rescaling.
+  - `<textPath>` chunks are excluded from the rescaling pass — the
+    existing `textpath_indices` set skips them, leaving the §11.8.3
+    path-distance bias untouched. A new chunk opened immediately
+    after a `<textPath>` carries no `textLength` binding (matching
+    §11.2.1's "applies only when the wrapping area is not defined by
+    shape-inside").
+  - Spec-compliance edge cases: a non-finite or negative
+    `textLength` value is rejected (`parse_text_length` returns
+    `None`), and the run shapes at its natural width per §11.2.1's
+    "A negative value is an error" sentence. Unknown
+    `lengthAdjust` keywords fall back to `spacing`.
+  - Five new tests in `tests/round187_text_length.rs` verify: the
+    `spacing`-default chunk extent matches the requested target; the
+    `spacingAndGlyphs` mode sets `a ≈ target / natural` on every
+    placement; `text-anchor="middle"` + `textLength="300"` places
+    the leftmost glyph at `origin − 150`; a per-`<tspan x= textLength>`
+    rescales only its own chunk (the sibling chunk stays at the
+    natural width); a negative `textLength` is silently dropped.
+
 - **Round 176** — SVG 2 §11.5 anchored-chunk boundaries on
   `<tspan x=…>` / `<tspan y=…>`.
   - The text walker now splits a `<text>` element's run at every

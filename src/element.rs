@@ -57,6 +57,26 @@ pub enum TextAnchor {
     End,
 }
 
+/// Round 187 — SVG 2 §11.2.1 `lengthAdjust` attribute on
+/// `<text>` / `<tspan>` (`spacing | spacingAndGlyphs`). Selects how a
+/// `textLength`-driven width adjustment is distributed across the run:
+///
+/// - [`Self::Spacing`] (initial): adjust only the **inter-glyph
+///   advances**; the glyph outlines themselves are not stretched.
+/// - [`Self::SpacingAndGlyphs`]: scale glyph advances **and** the
+///   glyph outlines along the inline-base direction so the run
+///   visibly stretches / compresses.
+///
+/// The attribute is NOT inherited (it applies only to the element
+/// that carries it; see §11.2.1 attribute table).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum TextLengthAdjust {
+    /// Initial value per §11.2.1.
+    #[default]
+    Spacing,
+    SpacingAndGlyphs,
+}
+
 /// Inherited paint / stroke / opacity / fill-rule state. Round 1
 /// keeps this minimal — full CSS inheritance lives in round 2 (text /
 /// `<style>`).

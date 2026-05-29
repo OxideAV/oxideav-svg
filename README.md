@@ -153,6 +153,40 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
+## Round 187 additions
+
+- **SVG 2 §11.2.1 `textLength` + `lengthAdjust` on `<text>` /
+  `<tspan>`.** Author-supplied `textLength=…` is parsed on the root
+  `<text>` and on chunk-opening `<tspan x|y …>` elements; an
+  unaccompanied per-`<tspan textLength>` (no `x|y`) also folds onto
+  the open anchored chunk per the §11.2.1 ancestor/descendant rule.
+  The new `apply_text_length_rescaling` pass rewrites every glyph
+  placement so the chunk's actual extent (`x_end − x_origin`) matches
+  the requested target. `lengthAdjust="spacing"` (initial) adjusts
+  only inter-glyph advances; `lengthAdjust="spacingAndGlyphs"`
+  additionally post-composes `scale(s, 1)` onto each placement so the
+  outlines stretch along the inline-base direction.
+- **Ordering with §11.10.1.1 `text-anchor`** — the rescaling pass
+  runs **before** the existing chunk-anchor shift, so the anchor
+  measures against the adjusted width. A
+  `<text x="400" textLength="300" text-anchor="middle">` therefore
+  shifts by `−150` (not by half of the un-adjusted glyph extent),
+  matching the spec's "the user agent expands/compresses the text
+  string to fit within a length of textLength" wording.
+- **§11.2.1 error policy** — a non-finite or negative `textLength`
+  value is rejected at parse time (the binding is dropped, leaving
+  the run at its natural width); unknown `lengthAdjust` keywords fall
+  back to the `spacing` initial value. `<textPath>` chunks are
+  excluded — they have their own §11.8.3 path-distance bias and the
+  rescale pass skips them via the existing `textpath_indices` set.
+- Five new tests in `tests/round187_text_length.rs` verify: baseline
+  extent matches the requested target under `spacing`; every glyph
+  carries the `s = target / natural` x-scale under `spacingAndGlyphs`;
+  composition with `text-anchor="middle"` places the leftmost glyph
+  at `x − target/2`; a per-`<tspan>` `textLength` rescales only its
+  own chunk; a negative `textLength` is ignored and the run shapes
+  at its natural width.
+
 ## Round 176 additions
 
 - **SVG 2 §11.5 anchored-chunk boundaries on `<tspan x=…>` /

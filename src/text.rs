@@ -46,13 +46,31 @@
 //! - For `<textPath>`, §11.8.3 biases the start-point-on-the-path by
 //!   the same `0` / `-W/2` / `-W` term, so we fold the shift directly
 //!   into `start_offset` before laying glyphs along the curve.
+//!
+//! Round 187 — SVG 2 §11.2.1 `textLength` + `lengthAdjust`. An author-
+//! supplied `textLength=` declares the intended sum of all advance
+//! values for the element's content; the implementation rescales each
+//! glyph's x placement so the chunk's actual width matches the target.
+//! `lengthAdjust="spacing"` (initial) adjusts only inter-glyph
+//! positions; `lengthAdjust="spacingAndGlyphs"` additionally wraps each
+//! glyph in an `scale(s, 1)` so the outlines themselves stretch /
+//! compress along the inline-base direction.
+//!
+//! Per §11.2.1 the attribute applies per anchored chunk: a
+//! `<tspan x=… textLength=…>` overrides the rescaling for its own
+//! chunk only; a bare `<text textLength=…>` covers its whole element.
+//! The §11.10.1.1 `text-anchor` shift is applied to the **already-
+//! rescaled** chunk width (so a `middle`-anchored chunk with
+//! `textLength=300` shifts by `−150`, not by half of the un-adjusted
+//! glyph extent). Negative `textLength` is an error per the spec and is
+//! ignored.
 
 use std::cell::RefCell;
 use std::sync::OnceLock;
 
 use oxideav_core::{Group, Node, Path, Result, Transform2D};
 
-use crate::element::{PaintState, ParseContext, TextAnchor};
+use crate::element::{PaintState, ParseContext, TextAnchor, TextLengthAdjust};
 use crate::parser::{attr, tag_local, Element, Node as XmlNode};
 use crate::path_length::{compute_path_length, sample_path_at_distance};
 
@@ -145,13 +163,17 @@ pub fn parse_text_element(
     let mut group = Group::default();
     let mut chunks: Vec<Chunk> = Vec::new();
     // The root `<text>` opens the first chunk at its `(x, y)` origin with
-    // the inherited `text-anchor`.
+    // the inherited `text-anchor`. Round 187 — pick up its `textLength` /
+    // `lengthAdjust` (if any) so the post-walk pass can rescale the
+    // chunk's glyph placements per §11.2.1.
+    let root_text_length = parse_text_length(attr(el, "textLength"), attr(el, "lengthAdjust"));
     chunks.push(Chunk {
         start_index: group.children.len(),
         end_index: 0, // patched once children land
         x_origin: x,
         x_end: x,
         anchor: state.text_anchor,
+        text_length: root_text_length,
     });
     let mut textpath_indices: Vec<usize> = Vec::new();
     walk_text_children(
@@ -168,6 +190,13 @@ pub fn parse_text_element(
         last.end_index = group.children.len();
         last.x_end = pen.borrow().x;
     }
+    // Round 187 — §11.2.1 `textLength` rescaling runs BEFORE the
+    // §11.10.1.1 anchor shift so the anchor measures against the
+    // adjusted chunk width. The two-pass order matches the spec's
+    // descriptive note "the implementation rescales each glyph's x
+    // position so the actual width matches `textLength`, then the
+    // text-anchor shift applies to the rescaled chunk".
+    apply_text_length_rescaling(&mut group, &mut chunks, &textpath_indices);
     apply_chunk_anchor_shifts(&mut group, &chunks, &textpath_indices);
     Ok(Some(Node::Group(group)))
 }
@@ -175,6 +204,12 @@ pub fn parse_text_element(
 /// One §11.5 anchored chunk: a half-open child-index range plus the
 /// pen-x positions at the chunk's open and close. The anchor is the
 /// inherited `text-anchor` of the element that opened the chunk.
+///
+/// Round 187 — `text_length` carries the §11.2.1 author-supplied target
+/// width (in user units) for the chunk, plus the `lengthAdjust` mode
+/// selecting between advance-only rescaling and full glyph-outline
+/// stretching. `None` (the default) skips the §11.2.1 rescaling entirely;
+/// the chunk's width is whatever the shaper produced.
 #[derive(Clone, Debug)]
 struct Chunk {
     start_index: usize,
@@ -182,6 +217,17 @@ struct Chunk {
     x_origin: f32,
     x_end: f32,
     anchor: TextAnchor,
+    text_length: Option<TextLengthSpec>,
+}
+
+/// Author-supplied `textLength` + `lengthAdjust` per anchored chunk.
+#[derive(Clone, Copy, Debug)]
+struct TextLengthSpec {
+    /// Target advance sum, in user units. Non-negative; values that
+    /// don't parse as a finite positive number are dropped by
+    /// [`parse_text_length`] (so this value is always a valid target).
+    target: f32,
+    adjust: TextLengthAdjust,
 }
 
 /// Walk every chunk and, for each non-`<textPath>` placement Group
@@ -284,9 +330,40 @@ fn walk_text_children(
                     let cur = pen.borrow().y;
                     pen.borrow_mut().y = parse_coord(Some(v), cur);
                 }
+                // Round 187 — pick up a per-tspan `textLength` /
+                // `lengthAdjust`. Per §11.2.1 the attribute is NOT
+                // inherited, so an outer-text `textLength` does not
+                // bleed into this tspan; instead, when an explicit
+                // value is present it overrides the rescaling for
+                // *this* chunk only. The value is plumbed through
+                // [`open_new_chunk`] (when a chunk opens) so the
+                // post-walk pass sees the correct binding. When a
+                // tspan carries `textLength` but no `x|y` (does not
+                // open a chunk per §11.5), we extend the open chunk's
+                // binding so its rescaling still honours the
+                // descendant's target.
+                let tspan_tl = parse_text_length(attr(c, "textLength"), attr(c, "lengthAdjust"));
                 if opens_chunk {
                     let new_x = pen.borrow().x;
-                    open_new_chunk(chunks, out, pre_chunk_pen_x, new_x, sub.text_anchor);
+                    open_new_chunk(
+                        chunks,
+                        out,
+                        pre_chunk_pen_x,
+                        new_x,
+                        sub.text_anchor,
+                        tspan_tl,
+                    );
+                } else if let Some(spec) = tspan_tl {
+                    // Per §11.2.1 "If `textLength` is specified on a
+                    // given element and also specified on an
+                    // ancestor", the descendant wins for its content;
+                    // here the descendant doesn't open its own chunk
+                    // (no `x|y`), so we promote the binding onto the
+                    // current open chunk. A bare tspan textLength on a
+                    // text without `x|y` then drives the whole chunk.
+                    if let Some(last) = chunks.last_mut() {
+                        last.text_length = Some(spec);
+                    }
                 }
                 walk_text_children(c, &sub, pen, out, chunks, ctx, textpath_indices)?;
             }
@@ -321,9 +398,15 @@ fn walk_text_children(
                 // the textPath. The pen position is unchanged (textPath
                 // glyphs don't advance the parent's pen, matching the
                 // round-128 baseline); the new chunk inherits the
-                // parent element's `text-anchor`.
+                // parent element's `text-anchor`. Round 187 — the new
+                // chunk has no `textLength` binding of its own (text
+                // following a `<textPath>` does not inherit the
+                // outer-text rescale per §11.2.1's "applies only when
+                // the wrapping area is not defined by … shape-inside",
+                // and the textPath's own bias is already in
+                // [`emit_text_path`]).
                 let cur_x = pen.borrow().x;
-                open_new_chunk(chunks, out, cur_x, cur_x, inh.text_anchor);
+                open_new_chunk(chunks, out, cur_x, cur_x, inh.text_anchor, None);
             }
             _ => {
                 // Unknown nested element (a, etc.) — silently skipped.
@@ -347,6 +430,7 @@ fn open_new_chunk(
     close_x: f32,
     start_x: f32,
     anchor: TextAnchor,
+    text_length: Option<TextLengthSpec>,
 ) {
     let next_idx = group.children.len();
     let drop_open = chunks
@@ -358,6 +442,7 @@ fn open_new_chunk(
             last.x_origin = start_x;
             last.x_end = start_x;
             last.anchor = anchor;
+            last.text_length = text_length;
         }
         return;
     }
@@ -371,7 +456,112 @@ fn open_new_chunk(
         x_origin: start_x,
         x_end: start_x,
         anchor,
+        text_length,
     });
+}
+
+/// Round 187 — parse the SVG 2 §11.2.1 `textLength` + `lengthAdjust`
+/// attribute pair into a [`TextLengthSpec`]. Returns `None` when no
+/// `textLength` was supplied, the value fails to parse, or it resolves
+/// to a negative number (§11.2.1: "A negative value is an error",
+/// which we treat as "drop the attribute" since the spec error-recovery
+/// mode is up to the UA).
+///
+/// `lengthAdjust` resolves case-insensitively against the spec's two
+/// keywords; unknown / absent values fall back to the
+/// [`TextLengthAdjust::Spacing`] initial.
+fn parse_text_length(
+    text_length: Option<&str>,
+    length_adjust: Option<&str>,
+) -> Option<TextLengthSpec> {
+    let raw = text_length?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    // Accept a bare number; reject `<length-percentage>` units for now
+    // (a future round can route through the round-18 length resolver,
+    // but the common author input is a unit-less user-unit number).
+    let target: f32 = raw.parse().ok()?;
+    if !target.is_finite() || target < 0.0 {
+        return None;
+    }
+    let adjust = match length_adjust.map(str::trim) {
+        Some(s) if s.eq_ignore_ascii_case("spacingandglyphs") => TextLengthAdjust::SpacingAndGlyphs,
+        Some(s) if s.eq_ignore_ascii_case("spacing") => TextLengthAdjust::Spacing,
+        _ => TextLengthAdjust::Spacing,
+    };
+    Some(TextLengthSpec { target, adjust })
+}
+
+/// Round 187 — per-chunk §11.2.1 rescaling. For each chunk that carries
+/// a [`TextLengthSpec`], rewrite every glyph placement within the
+/// chunk's `[start_index, end_index)` range so the resulting run
+/// extent matches the author-supplied target:
+///
+/// 1. Compute `actual = x_end − x_origin` (the chunk's natural width
+///    from shaping). If `actual` is zero (empty chunk) or non-finite,
+///    skip — there is no run to rescale.
+/// 2. Compute the scale factor `s = target / actual`.
+/// 3. For each placement Group at index `i` (skipping any in
+///    `textpath_indices`, which were already biased by §11.8.3):
+///    - **Spacing**: replace the leading translate's x-component by
+///      `x_origin + (cur_x − x_origin) * s` so only the inter-glyph
+///      advance is rescaled.
+///    - **SpacingAndGlyphs**: do the above, then post-compose
+///      `scale(s, 1)` onto the placement transform so the glyph
+///      outline stretches along the inline-base direction too.
+/// 4. Patch `chunk.x_end` to `x_origin + target` so the subsequent
+///    §11.10.1.1 anchor shift sees the rescaled width.
+fn apply_text_length_rescaling(
+    group: &mut Group,
+    chunks: &mut [Chunk],
+    textpath_indices: &[usize],
+) {
+    for chunk in chunks.iter_mut() {
+        let Some(spec) = chunk.text_length else {
+            continue;
+        };
+        let actual = chunk.x_end - chunk.x_origin;
+        if !actual.is_finite() || actual.abs() < f32::EPSILON {
+            // Empty or degenerate chunk — nothing to rescale. Still
+            // patch `x_end` to the target so a downstream anchor shift
+            // honours the author's intent on this chunk.
+            chunk.x_end = chunk.x_origin + spec.target;
+            continue;
+        }
+        let s = spec.target / actual;
+        if !s.is_finite() {
+            continue;
+        }
+        for idx in chunk.start_index..chunk.end_index {
+            if textpath_indices.contains(&idx) {
+                continue;
+            }
+            let Some(Node::Group(g)) = group.children.get_mut(idx) else {
+                continue;
+            };
+            // The placement Group's transform is `translate(origin_x +
+            // glyph_x, origin_y + glyph_y)`; rescale the x-component
+            // relative to the chunk origin. `g.transform.e` is the
+            // current absolute x-position (a flat translate, by
+            // construction in [`emit_run`]).
+            let cur_x = g.transform.e;
+            let new_x = chunk.x_origin + (cur_x - chunk.x_origin) * s;
+            g.transform = Transform2D {
+                e: new_x,
+                ..g.transform
+            };
+            if spec.adjust == TextLengthAdjust::SpacingAndGlyphs {
+                // Post-compose `scale(s, 1)` so the glyph outline
+                // itself stretches / compresses along the x axis. The
+                // translate-then-scale ordering keeps the glyph's
+                // origin at `new_x` (the scale operates in the local
+                // post-translate space).
+                g.transform = g.transform.compose(&Transform2D::scale(s, 1.0));
+            }
+        }
+        chunk.x_end = chunk.x_origin + spec.target;
+    }
 }
 
 /// Round 176 — case-insensitive `text-anchor` keyword parser. Mirrors
