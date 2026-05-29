@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5](https://github.com/OxideAV/oxideav-svg/compare/v0.1.4...v0.1.5) - 2026-05-29
+
+### Added
+
+- round 187 — SVG 2 §11.2.1 textLength + lengthAdjust on <text> / <tspan>
+- round 176 — SVG 2 §11.5 anchored-chunk boundaries on <tspan x=…>
+- round 172 — SVG 2 §11.10.1.1 text-anchor property
+- round 128 — SVG 2 §11.8 <textPath> text-on-path layout
+- round 125 — SVG 1.1 §19.2.14 <animateMotion> snapshot evaluator
+- round 118 — SVG 1.1 §11.5 display + visibility properties
+
+### Other
+
+- round 122: SVG 2 §5.8 <title> / <desc> + §5.9 <metadata> capture
+
 ### Added
 
 - **Round 187** — SVG 2 §11.2.1 `textLength` + `lengthAdjust` on
