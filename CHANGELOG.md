@@ -9,6 +9,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 176** — SVG 2 §11.5 anchored-chunk boundaries on
+  `<tspan x=…>` / `<tspan y=…>`.
+  - The text walker now splits a `<text>` element's run at every
+    absolute positioning adjustment on a `<tspan>` (an explicit `x=`
+    or `y=` attribute), per §11.5's "an absolute positioning
+    adjustment opens a new anchored chunk". Each chunk records its
+    own `[start_index, end_index)` over the parent Group's children,
+    the pen-x at chunk-open, the pen-x at chunk-close, and the
+    `text-anchor` inherited at the chunk-opening element.
+  - The §11.10.1.1 shift (`0` / `-extent/2` / `-extent` for
+    `start` / `middle` / `end`) is now applied **per chunk** rather
+    than once across the whole element. Round 172's
+    `apply_chunk_anchor_shifts` pass walks every recorded chunk and
+    rewrites glyph placements within its index range, skipping the
+    parallel `<textPath>` index set (whose §11.8.3 bias has already
+    been applied inline by `emit_text_path`).
+  - A `<tspan>` may carry its own `text-anchor=` keyword (case-
+    insensitive, with `inherit` / unknowns keeping the parent's
+    value); the new chunk it opens uses that override rather than
+    inheriting the root `<text>`'s anchor.
+  - Relative pen nudges (`dx=` / `dy=` on a `<tspan>`) explicitly
+    do **not** open a chunk — both pieces stay in the same anchored
+    chunk and a single §11.10.1.1 shift covers the whole run.
+  - A `<textPath>` element closes the surrounding chunk before its
+    first glyph and opens a fresh chunk for any sibling content that
+    follows (§11.8 "an embedded textPath always creates an anchored-
+    chunk boundary"). The textPath's own glyphs remain in the skip
+    set so the outer per-chunk pass does not double-bias them.
+  - Five new tests in `tests/round176_text_chunk.rs` verify: two
+    `<tspan x=…>` form two independent end-anchored chunks ~300 px
+    apart; the per-chunk layout matches the equivalent two-`<text>`
+    decomposition; `dx`-only `<tspan>` stays in a single chunk;
+    `<tspan>` `text-anchor=` overrides are honoured per chunk; and
+    three chunks shift independently with no accumulation.
+
 - **Round 172** — SVG 2 §11.10.1.1 `text-anchor` property
   (`start | middle | end`).
   - New [`crate::element::TextAnchor`] enum (initial `Start` per the

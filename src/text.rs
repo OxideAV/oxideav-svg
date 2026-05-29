@@ -111,15 +111,19 @@ fn current_resolver() -> Option<&'static FontResolver> {
 /// pen position that starts at the text's `(x, y)`. Returns the
 /// wrapped Group node.
 ///
-/// Round 172 — after the walk, the SVG 2 §11.10.1.1 `text-anchor` shift
-/// is applied to every glyph emitted into the chunk. The chunk's pre-
-/// anchor x extent is `pen.x − x` (round-2 has one chunk per `<text>`
-/// because we don't yet support multi-x `<tspan>` chunk boundaries);
-/// `start` keeps the shift at 0, `middle` shifts by `-extent/2`, `end`
-/// shifts by `-extent`. `<textPath>` children opt out of the shared
-/// shift — they apply their own §11.8.3 bias inline via `emit_text_path`,
-/// since the shift biases the start-point-on-the-path rather than a
-/// post-hoc x translation.
+/// Round 176 — SVG 2 §11.5 text-chunk boundaries. Each new absolute
+/// positioning adjustment on a `<tspan x=…>` (or `<tspan y=…>`) starts a
+/// fresh anchored chunk; the §11.10.1.1 `text-anchor` shift now applies
+/// per chunk rather than once across the whole `<text>` element. Within
+/// each chunk the round-172 rule is unchanged: `start` shifts by `0`,
+/// `middle` by `-extent / 2`, `end` by `-extent`, where `extent` is the
+/// chunk's accumulated x-advance. The chunk's effective anchor is the
+/// inherited `text-anchor` resolved at the element that opened the
+/// chunk — the root `<text>` for the first chunk, the chunk-starting
+/// `<tspan>` for subsequent chunks. `<textPath>` children stay outside
+/// any open chunk (they have their own §11.8.3 bias) and the next sibling
+/// after a `<textPath>` opens a new chunk per §11.8 (an embedded
+/// textPath always creates an anchored-chunk boundary).
 pub fn parse_text_element(
     el: &Element,
     state: &PaintState,
@@ -135,56 +139,77 @@ pub fn parse_text_element(
         font_family,
         font_size,
         fill: state,
+        text_anchor: state.text_anchor,
     };
 
     let mut group = Group::default();
-    // Track child indices that belong to the chunk so the §11.10.1.1
-    // text-anchor shift can rewrite their transforms after the walk.
-    // `<textPath>` glyphs land in the same `group` but exit the chunk
-    // (they're stamped with their own path-relative placement), so the
-    // walker pushes their indices into a parallel skip-set.
-    let chunk_start_index = group.children.len();
+    let mut chunks: Vec<Chunk> = Vec::new();
+    // The root `<text>` opens the first chunk at its `(x, y)` origin with
+    // the inherited `text-anchor`.
+    chunks.push(Chunk {
+        start_index: group.children.len(),
+        end_index: 0, // patched once children land
+        x_origin: x,
+        x_end: x,
+        anchor: state.text_anchor,
+    });
     let mut textpath_indices: Vec<usize> = Vec::new();
     walk_text_children(
         el,
         &inheritance,
         &pen,
         &mut group,
+        &mut chunks,
         ctx,
         &mut textpath_indices,
     )?;
-    // Compute pre-anchor chunk extent and apply the shift in place.
-    // The chunk's geometric extent is `pen.x − x` for round 172's
-    // single-chunk model (any author-supplied `<tspan x=…>` would start
-    // a new chunk per §11.5; the current walker simply moves the pen,
-    // which approximates the chunk-boundary semantics for the common
-    // case of one `<text>` = one chunk).
-    let extent = pen.borrow().x - x;
-    let shift = match state.text_anchor {
-        TextAnchor::Start => 0.0,
-        TextAnchor::Middle => -extent * 0.5,
-        TextAnchor::End => -extent,
-    };
-    if shift.abs() > 0.0 {
-        for (idx, child) in group
-            .children
-            .iter_mut()
-            .enumerate()
-            .skip(chunk_start_index)
-        {
+    // Close the final chunk at the current pen position.
+    if let Some(last) = chunks.last_mut() {
+        last.end_index = group.children.len();
+        last.x_end = pen.borrow().x;
+    }
+    apply_chunk_anchor_shifts(&mut group, &chunks, &textpath_indices);
+    Ok(Some(Node::Group(group)))
+}
+
+/// One §11.5 anchored chunk: a half-open child-index range plus the
+/// pen-x positions at the chunk's open and close. The anchor is the
+/// inherited `text-anchor` of the element that opened the chunk.
+#[derive(Clone, Debug)]
+struct Chunk {
+    start_index: usize,
+    end_index: usize,
+    x_origin: f32,
+    x_end: f32,
+    anchor: TextAnchor,
+}
+
+/// Walk every chunk and, for each non-`<textPath>` placement Group
+/// within it, prepend the §11.10.1.1 shift. `start` is a zero shift so
+/// the loop early-exits for that case without rewriting transforms.
+fn apply_chunk_anchor_shifts(group: &mut Group, chunks: &[Chunk], textpath_indices: &[usize]) {
+    for chunk in chunks {
+        let extent = chunk.x_end - chunk.x_origin;
+        let shift = match chunk.anchor {
+            TextAnchor::Start => 0.0,
+            TextAnchor::Middle => -extent * 0.5,
+            TextAnchor::End => -extent,
+        };
+        if shift.abs() == 0.0 {
+            continue;
+        }
+        for idx in chunk.start_index..chunk.end_index {
             if textpath_indices.contains(&idx) {
                 continue;
             }
-            if let Node::Group(g) = child {
-                // Each emitted glyph is wrapped in a placement Group
-                // whose transform is `translate(origin_x + glyph_x,
-                // origin_y + glyph_y)`. A pure x-translate composes by
-                // adding to `e`.
+            if let Some(Node::Group(g)) = group.children.get_mut(idx) {
+                // The placement Group's transform is `translate(origin_x
+                // + glyph_x, origin_y + glyph_y)`; a pure x-translate
+                // composes by adding to `e`.
                 g.transform = Transform2D::translate(shift, 0.0).compose(&g.transform);
             }
         }
     }
-    Ok(Some(Node::Group(group)))
 }
 
 #[derive(Clone, Debug)]
@@ -198,13 +223,20 @@ struct TextInheritance<'a> {
     font_family: String,
     font_size: f32,
     fill: &'a PaintState,
+    /// Round 176 — the inherited `text-anchor` snapshot taken at the
+    /// current element. Used when a `<tspan x=…>` opens a new §11.5
+    /// chunk so the chunk picks up its element's own anchor (not the
+    /// root `<text>`'s) when computing the §11.10.1.1 shift.
+    text_anchor: TextAnchor,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn walk_text_children(
     el: &Element,
     inh: &TextInheritance<'_>,
     pen: &RefCell<Pen>,
     out: &mut Group,
+    chunks: &mut Vec<Chunk>,
     ctx: &ParseContext,
     textpath_indices: &mut Vec<usize>,
 ) -> Result<()> {
@@ -221,6 +253,13 @@ fn walk_text_children(
                 if let Some(v) = attr(c, "font-size") {
                     sub.font_size = parse_coord(Some(v), inh.font_size);
                 }
+                // Round 176 — honour an inline `text-anchor=` override
+                // on the `<tspan>` so an absolute-positioned span can
+                // open its chunk with its own anchor. Unknown / absent
+                // values inherit unchanged from `inh`.
+                if let Some(v) = attr(c, "text-anchor") {
+                    sub.text_anchor = parse_text_anchor(v, inh.text_anchor);
+                }
                 let dx = parse_coord(attr(c, "dx"), 0.0);
                 let dy = parse_coord(attr(c, "dy"), 0.0);
                 {
@@ -228,13 +267,28 @@ fn walk_text_children(
                     p.x += dx;
                     p.y += dy;
                 }
+                // Round 176 — SVG 2 §11.5 anchored-chunk boundary. An
+                // explicit `x` or `y` on a `<tspan>` is an absolute
+                // positioning adjustment which closes the open chunk
+                // (at the pen-x reached so far) and starts a new one
+                // at the new pen position. `dx` / `dy` alone do NOT
+                // open a chunk (they're relative pen nudges that stay
+                // within the parent chunk).
+                let opens_chunk = attr(c, "x").is_some() || attr(c, "y").is_some();
+                let pre_chunk_pen_x = pen.borrow().x;
                 if let Some(v) = attr(c, "x") {
-                    pen.borrow_mut().x = parse_coord(Some(v), pen.borrow().x);
+                    let cur = pen.borrow().x;
+                    pen.borrow_mut().x = parse_coord(Some(v), cur);
                 }
                 if let Some(v) = attr(c, "y") {
-                    pen.borrow_mut().y = parse_coord(Some(v), pen.borrow().y);
+                    let cur = pen.borrow().y;
+                    pen.borrow_mut().y = parse_coord(Some(v), cur);
                 }
-                walk_text_children(c, &sub, pen, out, ctx, textpath_indices)?;
+                if opens_chunk {
+                    let new_x = pen.borrow().x;
+                    open_new_chunk(chunks, out, pre_chunk_pen_x, new_x, sub.text_anchor);
+                }
+                walk_text_children(c, &sub, pen, out, chunks, ctx, textpath_indices)?;
             }
             XmlNode::Element(c) if tag_local(&c.name) == "textpath" => {
                 // Round 128 — SVG 2 §11.8 `<textPath>`. The element's
@@ -244,15 +298,32 @@ fn walk_text_children(
                 // is `path=` > `href` > `xlink:href`. A missing /
                 // unresolvable path collapses to a no-op so the rest
                 // of the surrounding `<text>` still renders.
+                //
+                // Round 176 — per §11.5 a `<textPath>` element forms
+                // its own anchored-chunk boundary: the surrounding
+                // chunk closes before the textPath's first glyph and a
+                // fresh chunk opens for any sibling content that
+                // follows. The textPath's own glyphs are pushed to
+                // `textpath_indices` and therefore skipped by the
+                // chunk-anchor pass (they have already been biased
+                // per §11.8.3 by `emit_text_path` itself).
                 let before = out.children.len();
+                // Close the surrounding chunk just before the textPath.
+                if let Some(last) = chunks.last_mut() {
+                    last.end_index = before;
+                    last.x_end = pen.borrow().x;
+                }
                 emit_text_path(c, inh, out, ctx);
-                // Round 172 — record any glyphs the `<textPath>` just
-                // emitted so the outer `text-anchor` post-shift can
-                // skip them (they have already been biased per
-                // §11.8.3 by `emit_text_path` itself).
                 for i in before..out.children.len() {
                     textpath_indices.push(i);
                 }
+                // Reopen a chunk for any sibling content that follows
+                // the textPath. The pen position is unchanged (textPath
+                // glyphs don't advance the parent's pen, matching the
+                // round-128 baseline); the new chunk inherits the
+                // parent element's `text-anchor`.
+                let cur_x = pen.borrow().x;
+                open_new_chunk(chunks, out, cur_x, cur_x, inh.text_anchor);
             }
             _ => {
                 // Unknown nested element (a, etc.) — silently skipped.
@@ -260,6 +331,67 @@ fn walk_text_children(
         }
     }
     Ok(())
+}
+
+/// Close the currently-open chunk at `close_x` and append a fresh
+/// chunk starting at `(start_x, anchor)`. If the prior chunk emitted
+/// no glyphs (its `[start_index, end_index)` range is empty), it is
+/// replaced in-place — a `<text>` whose first child is a
+/// `<tspan x=…>` should not leave an empty leading chunk on the list.
+/// The new chunk's `end_index` is patched by the caller's outer
+/// close-out (or by the next chunk boundary) after its glyphs have
+/// been emitted.
+fn open_new_chunk(
+    chunks: &mut Vec<Chunk>,
+    group: &Group,
+    close_x: f32,
+    start_x: f32,
+    anchor: TextAnchor,
+) {
+    let next_idx = group.children.len();
+    let drop_open = chunks
+        .last()
+        .map(|c| c.start_index == next_idx)
+        .unwrap_or(false);
+    if drop_open {
+        if let Some(last) = chunks.last_mut() {
+            last.x_origin = start_x;
+            last.x_end = start_x;
+            last.anchor = anchor;
+        }
+        return;
+    }
+    if let Some(last) = chunks.last_mut() {
+        last.end_index = next_idx;
+        last.x_end = close_x;
+    }
+    chunks.push(Chunk {
+        start_index: next_idx,
+        end_index: 0,
+        x_origin: start_x,
+        x_end: start_x,
+        anchor,
+    });
+}
+
+/// Round 176 — case-insensitive `text-anchor` keyword parser. Mirrors
+/// the [`PaintState::apply_one`] branch so a `<tspan text-anchor=…>` is
+/// honoured even though the tspan walker doesn't run the full §11
+/// cascade for nested text descendants.
+fn parse_text_anchor(raw: &str, fallback: TextAnchor) -> TextAnchor {
+    let t = raw.trim();
+    if t.eq_ignore_ascii_case("start") {
+        TextAnchor::Start
+    } else if t.eq_ignore_ascii_case("middle") {
+        TextAnchor::Middle
+    } else if t.eq_ignore_ascii_case("end") {
+        TextAnchor::End
+    } else {
+        // `inherit` and any unrecognised keyword leave the cascade
+        // unchanged, matching the §11.5 `visibility` branch's lenient
+        // policy.
+        fallback
+    }
 }
 
 /// Concatenate the immediate text content (and content of nested

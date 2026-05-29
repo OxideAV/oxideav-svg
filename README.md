@@ -153,6 +153,48 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
+## Round 176 additions
+
+- **SVG 2 §11.5 anchored-chunk boundaries on `<tspan x=…>` /
+  `<tspan y=…>`.** Round 172 shipped a single anchored chunk per
+  `<text>` element; round 176 splits the run at every absolute-
+  positioning adjustment on a `<tspan>` and shifts each chunk
+  independently.
+  - The text walker maintains a `Vec<Chunk>` while descending into
+    `<text>`. Each `Chunk` records `[start_index, end_index)` into
+    the parent Group's children, the pen-x at chunk-open and
+    chunk-close (for computing the chunk's extent), and the
+    `text-anchor` inherited at the chunk-opening element. The root
+    `<text>` opens the first chunk at its `(x, y)`; every subsequent
+    `<tspan>` with an explicit `x=` or `y=` closes the open chunk
+    and opens a fresh one.
+  - **§11.10.1.1 shift is now per-chunk** — for each chunk,
+    `extent = x_end − x_origin` and the glyph placements inside its
+    index range receive an x-translate of `0` / `−extent/2` /
+    `−extent` for `start` / `middle` / `end`. The previous one-shift-
+    per-element behaviour from round 172 is now a special case (one
+    chunk).
+  - **`<tspan>` may carry its own `text-anchor=`** — case-insensitive,
+    with `inherit` / unknown tokens keeping the inherited value; the
+    chunk it opens uses that override rather than the root `<text>`'s
+    anchor.
+  - **Relative pen nudges (`dx=` / `dy=` only) do not open a chunk.**
+    Both pieces stay in the same anchored chunk and a single shift
+    covers the whole run.
+  - **`<textPath>` closes the surrounding chunk and reopens a fresh
+    one** (per §11.8 "an embedded textPath always creates an
+    anchored-chunk boundary"). The textPath's own glyphs remain in
+    the parallel skip-set so the outer per-chunk pass leaves them
+    alone — their §11.8.3 bias has already been applied inline by
+    `emit_text_path`.
+  - 5 layout tests in `tests/round176_text_chunk.rs` cover: two
+    `<tspan x=…>` form independent end-anchored chunks ~300 px
+    apart; the per-chunk layout matches the equivalent two-`<text>`
+    decomposition (proof that no extent accumulates across the
+    boundary); a `dx`-only `<tspan>` stays in a single chunk; a
+    `<tspan>`'s own `text-anchor=` override is honoured on its chunk;
+    three chunks shift independently with the expected ~300 px gaps.
+
 ## Round 172 additions
 
 - **SVG 2 §11.10.1.1 `text-anchor` property** (`start | middle | end`).
