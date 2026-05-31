@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Round 199** — SVG 2 §11.2 / §11.2.2 list-of-values on `x`, `y`,
+  `dx`, `dy` and `rotate` for `<text>` and `<tspan>` elements.
+  - Earlier rounds parsed only the first scalar of each attribute
+    (`x="10 50 100"` collapsed to `x=10`). Round 199 parses the full
+    list and applies the n-th value to the n-th character per the
+    §11.2.2 "n-th character" rule.
+  - `<tspan>` lists overlay onto document-wide per-character vectors
+    at the current character ordinal (a `<tspan x="100 200">` mid-
+    `<text>` seats its first two characters at exactly 100 and 200).
+  - `rotate` follows the §11.2.2 sticky-final rule: a list shorter
+    than the run's character count has its final supplied value
+    apply to every trailing character.
+  - Composes cleanly with rounds 176 (§11.5 chunk boundaries), 187
+    (§11.2.1 `textLength` rescale) and 172 (§11.10.1.1 `text-anchor`
+    shift). A `<tspan x="100 200">` still opens a fresh chunk via
+    the first list value, then places its remaining characters
+    within that chunk.
+  - Lenient list grammar (whitespace and / or single commas;
+    over-supplied tokens silently dropped; empty `rotate=""` is a
+    no-op).
+  - Whitespace runs (leading / trailing / inter-tspan source-format
+    whitespace) leave the pen unchanged, matching the round-2
+    `max_advance == 0 ⇒ pen.x = origin_x` rule.
+  - 9 integration tests in `tests/round199_text_per_char.rs`.
+
 ## [0.1.5](https://github.com/OxideAV/oxideav-svg/compare/v0.1.4...v0.1.5) - 2026-05-29
 
 ### Added

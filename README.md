@@ -153,6 +153,57 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
+## Round 199 additions
+
+- **SVG 2 §11.2 / §11.2.2 list-of-values on `x`, `y`, `dx`, `dy` and
+  `rotate`** for `<text>` and `<tspan>`. Earlier rounds parsed only
+  the first scalar of each attribute (so `x="10 50 100"` collapsed to
+  `x=10` and characters 2 and 3 advanced at the natural cadence);
+  round 199 parses the full list and applies the n-th supplied value
+  to the n-th character per the §11.2.2 "n-th character" rule.
+  - An absolute `x` / `y` slot seats the current text position for
+    that character (so the second character of `<text x="10 50">AB`
+    lands at `x=50` regardless of where `A` left the pen).
+  - A relative `dx` / `dy` slot is added to the current text position
+    BEFORE the character's glyph is placed; subsequent characters
+    advance from the nudged position.
+  - A `rotate` slot rotates the character's glyph about its origin.
+    Per §11.2.2 the final supplied `rotate` value "sticks" to every
+    trailing character with no slot of its own (so
+    `rotate="0 90 180"` on a 5-character run rotates char 2, 3 and 4
+    all by 180°).
+- **Document-wide character counter.** The five lists are layered into
+  per-character vectors shared across the whole `<text>` element, so a
+  `<tspan>`'s `x="100 200"` writes into slots `[char_offset,
+  char_offset + 2)` where `char_offset` is the count of characters
+  emitted so far in the enclosing `<text>`. A `<textPath>` body
+  bumps the counter by its own character count so a sibling `<tspan>`
+  after the textPath still lines up with its intended ordinal.
+- **Composes with rounds 176 / 187 / 172.** An absolute `x` / `y`
+  list on a `<tspan>` still opens a §11.5 anchored chunk (round 176)
+  using the FIRST list value; subsequent per-character values place
+  individual glyphs WITHIN the chunk without splitting it further.
+  The §11.10.1.1 `text-anchor` shift (round 172) and the §11.2.1
+  `textLength` rescaling (round 187) both fold over the
+  per-character-placed run unchanged.
+- **Lenient list grammar** — whitespace and / or single commas
+  separate values per the SVG generic list-of-numbers production;
+  empty tokens are skipped, unparseable prefixes are dropped, and a
+  list longer than the run's character count silently drops the
+  excess (no n-th character exists ⇒ no slot to apply).
+- **Whitespace runs leave the pen unchanged** — leading / trailing /
+  inter-tspan whitespace text in pretty-printed source no longer
+  inflates a chunk's extent (a regression risk uncovered while
+  adding per-character placement). Matches the round-2 `max_advance
+  == 0 ⇒ pen.x = origin_x` behaviour exactly.
+- 9 integration tests in `tests/round199_text_per_char.rs` cover each
+  of the five list attributes, the §11.2.2 sticky-final `rotate`
+  rule, the `<tspan>` overlay-at-current-ordinal layering, the
+  lenient list grammar (whitespace / comma / mixed), the
+  longer-than-run drop policy, the empty-`rotate=""` no-op, and the
+  composition with §11.5 chunk boundaries on a multi-value `<tspan
+  x>`.
+
 ## Round 187 additions
 
 - **SVG 2 §11.2.1 `textLength` + `lengthAdjust` on `<text>` /

@@ -64,6 +64,21 @@
 //! `textLength=300` shifts by `−150`, not by half of the un-adjusted
 //! glyph extent). Negative `textLength` is an error per the spec and is
 //! ignored.
+//!
+//! Round 199 — SVG 2 §11.2 / §11.2.2 list-of-values on `x`, `y`, `dx`,
+//! `dy`, and `rotate` for `<text>` and `<tspan>`. Earlier rounds only
+//! parsed the first scalar of each attribute; round 199 parses the
+//! full list and applies the n-th value to the n-th character per the
+//! §11.2.2 "n-th character" rule (with the §11.2.2 final-`rotate`-sticks
+//! rule for trailing characters). The lists are layered globally across
+//! the whole `<text>` element: a `<tspan>` whose `x="…"` (or any of the
+//! five) carries m values writes them into slots `[char_offset,
+//! char_offset + m)` of the document-wide vectors, where `char_offset`
+//! is the count of characters emitted so far. Absolute `x` / `y` values
+//! on `<tspan>` slots still open a §11.5 anchored chunk per round 176
+//! (so the per-chunk `text-anchor` shift composes with per-character
+//! placement). `<textPath>` content is excluded from the list-applied
+//! pass; §11.8.3's path-distance bias owns the placement instead.
 
 use std::cell::RefCell;
 use std::sync::OnceLock;
@@ -147,8 +162,17 @@ pub fn parse_text_element(
     state: &PaintState,
     ctx: &mut ParseContext,
 ) -> Result<Option<Node>> {
-    let x = parse_coord(attr(el, "x"), 0.0);
-    let y = parse_coord(attr(el, "y"), 0.0);
+    // Round 199 — accept lists-of-numbers per SVG 2 §11.2 / §11.2.2 on
+    // `x` / `y` / `dx` / `dy` / `rotate`. The first entry of `x` / `y`
+    // doubles as the text-origin (a missing list leaves the origin at
+    // 0,0 per spec).
+    let xs = parse_number_list_attr(attr(el, "x"));
+    let ys = parse_number_list_attr(attr(el, "y"));
+    let dxs = parse_number_list_attr(attr(el, "dx"));
+    let dys = parse_number_list_attr(attr(el, "dy"));
+    let rotates = parse_number_list_attr(attr(el, "rotate"));
+    let x = xs.first().copied().unwrap_or(0.0);
+    let y = ys.first().copied().unwrap_or(0.0);
     let font_size = parse_coord(attr(el, "font-size"), 16.0);
     let font_family = attr(el, "font-family").unwrap_or("sans-serif").to_string();
 
@@ -176,6 +200,29 @@ pub fn parse_text_element(
         text_length: root_text_length,
     });
     let mut textpath_indices: Vec<usize> = Vec::new();
+    // Round 199 — global per-character override vectors. Slot `i` is
+    // applied to the `i`-th character emitted by the `<text>` element.
+    // Initial slots populated from the root `<text>`'s list attributes;
+    // `<tspan>` descendants overlay additional values onto the same
+    // vectors starting at the current character ordinal.
+    //
+    // The first element of the root `xs` / `ys` is the text-origin
+    // (we've already seated `pen` at `(xs[0], ys[0])` above), so we
+    // do NOT replay it through the per-character pass. Replaying
+    // would mark the run as "carrying a per-char override" and skip
+    // the round-2 legacy pen-rewind, breaking the round-187
+    // `textLength` chunk-extent math which relies on the rewind.
+    let mut per_char = PerCharSpec::default();
+    if xs.len() > 1 {
+        per_char.merge_xs(1, &xs[1..]);
+    }
+    if ys.len() > 1 {
+        per_char.merge_ys(1, &ys[1..]);
+    }
+    per_char.merge_dxs(0, &dxs);
+    per_char.merge_dys(0, &dys);
+    per_char.merge_rotates(0, &rotates);
+    let mut char_counter: usize = 0;
     walk_text_children(
         el,
         &inheritance,
@@ -184,6 +231,8 @@ pub fn parse_text_element(
         &mut chunks,
         ctx,
         &mut textpath_indices,
+        &mut per_char,
+        &mut char_counter,
     )?;
     // Close the final chunk at the current pen position.
     if let Some(last) = chunks.last_mut() {
@@ -199,6 +248,95 @@ pub fn parse_text_element(
     apply_text_length_rescaling(&mut group, &mut chunks, &textpath_indices);
     apply_chunk_anchor_shifts(&mut group, &chunks, &textpath_indices);
     Ok(Some(Node::Group(group)))
+}
+
+/// SVG 2 §11.2 / §11.2.2 per-character override vectors. Slot `i`
+/// applies to the `i`-th character emitted by the enclosing `<text>`.
+/// Sparse semantics: `None` means "no override for this character"
+/// (the natural pen position / no rotation is used), `Some(v)` means
+/// the spec-defined per-character behaviour applies.
+///
+/// `rotate` follows the §11.2.2 sticky-final rule: if `rotates.len() <
+/// N` (the total number of characters), the final supplied value
+/// applies to every trailing character with no slot of its own.
+#[derive(Default, Debug)]
+struct PerCharSpec {
+    xs: Vec<Option<f32>>,
+    ys: Vec<Option<f32>>,
+    dxs: Vec<Option<f32>>,
+    dys: Vec<Option<f32>>,
+    rotates: Vec<Option<f32>>,
+}
+
+impl PerCharSpec {
+    fn merge_into(target: &mut Vec<Option<f32>>, char_offset: usize, values: &[f32]) {
+        if values.is_empty() {
+            return;
+        }
+        let end = char_offset + values.len();
+        if target.len() < end {
+            target.resize(end, None);
+        }
+        for (i, v) in values.iter().enumerate() {
+            target[char_offset + i] = Some(*v);
+        }
+    }
+
+    fn merge_xs(&mut self, char_offset: usize, values: &[f32]) {
+        Self::merge_into(&mut self.xs, char_offset, values);
+    }
+
+    fn merge_ys(&mut self, char_offset: usize, values: &[f32]) {
+        Self::merge_into(&mut self.ys, char_offset, values);
+    }
+
+    fn merge_dxs(&mut self, char_offset: usize, values: &[f32]) {
+        Self::merge_into(&mut self.dxs, char_offset, values);
+    }
+
+    fn merge_dys(&mut self, char_offset: usize, values: &[f32]) {
+        Self::merge_into(&mut self.dys, char_offset, values);
+    }
+
+    fn merge_rotates(&mut self, char_offset: usize, values: &[f32]) {
+        Self::merge_into(&mut self.rotates, char_offset, values);
+    }
+
+    /// §11.2.2 "n-th character" lookup. `None` means "use the running
+    /// pen position / no rotation"; `Some` means override.
+    fn x_at(&self, n: usize) -> Option<f32> {
+        self.xs.get(n).copied().flatten()
+    }
+
+    fn y_at(&self, n: usize) -> Option<f32> {
+        self.ys.get(n).copied().flatten()
+    }
+
+    fn dx_at(&self, n: usize) -> Option<f32> {
+        self.dxs.get(n).copied().flatten()
+    }
+
+    fn dy_at(&self, n: usize) -> Option<f32> {
+        self.dys.get(n).copied().flatten()
+    }
+
+    /// §11.2.2 sticky-final rule for `rotate`: if `n` is past the last
+    /// supplied value, the final supplied value applies. Empty list →
+    /// `None` (no rotation).
+    fn rotate_at(&self, n: usize) -> Option<f32> {
+        if self.rotates.is_empty() {
+            return None;
+        }
+        if let Some(Some(v)) = self.rotates.get(n) {
+            return Some(*v);
+        }
+        // Past the end → walk back to the most recent `Some`. The §11.2.2
+        // rule is "the final supplied value", which in our sparse
+        // representation is the last `Some` we ever set; trailing `None`
+        // slots (caused by an inner merge writing past the outer list)
+        // are bridged to that final value.
+        self.rotates.iter().rev().find_map(|v| *v)
+    }
 }
 
 /// One §11.5 anchored chunk: a half-open child-index range plus the
@@ -285,11 +423,13 @@ fn walk_text_children(
     chunks: &mut Vec<Chunk>,
     ctx: &ParseContext,
     textpath_indices: &mut Vec<usize>,
+    per_char: &mut PerCharSpec,
+    char_counter: &mut usize,
 ) -> Result<()> {
     for child in &el.children {
         match child {
             XmlNode::Text(t) => {
-                emit_run(t, inh, pen, out);
+                emit_run(t, inh, pen, out, per_char, char_counter);
             }
             XmlNode::Element(c) if tag_local(&c.name) == "tspan" => {
                 let mut sub = inh.clone();
@@ -306,29 +446,55 @@ fn walk_text_children(
                 if let Some(v) = attr(c, "text-anchor") {
                     sub.text_anchor = parse_text_anchor(v, inh.text_anchor);
                 }
-                let dx = parse_coord(attr(c, "dx"), 0.0);
-                let dy = parse_coord(attr(c, "dy"), 0.0);
-                {
-                    let mut p = pen.borrow_mut();
-                    p.x += dx;
-                    p.y += dy;
+                // Round 199 — parse the full list-of-values from each
+                // of `x` / `y` / `dx` / `dy` / `rotate` on the
+                // `<tspan>`. The lists overlay onto the document-wide
+                // per-character vectors starting at the current
+                // character ordinal so the per-character pass in
+                // [`emit_run`] can read them by character index.
+                let tspan_xs = parse_number_list_attr(attr(c, "x"));
+                let tspan_ys = parse_number_list_attr(attr(c, "y"));
+                let tspan_dxs = parse_number_list_attr(attr(c, "dx"));
+                let tspan_dys = parse_number_list_attr(attr(c, "dy"));
+                let tspan_rotates = parse_number_list_attr(attr(c, "rotate"));
+                let char_offset = *char_counter;
+                // The first element of a tspan's `x` / `y` list is the
+                // chunk-opening absolute position (we set `pen` to it
+                // below); the per-character pass should NOT replay it.
+                // Replaying would trip [`emit_run`]'s `saw_override`
+                // flag and bypass the round-2 pen-rewind, breaking
+                // the round-176 chunk-extent math and the round-187
+                // `textLength` rescale. Subsequent list entries are
+                // genuine per-character overrides and ARE merged.
+                if tspan_xs.len() > 1 {
+                    per_char.merge_xs(char_offset + 1, &tspan_xs[1..]);
                 }
+                if tspan_ys.len() > 1 {
+                    per_char.merge_ys(char_offset + 1, &tspan_ys[1..]);
+                }
+                per_char.merge_dxs(char_offset, &tspan_dxs);
+                per_char.merge_dys(char_offset, &tspan_dys);
+                per_char.merge_rotates(char_offset, &tspan_rotates);
                 // Round 176 — SVG 2 §11.5 anchored-chunk boundary. An
                 // explicit `x` or `y` on a `<tspan>` is an absolute
                 // positioning adjustment which closes the open chunk
                 // (at the pen-x reached so far) and starts a new one
                 // at the new pen position. `dx` / `dy` alone do NOT
                 // open a chunk (they're relative pen nudges that stay
-                // within the parent chunk).
-                let opens_chunk = attr(c, "x").is_some() || attr(c, "y").is_some();
+                // within the parent chunk). Round 199 — the per-char
+                // pass in [`emit_run`] consumes the slotted per-char
+                // dx/dy, so the legacy "pen += first-value of dx/dy"
+                // behaviour is now bundled into the per-character
+                // application path (no separate pen-update needed).
+                let opens_chunk = !tspan_xs.is_empty() || !tspan_ys.is_empty();
                 let pre_chunk_pen_x = pen.borrow().x;
-                if let Some(v) = attr(c, "x") {
-                    let cur = pen.borrow().x;
-                    pen.borrow_mut().x = parse_coord(Some(v), cur);
+                // For chunk-boundary bookkeeping the open uses the
+                // first value of each list (the §11.5 rule).
+                if let Some(&first_x) = tspan_xs.first() {
+                    pen.borrow_mut().x = first_x;
                 }
-                if let Some(v) = attr(c, "y") {
-                    let cur = pen.borrow().y;
-                    pen.borrow_mut().y = parse_coord(Some(v), cur);
+                if let Some(&first_y) = tspan_ys.first() {
+                    pen.borrow_mut().y = first_y;
                 }
                 // Round 187 — pick up a per-tspan `textLength` /
                 // `lengthAdjust`. Per §11.2.1 the attribute is NOT
@@ -365,7 +531,17 @@ fn walk_text_children(
                         last.text_length = Some(spec);
                     }
                 }
-                walk_text_children(c, &sub, pen, out, chunks, ctx, textpath_indices)?;
+                walk_text_children(
+                    c,
+                    &sub,
+                    pen,
+                    out,
+                    chunks,
+                    ctx,
+                    textpath_indices,
+                    per_char,
+                    char_counter,
+                )?;
             }
             XmlNode::Element(c) if tag_local(&c.name) == "textpath" => {
                 // Round 128 — SVG 2 §11.8 `<textPath>`. The element's
@@ -394,6 +570,12 @@ fn walk_text_children(
                 for i in before..out.children.len() {
                     textpath_indices.push(i);
                 }
+                // Round 199 — advance the document-wide character
+                // counter past the textPath's text content. Per §11.5
+                // the counter spans the whole `<text>` element so a
+                // `<tspan>` sibling after a `<textPath>` whose own
+                // per-character list applies from the correct ordinal.
+                *char_counter += collect_text_run(c).chars().count();
                 // Reopen a chunk for any sibling content that follows
                 // the textPath. The pen position is unchanged (textPath
                 // glyphs don't advance the parent's pen, matching the
@@ -458,6 +640,46 @@ fn open_new_chunk(
         anchor,
         text_length,
     });
+}
+
+/// Round 199 — parse an SVG list-of-numbers attribute (whitespace-
+/// and/or-comma-separated, with optional CSS unit suffixes per §6.3 of
+/// CSS Values L4). Returns an empty `Vec` for `None`, the empty
+/// string, or a value that contains no parseable number — keeping the
+/// "first value" fallback well-defined.
+///
+/// The parser is intentionally lenient: tokens that don't parse fall
+/// out of the result rather than aborting the whole list, matching
+/// SVG's general "tolerate garbage, take the prefix" policy. Unit
+/// suffixes (`px`, `em`, `%`) are consumed by [`element::parse_number`]
+/// but ignored: round 199 still treats every list entry as user units.
+fn parse_number_list_attr(s: Option<&str>) -> Vec<f32> {
+    let Some(raw) = s else {
+        return Vec::new();
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    // SVG 2 list separator: whitespace and/or a single comma per the
+    // generic list productions. We split on any run of ASCII
+    // whitespace or commas; empty fragments are discarded.
+    let mut out = Vec::new();
+    for tok in trimmed.split(|c: char| c.is_ascii_whitespace() || c == ',') {
+        let t = tok.trim();
+        if t.is_empty() {
+            continue;
+        }
+        // `parse_number` handles the longest-numeric-prefix policy and
+        // unit-suffix stripping (`12px`, `3.5em`, `50%`); we use NaN
+        // as the sentinel and drop tokens whose prefix doesn't parse.
+        if let Ok(v) = crate::element::parse_number(Some(t), f32::NAN) {
+            if v.is_finite() {
+                out.push(v);
+            }
+        }
+    }
+    out
 }
 
 /// Round 187 — parse the SVG 2 §11.2.1 `textLength` + `lengthAdjust`
@@ -781,49 +1003,208 @@ fn emit_text_path(el: &Element, inh: &TextInheritance<'_>, out: &mut Group, ctx:
     }
 }
 
-fn emit_run(text: &str, inh: &TextInheritance<'_>, pen: &RefCell<Pen>, out: &mut Group) {
+fn emit_run(
+    text: &str,
+    inh: &TextInheritance<'_>,
+    pen: &RefCell<Pen>,
+    out: &mut Group,
+    per_char: &PerCharSpec,
+    char_counter: &mut usize,
+) {
     let trimmed = text;
     if trimmed.is_empty() {
         return;
     }
     let chain = match current_resolver().and_then(|r| r(&inh.font_family, inh.font_size)) {
         Some(c) => c,
-        None => return,
+        None => {
+            // Even with no resolver we still advance the character
+            // counter so a sibling `<tspan>`'s per-character lists
+            // land at the right ordinal.
+            *char_counter += text.chars().count();
+            return;
+        }
     };
-    let glyphs = oxideav_scribe::Shaper::shape_to_paths(&chain, trimmed, inh.font_size);
-    let (origin_x, origin_y) = {
-        let p = pen.borrow();
-        (p.x, p.y)
+    // Shape the run once so we have per-glyph advance values; under
+    // §11.2.2 case 1 (single character ↔ single glyph) the n-th glyph
+    // corresponds to the n-th character. This is the common case for
+    // the bundled DejaVu Sans Mono fixture and for typical Latin
+    // input — the §11.2.2 "complex script" cases (ligature merging /
+    // accent decomposition) are deferred until the shaper exposes a
+    // character ↔ glyph cluster map.
+    let shaped = match chain.shape(trimmed, inh.font_size) {
+        Ok(g) => g,
+        Err(_) => {
+            *char_counter += text.chars().count();
+            return;
+        }
     };
-    // The fill from the inherited state — text defaults to black if
-    // unset (already encoded in PaintState::default).
+
     let fill = inh.fill.solid_fill_public();
-    let mut max_advance = 0.0_f32;
-    for (_face_idx, node, glyph_xform) in glyphs {
-        // glyph_xform is a translate(target_x, y_offset) in raster
-        // pixels relative to the run start. Add the text origin so the
-        // glyph lands at (origin_x + target_x, origin_y + y_offset).
-        let absolute = Transform2D::translate(origin_x, origin_y).compose(&glyph_xform);
-        // Re-paint the glyph with the inherited fill (scribe gives us
-        // black by default).
-        let painted = repaint_node(node, fill.clone());
-        // Wrap in a tiny group carrying the per-glyph transform.
-        out.children.push(Node::Group(Group {
-            transform: absolute,
-            children: vec![painted],
-            ..Group::default()
-        }));
-        if glyph_xform.e > max_advance {
-            max_advance = glyph_xform.e;
+    // Iterate characters and glyphs in lock-step. When the shaper
+    // returns fewer glyphs than characters (e.g. a soft-hyphen that
+    // shapes away), the extra characters still consume their slot of
+    // the per-character vectors but contribute no glyph.
+    let chars: Vec<char> = trimmed.chars().collect();
+    let n_chars = chars.len();
+    let n_glyphs = shaped.len();
+    let mut glyph_idx = 0;
+    // Round 199 — preserve the legacy round-2 inter-run pen convention
+    // (pen.x sits at the LAST emitted glyph's origin, not past it) for
+    // the common case where no per-character override applies on a
+    // run that only contains whitespace or only contributes glyphs to
+    // the START of a chunk. The round-176 §11.5 chunk-extent math
+    // and the round-2 `<tspan dx>`-overlap rule both rely on this
+    // legacy convention. We snapshot the pen-x at the moment of the
+    // last visible glyph's placement and only fold the final advance
+    // back in when a subsequent per-character override demands it.
+    let mut last_glyph_origin_x: Option<f32> = None;
+    // Round 199 — pen.x at run entry. Used to detect whitespace-only
+    // runs (no visible glyph emitted) so we can leave the outer pen
+    // unchanged on exit, mirroring the round-2
+    // `max_advance == 0 ⇒ pen.x = origin_x` behaviour.
+    let pen_x_on_entry = pen.borrow().x;
+    // Round 199 — was any per-character override seen during this
+    // run? If so, the legacy "pen at last-glyph origin" rewind is
+    // unsafe (it'd swallow a deliberate per-char x/y), so we keep
+    // the post-final-advance position.
+    let mut saw_override = false;
+    // §11.2 / §11.2.2 main loop.
+    for (i, _ch) in chars.iter().enumerate() {
+        let char_ord = *char_counter + i;
+        // Apply the §11.2.2 per-character pen overrides BEFORE
+        // emitting the character's glyph:
+        //   1. absolute `x` / `y` set the current text position;
+        //   2. relative `dx` / `dy` add to the current position.
+        // The order matches the spec's algorithm step in §11.5: an
+        // absolute override seats the pen, then a `dx` / `dy` on the
+        // same character nudges it further.
+        if let Some(x) = per_char.x_at(char_ord) {
+            pen.borrow_mut().x = x;
+            saw_override = true;
+        }
+        if let Some(y) = per_char.y_at(char_ord) {
+            pen.borrow_mut().y = y;
+            saw_override = true;
+        }
+        if let Some(dx) = per_char.dx_at(char_ord) {
+            pen.borrow_mut().x += dx;
+            saw_override = true;
+        }
+        if let Some(dy) = per_char.dy_at(char_ord) {
+            pen.borrow_mut().y += dy;
+            saw_override = true;
+        }
+
+        // Place the glyph (if any) at the current pen position. The
+        // per-character `rotate` is applied as a rotation about the
+        // glyph origin (the §11.2.2 wording: "the rotation value
+        // creates a temporary new rotated coordinate system, and the
+        // glyphs corresponding to the character are rendered into
+        // this rotated coordinate system").
+        let (origin_x, origin_y) = {
+            let p = pen.borrow();
+            (p.x, p.y)
+        };
+        if glyph_idx < n_glyphs {
+            let g_meta = &shaped[glyph_idx];
+            // Only emit a placement Group when the glyph has an
+            // outline. Whitespace / non-rendering glyphs (e.g. SPACE)
+            // still advance the pen but contribute no visible node,
+            // matching the round-2 [`shape_to_paths`] policy of
+            // `continue`-ing on a `None` glyph_node. Emitting an
+            // empty-group placement would otherwise show up as a
+            // translated identity child and break the round-176
+            // leftmost-glyph chunk-extent assertions.
+            let face = chain.face(g_meta.face_idx);
+            if let Some(node) = face.glyph_node(g_meta.glyph_id, inh.font_size) {
+                let rot_deg = per_char.rotate_at(char_ord).unwrap_or(0.0);
+                let mut placement = Transform2D::translate(origin_x, origin_y);
+                if rot_deg.abs() > 0.0 {
+                    placement = placement.compose(&Transform2D::rotate(rot_deg.to_radians()));
+                }
+                // Apply the glyph's intra-cluster y_offset (carries the
+                // baseline-vertical adjustment from shaping). The
+                // x_offset is rolled into the pen advance.
+                placement =
+                    placement.compose(&Transform2D::translate(g_meta.x_offset, g_meta.y_offset));
+                let painted = repaint_node(node, fill.clone());
+                out.children.push(Node::Group(Group {
+                    transform: placement,
+                    children: vec![painted],
+                    ..Group::default()
+                }));
+                // Snapshot the pen position at this glyph's origin so
+                // we can restore the legacy "pen sits at last-glyph
+                // origin" convention at the end of the run — preserves
+                // round-176 chunk-extent math.
+                last_glyph_origin_x = Some(pen.borrow().x);
+            }
+            // Advance the pen by this glyph's natural advance so the
+            // next character starts at the spec-correct position
+            // (unless overridden by the next character's `x` / `y`).
+            // Whitespace / non-rendering glyphs still advance.
+            pen.borrow_mut().x += g_meta.x_advance;
+            glyph_idx += 1;
         }
     }
-    // Advance the pen past the last glyph's pen position. (This is
-    // approximate — we don't know the last glyph's own advance from
-    // the public scribe API. A subsequent <tspan> with `dx=` corrects
-    // for the remaining advance; without `dx=` the next text run
-    // overlaps the last glyph slightly. Round 3 will switch to the
-    // round-7 `Shaper::shape` measurement API.)
-    pen.borrow_mut().x = origin_x + max_advance;
+    // Round 199 — end-of-run pen housekeeping:
+    //
+    // - If no visible glyph was emitted (the run was whitespace-only
+    //   or had no resolvable outlines), leave the outer pen UNCHANGED
+    //   from its entry value. Matches the round-2
+    //   `max_advance == 0 ⇒ pen.x = origin_x` behaviour and keeps
+    //   leading/trailing/inter-tspan whitespace from inflating chunk
+    //   extents.
+    // - If at least one visible glyph WAS emitted AND no
+    //   per-character override applied during the run, rewind the
+    //   pen to the LAST visible glyph's origin (the round-2
+    //   "1-advance-short" convention). A subsequent `<tspan dx>` or
+    //   `<tspan x>` re-seats the pen as appropriate.
+    // - If a per-character override DID apply, the post-final-advance
+    //   pen.x is left as-is so per-character placement (e.g. the
+    //   `<text x="0" y="50" font-family="mono">A<tspan x="100 200">…`
+    //   round-199 case) reaches the right ordinal for the next
+    //   sibling run.
+    match last_glyph_origin_x {
+        None => {
+            pen.borrow_mut().x = pen_x_on_entry;
+        }
+        Some(orig_x) if !saw_override => {
+            pen.borrow_mut().x = orig_x;
+        }
+        Some(_) => { /* leave pen at post-final-advance */ }
+    }
+    // If shaping produced more glyphs than characters (e.g. an accent
+    // decomposition), append the trailing glyphs at the running pen
+    // without per-character overrides — keeps the visual output
+    // approximately correct without misattributing list slots. As
+    // above, only render glyphs with outlines.
+    if glyph_idx < n_glyphs {
+        let (origin_x, origin_y) = {
+            let p = pen.borrow();
+            (p.x, p.y)
+        };
+        let mut local_pen = 0.0_f32;
+        for g_meta in shaped.iter().take(n_glyphs).skip(glyph_idx) {
+            let face = chain.face(g_meta.face_idx);
+            if let Some(node) = face.glyph_node(g_meta.glyph_id, inh.font_size) {
+                let placement = Transform2D::translate(
+                    origin_x + local_pen + g_meta.x_offset,
+                    origin_y + g_meta.y_offset,
+                );
+                let painted = repaint_node(node, fill.clone());
+                out.children.push(Node::Group(Group {
+                    transform: placement,
+                    children: vec![painted],
+                    ..Group::default()
+                }));
+            }
+            local_pen += g_meta.x_advance;
+        }
+        pen.borrow_mut().x = origin_x + local_pen;
+    }
+    *char_counter += n_chars;
 }
 
 fn repaint_node(node: Node, fill: Option<oxideav_core::Paint>) -> Node {
