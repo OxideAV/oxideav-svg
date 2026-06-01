@@ -213,6 +213,20 @@ pub struct PreservedExtras {
     /// embedded metadata blocks (Dublin Core, RDF, Inkscape /
     /// Sodipodi extensions in foreign namespaces, etc.).
     pub metadata: Vec<Element>,
+    /// Round 205 — SVG 2 §13.8 `paint-order` source-text bindings,
+    /// recorded per emitted shape so the encoder can re-emit
+    /// `paint-order="..."` on the matching `<path>` / `<rect>` /
+    /// `<circle>` / `<ellipse>` / `<line>` / `<polyline>` /
+    /// `<polygon>` element on round-trip.
+    ///
+    /// The decoder has already applied the §13.8 paint-operation
+    /// order to the scene graph (splitting fill+stroke into two
+    /// PathNodes when the stroke must paint first); this side-channel
+    /// preserves the **author's original keyword string** so a
+    /// `parse_svg_with_extras → write_svg_with_extras` cycle emits
+    /// the source-equivalent attribute. Populated only by
+    /// [`crate::decoder::parse_svg_with_extras`].
+    pub paint_orders: Vec<PaintOrderBinding>,
 }
 
 /// One captured animation child of a known-id parent element.
@@ -314,7 +328,23 @@ impl PreservedExtras {
             && self.titles.is_empty()
             && self.descs.is_empty()
             && self.metadata.is_empty()
+            && self.paint_orders.is_empty()
     }
+}
+
+/// Round 205 — one (scene-graph tree-path, author `paint-order`
+/// keyword string) pair. Same shape as [`PathLengthBinding`] but
+/// typed on the source-text payload (the scene graph has already
+/// applied the §13.8 paint-operation order during the decode, so
+/// the binding only needs to round-trip the source attribute).
+#[derive(Clone, Debug)]
+pub struct PaintOrderBinding {
+    /// Tree-path through the scene graph; matches the layout of
+    /// [`IdScenePath::path`].
+    pub path: Vec<usize>,
+    /// Author-supplied keyword string (e.g. `"stroke fill markers"`),
+    /// canonicalised to lowercase. Trimmed and whitespace-collapsed.
+    pub paint_order: String,
 }
 
 /// Round 122 — one captured `<title>` or `<desc>` element body. Per SVG
