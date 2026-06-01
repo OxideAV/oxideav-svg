@@ -153,6 +153,63 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
+## Round 205 additions
+
+- **SVG 2 §13.8 `paint-order` property**
+  (`normal | [ fill || stroke || markers ]`) on shapes.
+  - The §13.8 cascade lands on a new
+    [`crate::element::PaintOrder`] enum carried on
+    [`crate::element::PaintState`] (inherited; initial `Normal`).
+    Resolves through presentation attributes, inline `style="..."`,
+    and `<style>`-block rules via the existing round-4 cascade. The
+    spec rule "if any of the three keywords are omitted, they are
+    painted last, in the order they would be painted with
+    paint-order: normal" is honoured at parse time
+    (`PaintOrder::parse_custom` resolves `paint-order: stroke` to
+    `stroke fill markers`).
+  - **Scene-graph paint-operation order.** The round-1
+    `oxideav_core::PathNode` paints fill before stroke (the `normal`
+    case); when the resolved order would paint stroke BEFORE fill
+    (the canonical §13.8 example — stroked text where the stroke
+    must appear UNDER the fill), the shape branch splits into TWO
+    single-purpose `PathNode`s in a wrapping `Group` — a
+    stroke-only node first (`fill: None`), then a fill-only node
+    (`stroke: None`) — so the composited result honours the
+    requested order under the round-1 scene-graph model. `markers`
+    parses and round-trips but emits no node today
+    (`oxideav_core::Node` has no `Marker` variant — round 104
+    captures `<marker>` definitions; vertex-binding is a separate
+    follow-up).
+  - **Round-trip preservation.** New
+    [`crate::preserved::PaintOrderBinding`] +
+    [`crate::preserved::PreservedExtras::paint_orders`] side-channel
+    captures the canonicalised keyword string (lowercased,
+    whitespace collapsed, duplicates dropped) at the topmost emit
+    slot for each shape. A `<g paint-order="…">` ancestor records
+    on the group's own slot so the source representation survives a
+    `parse_svg_with_extras → write_svg_with_extras` cycle. The
+    encoder re-emits `paint-order=` on the matching shape on
+    round-trip.
+  - **§9.6.1 `pathLength` interplay.** When a shape carries both
+    `paint-order` (stroke-first split) and `pathLength`, the
+    round-21 pathLength binding targets the stroke-bearing
+    `PathNode` so the dasharray rescaling attaches to the path that
+    carries the stroke (`find_inner_path_subpath` picks the
+    fill-none / stroke-some child when a two-child group is
+    detected).
+  - 15 integration tests in `tests/round205_paint_order.rs` cover
+    the default-`normal` baseline, explicit `paint-order="normal"`,
+    the §13.8 example (`paint-order: stroke` → two-node split with
+    stroke-only first), explicit `stroke fill` and
+    `stroke fill markers` forms, the fill-first / markers-only
+    forms (no split), stroke-without-stroke and unknown-keyword
+    fallback to single-node emission, cascade resolution via a
+    `<g>` ancestor / inline `style=` / a `<style>`-block rule,
+    the `PreservedExtras::paint_orders` round-trip carrier (single
+    capture + re-emit + recapture), keyword-canonicalisation
+    (lowercase + duplicate-drop), and the no-binding-when-normal
+    policy.
+
 ## Round 199 additions
 
 - **SVG 2 §11.2 / §11.2.2 list-of-values on `x`, `y`, `dx`, `dy` and

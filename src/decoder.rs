@@ -20,8 +20,8 @@ use crate::parser::{
     Node as XmlNode,
 };
 use crate::preserved::{
-    AnimationFragment, DescriptiveBinding, IdScenePath, LinkBinding, PathLengthBinding,
-    PreservedExtras,
+    AnimationFragment, DescriptiveBinding, IdScenePath, LinkBinding, PaintOrderBinding,
+    PathLengthBinding, PreservedExtras,
 };
 
 /// Codec id string for SVG vector frames.
@@ -78,7 +78,7 @@ pub fn parse_svg_at_with_languages(
     let svg =
         find_svg_root(&nodes).ok_or_else(|| Error::invalid("SVG: missing <svg> root element"))?;
     let langs: Vec<String> = system_language.iter().map(|s| s.to_string()).collect();
-    let (frame, _, _, _, _, _) = parse_svg_root(svg, t_seconds, false, &langs)?;
+    let (frame, _, _, _, _, _, _) = parse_svg_root(svg, t_seconds, false, &langs)?;
     Ok(frame)
 }
 
@@ -110,13 +110,14 @@ pub fn parse_svg_with_extras(bytes: &[u8]) -> Result<(VectorFrame, PreservedExtr
     // `<view>` capture in [`collect_extras`] takes care of round-trip
     // emission; this pass populates the typed mirror keyed by id.
     collect_typed_views(svg, &mut extras.typed_views);
-    let (frame, id_paths, path_lengths, links, titles, descs) =
+    let (frame, id_paths, path_lengths, links, titles, descs, paint_orders) =
         parse_svg_root(svg, 0.0, true, &[])?;
     extras.id_paths = id_paths;
     extras.path_lengths = path_lengths;
     extras.links = links;
     extras.titles = titles;
     extras.descs = descs;
+    extras.paint_orders = paint_orders;
     Ok((frame, extras))
 }
 
@@ -261,6 +262,7 @@ type SvgRootParse = (
     Vec<LinkBinding>,
     Vec<DescriptiveBinding>,
     Vec<DescriptiveBinding>,
+    Vec<PaintOrderBinding>,
 );
 
 fn parse_svg_root(
@@ -419,6 +421,7 @@ fn parse_svg_root(
         ctx.links,
         ctx.titles,
         ctx.descs,
+        ctx.paint_orders,
     ))
 }
 

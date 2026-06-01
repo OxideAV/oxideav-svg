@@ -75,6 +75,13 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
     for entry in &extras.links {
         path_to_link.insert(entry.path.clone(), entry);
     }
+    // Round 205 — index `paint-order` side-channel bindings by
+    // scene-graph tree-path so `write_node` can re-emit
+    // `paint-order="..."` on the matching shape on round-trip.
+    let mut path_to_paint_order: HashMap<Vec<usize>, &str> = HashMap::new();
+    for entry in &extras.paint_orders {
+        path_to_paint_order.insert(entry.path.clone(), entry.paint_order.as_str());
+    }
     // Round 122 — index `<title>` / `<desc>` bindings (SVG 2 §5.8) by
     // their *parent* container's scene-graph tree-path so `write_node`
     // can re-emit them as the first children of the matching `<g>` on
@@ -247,6 +254,7 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
         &path_to_id,
         &path_to_path_length,
         &path_to_link,
+        &path_to_paint_order,
         &parent_to_titles,
         &parent_to_descs,
         &anim_by_parent,
@@ -465,6 +473,7 @@ fn write_group_children(
     path_to_id: &HashMap<Vec<usize>, String>,
     path_to_path_length: &HashMap<Vec<usize>, f32>,
     path_to_link: &HashMap<Vec<usize>, &LinkBinding>,
+    path_to_paint_order: &HashMap<Vec<usize>, &str>,
     parent_to_titles: &HashMap<Vec<usize>, &DescriptiveBinding>,
     parent_to_descs: &HashMap<Vec<usize>, &DescriptiveBinding>,
     anim_by_parent: &HashMap<String, Vec<&AnimationFragment>>,
@@ -482,6 +491,7 @@ fn write_group_children(
             path_to_id,
             path_to_path_length,
             path_to_link,
+            path_to_paint_order,
             parent_to_titles,
             parent_to_descs,
             anim_by_parent,
@@ -502,6 +512,7 @@ fn write_node(
     path_to_id: &HashMap<Vec<usize>, String>,
     path_to_path_length: &HashMap<Vec<usize>, f32>,
     path_to_link: &HashMap<Vec<usize>, &LinkBinding>,
+    path_to_paint_order: &HashMap<Vec<usize>, &str>,
     parent_to_titles: &HashMap<Vec<usize>, &DescriptiveBinding>,
     parent_to_descs: &HashMap<Vec<usize>, &DescriptiveBinding>,
     anim_by_parent: &HashMap<String, Vec<&AnimationFragment>>,
@@ -521,6 +532,10 @@ fn write_node(
     // `<a>` hyperlink (SVG 2 §16.5)? If so the `Node::Group` arm wraps
     // the emitted `<g>` in `<a href="…">…</a>`.
     let link_here: Option<&LinkBinding> = path_to_link.get(path_stack.as_slice()).copied();
+    // Round 205 — does this scene-graph position carry a recorded
+    // `paint-order` attribute (SVG 2 §13.8)? If so the corresponding
+    // shape emission carries `paint-order="..."` on round-trip.
+    let paint_order_here: Option<&str> = path_to_paint_order.get(path_stack.as_slice()).copied();
     let inline_anims: &[&AnimationFragment] = id_here
         .and_then(|id| anim_by_parent.get(id))
         .map(Vec::as_slice)
@@ -565,6 +580,15 @@ fn write_node(
                     out.push_str(&format!(" clip-path=\"url(#{})\"", escape_attr(id)));
                 }
             }
+            // Round 205 — SVG 2 §13.8 `paint-order` attribute. When
+            // the shape's outer-most emit site is a `<g>` (clip /
+            // mask / filter wrapper, or the round-205 split into two
+            // PathNodes), the source `paint-order=` lives on the
+            // wrapping group; the `<path>` arm below picks it up when
+            // the shape lands as a bare `<path>`.
+            if let Some(po) = paint_order_here {
+                out.push_str(&format!(" paint-order=\"{}\"", escape_attr(po)));
+            }
             out.push_str(">\n");
             // Round 122 — SVG 2 §5.8: emit captured `<title>` /
             // `<desc>` children of this group as the *first* children
@@ -593,6 +617,7 @@ fn write_node(
                 path_to_id,
                 path_to_path_length,
                 path_to_link,
+                path_to_paint_order,
                 parent_to_titles,
                 parent_to_descs,
                 anim_by_parent,
@@ -630,6 +655,16 @@ fn write_node(
             // Round 21 — re-emit the author's `pathLength` (SVG 2 §9.6.1).
             if let Some(pl) = path_length_here {
                 out.push_str(&format!(" pathLength=\"{}\"", trim_float(pl)));
+            }
+            // Round 205 — re-emit the author's `paint-order` keyword
+            // string (SVG 2 §13.8) when the shape's outer-most emit
+            // site is a bare `<path>`. The cascade has already
+            // arranged the scene-graph paint order (single PathNode
+            // for the `normal` / fill-first orders; a wrapping group
+            // with two single-purpose PathNodes for the stroke-first
+            // case) so this attribute is purely a round-trip carrier.
+            if let Some(po) = paint_order_here {
+                out.push_str(&format!(" paint-order=\"{}\"", escape_attr(po)));
             }
             if inline_anims.is_empty() {
                 out.push_str("/>\n");
@@ -686,6 +721,7 @@ fn write_node(
                 path_to_id,
                 path_to_path_length,
                 path_to_link,
+                path_to_paint_order,
                 parent_to_titles,
                 parent_to_descs,
                 anim_by_parent,
@@ -1204,6 +1240,7 @@ fn write_mask(
     let empty_path_to_id: HashMap<Vec<usize>, String> = HashMap::new();
     let empty_path_to_pl: HashMap<Vec<usize>, f32> = HashMap::new();
     let empty_path_to_link: HashMap<Vec<usize>, &LinkBinding> = HashMap::new();
+    let empty_path_to_paint_order: HashMap<Vec<usize>, &str> = HashMap::new();
     let empty_titles: HashMap<Vec<usize>, &DescriptiveBinding> = HashMap::new();
     let empty_descs: HashMap<Vec<usize>, &DescriptiveBinding> = HashMap::new();
     let empty_anims: HashMap<String, Vec<&AnimationFragment>> = HashMap::new();
@@ -1218,6 +1255,7 @@ fn write_mask(
         &empty_path_to_id,
         &empty_path_to_pl,
         &empty_path_to_link,
+        &empty_path_to_paint_order,
         &empty_titles,
         &empty_descs,
         &empty_anims,

@@ -57,6 +57,126 @@ pub enum TextAnchor {
     End,
 }
 
+/// Round 205 — SVG 2 §13.8 `paint-order` property
+/// (`normal | [ fill || stroke || markers ]`). Controls the order the
+/// three paint operations are applied to a shape or text-content
+/// element. Per §13.8:
+///
+/// * `normal` paints fill, then stroke, then markers.
+/// * Any combination of the three keywords paints them in the order
+///   given, left to right. Omitted keywords are appended in the
+///   `normal` order, so `paint-order: stroke` is equivalent to
+///   `paint-order: stroke fill markers`.
+///
+/// The property is **inherited** with initial value `normal`, and
+/// applies to shapes and text-content elements per the §13.8 attribute
+/// table.
+///
+/// `oxideav_core::Node` has no `Marker` variant — round 104 captured
+/// `<marker>` definitions for round-trip but the vertex-binding /
+/// rendering is deferred until core grows a `Marker` construct — so
+/// the markers slot of `paint-order` parses and round-trips but
+/// contributes no scene-graph node today.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum PaintOp {
+    #[default]
+    Fill,
+    Stroke,
+    Markers,
+}
+
+/// Round 205 — SVG 2 §13.8 `paint-order` resolved value. `Normal`
+/// reproduces the round-1 fill-then-stroke behaviour; `Custom` carries
+/// the resolved three-deep operation list (which the §13.8 algorithm
+/// always fills with three entries by appending omitted keywords in
+/// `normal` order).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum PaintOrder {
+    /// Initial value — fill, then stroke, then markers.
+    #[default]
+    Normal,
+    /// Resolved 3-tuple of paint operations in source order.
+    Custom(PaintOp, PaintOp, PaintOp),
+}
+
+impl PaintOrder {
+    /// Resolve the spec's "the three operations are painted in source
+    /// order; omitted keywords are appended in the normal order" rule
+    /// to a 3-tuple. Returns `None` if no recognised keywords are
+    /// present (caller treats as keep-inherited).
+    pub(crate) fn parse_custom(value: &str) -> Option<Self> {
+        // §13.8 grammar: `[ fill || stroke || markers ]`. Tokens are
+        // whitespace-separated; at most one of each keyword; unknown
+        // tokens are tolerated (they fall through silently the same
+        // way unknown `text-anchor` keywords do — keeps the document
+        // loading even on a typo).
+        let mut seen = [false; 3]; // index 0=Fill, 1=Stroke, 2=Markers
+        let mut order: Vec<PaintOp> = Vec::with_capacity(3);
+        for tok in value.split_ascii_whitespace() {
+            let op = if tok.eq_ignore_ascii_case("fill") {
+                PaintOp::Fill
+            } else if tok.eq_ignore_ascii_case("stroke") {
+                PaintOp::Stroke
+            } else if tok.eq_ignore_ascii_case("markers") {
+                PaintOp::Markers
+            } else {
+                // Unknown keyword — skip per the same tolerant policy
+                // the §11.10.1.1 text-anchor branch uses.
+                continue;
+            };
+            let i = match op {
+                PaintOp::Fill => 0,
+                PaintOp::Stroke => 1,
+                PaintOp::Markers => 2,
+            };
+            // Per §13.8 each keyword appears at most once; a duplicate
+            // is a syntax error per the CSS `||` combinator — drop
+            // subsequent occurrences silently.
+            if seen[i] {
+                continue;
+            }
+            seen[i] = true;
+            order.push(op);
+        }
+        if order.is_empty() {
+            return None;
+        }
+        // §13.8 — "If any of the three keywords are omitted, they are
+        // painted last, in the order they would be painted with
+        // paint-order: normal" — append fill, stroke, markers in that
+        // order for any not yet seen.
+        for (i, op) in [PaintOp::Fill, PaintOp::Stroke, PaintOp::Markers]
+            .iter()
+            .enumerate()
+        {
+            if !seen[i] {
+                order.push(*op);
+            }
+        }
+        Some(Self::Custom(order[0], order[1], order[2]))
+    }
+
+    /// Returns `true` when the resolved order would render the stroke
+    /// **before** the fill (the `paint-order: stroke …` case from the
+    /// §13.8 example). The non-trivial case for the scene graph today —
+    /// `Normal` and fill-first orders all reduce to the round-1
+    /// single-PathNode emission.
+    pub(crate) fn stroke_before_fill(&self) -> bool {
+        match self {
+            Self::Normal => false,
+            Self::Custom(a, b, c) => {
+                // Find positions of Fill and Stroke.
+                let pos =
+                    |op: PaintOp| -> Option<usize> { [a, b, c].iter().position(|x| **x == op) };
+                match (pos(PaintOp::Stroke), pos(PaintOp::Fill)) {
+                    (Some(s), Some(f)) => s < f,
+                    _ => false,
+                }
+            }
+        }
+    }
+}
+
 /// Round 187 — SVG 2 §11.2.1 `lengthAdjust` attribute on
 /// `<text>` / `<tspan>` (`spacing | spacingAndGlyphs`). Selects how a
 /// `textLength`-driven width adjustment is distributed across the run:
@@ -107,6 +227,16 @@ pub struct PaintState {
     /// Initial value `start`. Consumed by [`crate::text`] when laying
     /// glyphs for `<text>` / `<tspan>` / `<textPath>` runs.
     pub text_anchor: TextAnchor,
+    /// Round 205 — SVG 2 §13.8 `paint-order` (inherited).
+    /// Initial value `Normal` (fill, then stroke, then markers).
+    /// Consumed by the shape branch in
+    /// [`parse_element_to_node_ctx`] — when the resolved order would
+    /// paint the stroke before the fill, the shape emits two
+    /// single-purpose `PathNode`s in a wrapping `Group` so the scene
+    /// graph composites correctly under the round-1
+    /// `oxideav_core::Node::Path { fill, stroke }` model (which has
+    /// no built-in operation-order field).
+    pub paint_order: PaintOrder,
 }
 
 impl Default for PaintState {
@@ -132,6 +262,8 @@ impl Default for PaintState {
             visibility: Visibility::Visible,
             // §11.10.1.1 — initial value `start`.
             text_anchor: TextAnchor::Start,
+            // §13.8 — initial value `normal`.
+            paint_order: PaintOrder::Normal,
         }
     }
 }
@@ -301,6 +433,26 @@ impl PaintState {
                     s.text_anchor = TextAnchor::End;
                 } else {
                     // `inherit` or unrecognised — keep inherited value.
+                }
+            }
+            // Round 205 — SVG 2 §13.8 `paint-order`
+            // (`normal | [ fill || stroke || markers ]`). Inherited.
+            // `normal` (or `inherit`) keeps / resets to the initial.
+            // Otherwise resolve the keyword list per the §13.8 grammar
+            // — unknown / missing tokens are tolerated the same way
+            // the visibility / text-anchor branches handle them.
+            "paint-order" => {
+                let v = value.trim();
+                if v.is_empty() || v.eq_ignore_ascii_case("normal") {
+                    s.paint_order = PaintOrder::Normal;
+                } else if v.eq_ignore_ascii_case("inherit") {
+                    // Keep inherited value already in `s`.
+                } else if let Some(order) = PaintOrder::parse_custom(v) {
+                    s.paint_order = order;
+                } else {
+                    // No recognised keyword at all — fall back to the
+                    // initial value rather than failing the document.
+                    s.paint_order = PaintOrder::Normal;
                 }
             }
             // Round-4 CSS may carry properties we don't yet model
@@ -486,6 +638,20 @@ pub struct ParseContext {
     /// Round 122 — collected `(parent_scene_path, [<desc>])` bindings
     /// (SVG 2 §5.8). Same gate + layout as [`Self::titles`].
     pub descs: Vec<crate::preserved::DescriptiveBinding>,
+    /// Round 205 — SVG 2 §13.8 `paint-order` bindings collected during
+    /// the build walk. Populated only when the caller opted in via
+    /// [`crate::decoder::parse_svg_with_extras`] (same gate as
+    /// [`Self::track_id_paths`]). The encoder re-emits the source
+    /// attribute on the matching `<path>` / `<rect>` / `<circle>` /
+    /// `<ellipse>` / `<line>` / `<polyline>` / `<polygon>` on
+    /// round-trip.
+    pub paint_orders: Vec<crate::preserved::PaintOrderBinding>,
+    /// Round 205 — scratch slot for the shape branch to hand a
+    /// resolved `paint-order` keyword string over to the
+    /// wrapper-aware recorder that runs after `apply_referenced_defs`.
+    /// Always cleared at the end of each `parse_element_to_node_ctx`
+    /// call.
+    pub pending_paint_order: Option<String>,
     /// Round 118 — "next element is a `<use>` instance root" flag.
     /// SVG 1.1 §11.5: "setting display: none on a `<path>` element will
     /// prevent that element from getting rendered directly onto the
@@ -526,6 +692,8 @@ impl ParseContext {
             titles: Vec::new(),
             descs: Vec::new(),
             use_instance_root_pending: false,
+            paint_orders: Vec::new(),
+            pending_paint_order: None,
         }
     }
 
@@ -581,6 +749,20 @@ impl ParseContext {
         self.path_lengths.push(crate::preserved::PathLengthBinding {
             path: self.current_path.clone(),
             path_length,
+        });
+    }
+
+    /// Round 205 — record an author `paint-order` attribute against
+    /// the current scene-graph path (SVG 2 §13.8). Same `track_id_paths`
+    /// gate as the other side-channel recorders. The encoder re-emits
+    /// the matching shape with `paint-order="..."` on round-trip.
+    pub fn record_paint_order(&mut self, paint_order: String) {
+        if !self.track_id_paths {
+            return;
+        }
+        self.paint_orders.push(crate::preserved::PaintOrderBinding {
+            path: self.current_path.clone(),
+            paint_order,
         });
     }
 
@@ -1446,6 +1628,19 @@ pub fn parse_element_to_node_ctx(
             // viewport's. Restored after this branch returns.
             let saved_ctx = ctx.resolve_ctx;
             ctx.resolve_ctx = derive_child_ctx(el, mctx, &ctx.stylesheet, &saved_ctx);
+            // Round 205 — capture any `paint-order=` carried on the
+            // `<g>` itself so the round-trip preserves the attribute
+            // on the same emit site. A `<g paint-order="stroke">`
+            // cascades the property to every child shape's PaintState
+            // and the round-trip re-parse would otherwise capture it
+            // on each child shape redundantly; emitting it on the
+            // group matches the source-faithful round-trip per the
+            // round-13 id-path policy (emit on the topmost slot the
+            // source attribute lived on). The saved value is restored
+            // *after* the child walk because each child also goes
+            // through this drain slot.
+            let saved_pending_paint_order = ctx.pending_paint_order.take();
+            let group_paint_order = capture_paint_order_attr(el);
             let transform = match attr(el, "transform") {
                 Some(v) => parse_transform(v)?,
                 None => Transform2D::identity(),
@@ -1484,6 +1679,10 @@ pub fn parse_element_to_node_ctx(
             // Restore the parent's resolve context — em-cascade is
             // strictly per-subtree.
             ctx.resolve_ctx = saved_ctx;
+            // Round 205 — restore the outer pending slot, then layer
+            // the `<g>`'s own paint-order attribute (if any) so the
+            // outer drain attaches it to the group's emit site.
+            ctx.pending_paint_order = group_paint_order.or(saved_pending_paint_order);
             Some(Node::Group(group))
         }
         // Round 115 — SVG 2 §16.5 `<a>` hyperlink. The `<a>` element is
@@ -1752,12 +1951,66 @@ pub fn parse_element_to_node_ctx(
             // itself (not on a wrapping `<g transform=...>`).
             ctx.pending_path_length =
                 crate::path_length::apply_to_path_node(attr(el, "pathLength"), &path, &mut stroke);
-            let path_node = PathNode {
-                path,
-                fill,
-                stroke,
-                fill_rule: state.fill_rule,
-            };
+            // Round 205 — SVG 2 §13.8 `paint-order` round-trip
+            // capture. If the source `paint-order=` attribute was
+            // present (and parsed to a recognised non-normal value),
+            // stash the canonicalised keyword string for the outer
+            // wrapper-aware recorder to attach to the inner Path
+            // node's scene slot. The cascade may also resolve a
+            // non-normal paint-order via CSS or a `<g paint-order=…>`
+            // ancestor; we only round-trip the *attribute* literal so
+            // the source representation survives, matching the
+            // round-21 pathLength capture's "presentation attribute
+            // only" policy. Empty / `normal` / `inherit` are dropped.
+            ctx.pending_paint_order = capture_paint_order_attr(el);
+            // Round 205 — SVG 2 §13.8 `paint-order`. The round-1
+            // `PathNode { fill, stroke }` shape always paints fill
+            // BEFORE stroke (the §13.8 `normal` order); when the
+            // resolved property requests stroke BEFORE fill, split
+            // the shape into two single-purpose PathNodes inside a
+            // wrapping Group so the scene graph composites in the
+            // requested order. `markers` parses and round-trips but
+            // contributes no node here — `oxideav_core::Node` has no
+            // `Marker` variant yet, so a `paint-order: markers stroke
+            // fill` collapses to `paint-order: stroke fill` for the
+            // purpose of node emission (the markers slot is otherwise
+            // a no-op today, as documented at the
+            // [`crate::defs::MarkerDef`] capture site).
+            let inner_node =
+                if state.paint_order.stroke_before_fill() && fill.is_some() && stroke.is_some() {
+                    // Split: stroke-only PathNode painted first, fill-only
+                    // PathNode painted second. Both reference the same
+                    // geometric path; the stroke-only's `fill` is None so
+                    // the rasteriser does not double-paint the interior,
+                    // and the fill-only's `stroke` is None so the stroke
+                    // does not also re-paint on top.
+                    let stroke_node = PathNode {
+                        path: path.clone(),
+                        fill: None,
+                        stroke: stroke.clone(),
+                        fill_rule: state.fill_rule,
+                    };
+                    let fill_node = PathNode {
+                        path,
+                        fill,
+                        stroke: None,
+                        fill_rule: state.fill_rule,
+                    };
+                    Node::Group(Group {
+                        transform: Transform2D::identity(),
+                        opacity: 1.0,
+                        clip: None,
+                        children: vec![Node::Path(stroke_node), Node::Path(fill_node)],
+                        cache_key: None,
+                    })
+                } else {
+                    Node::Path(PathNode {
+                        path,
+                        fill,
+                        stroke,
+                        fill_rule: state.fill_rule,
+                    })
+                };
             // If element-level transform or opacity differs from
             // parent's, wrap in a tiny one-child group so the
             // round-trip preserves them.
@@ -1768,11 +2021,11 @@ pub fn parse_element_to_node_ctx(
                     transform: transform.unwrap_or_else(Transform2D::identity),
                     opacity: state.opacity,
                     clip: None,
-                    children: vec![Node::Path(path_node)],
+                    children: vec![inner_node],
                     cache_key: None,
                 })
             } else {
-                Node::Path(path_node)
+                inner_node
             };
             Some(inner)
         }
@@ -1823,7 +2076,60 @@ pub fn parse_element_to_node_ctx(
             ctx.current_path.truncate(save);
         }
     }
+    // Round 205 — drain the shape branch's pending `paint-order` (if
+    // any) and record it. We target the **outer-most wrapping** the
+    // shape produces — same emit site the round-13 `id_paths`
+    // recorder uses — because the encoder's existing `path_to_id`
+    // routing emits attributes on the topmost group / path it
+    // produces for a given shape. A subsequent round can split the
+    // paint-order out to the inner geometry path if that turns out
+    // to be more faithful, but the current emitter writes
+    // presentation attributes on the topmost node and the round-trip
+    // matches that contract.
+    if let Some(order) = ctx.pending_paint_order.take() {
+        ctx.record_paint_order(order);
+    }
     Ok(Some(wrapped))
+}
+
+/// Round 205 — extract a canonicalised `paint-order` attribute from
+/// `el` for round-trip preservation. Returns `Some(canonical)` when
+/// the attribute carries a recognised non-`normal` keyword list;
+/// returns `None` for an absent attribute, `normal`, `inherit`, or a
+/// payload that didn't parse to any recognised keyword. Canonical
+/// form lowercases the keywords, collapses whitespace to single
+/// spaces, and drops duplicate keywords (preserving first
+/// occurrence) per the §13.8 grammar.
+fn capture_paint_order_attr(el: &Element) -> Option<String> {
+    let raw = attr(el, "paint-order")?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case("normal")
+        || trimmed.eq_ignore_ascii_case("inherit")
+    {
+        return None;
+    }
+    let mut keywords: Vec<&'static str> = Vec::with_capacity(3);
+    let mut seen = [false; 3];
+    for tok in trimmed.split_ascii_whitespace() {
+        let (k, i) = if tok.eq_ignore_ascii_case("fill") {
+            ("fill", 0)
+        } else if tok.eq_ignore_ascii_case("stroke") {
+            ("stroke", 1)
+        } else if tok.eq_ignore_ascii_case("markers") {
+            ("markers", 2)
+        } else {
+            continue;
+        };
+        if !seen[i] {
+            seen[i] = true;
+            keywords.push(k);
+        }
+    }
+    if keywords.is_empty() {
+        return None;
+    }
+    Some(keywords.join(" "))
 }
 
 /// Round 21 — return the child-index sub-path from `root` down to the
@@ -1846,13 +2152,32 @@ fn find_inner_path_subpath(node: &Node) -> Option<Vec<usize>> {
         Node::Path(_) => Some(Vec::new()),
         Node::Group(g) => {
             // Single-child shape wrappers (the round-2/3 case) — descend.
-            // For multi-child groups we can't disambiguate, so bail.
+            // Round 205 — when the §13.8 paint-order split produces a
+            // two-child group (stroke-only then fill-only), target the
+            // stroke-bearing child so the §9.6.1 `pathLength` dash
+            // rescaling attaches to the path that carries the stroke.
+            // Otherwise (>= 2 children with no recognised paint-order
+            // shape) we can't disambiguate, so bail.
             if g.children.len() == 1 {
                 let inner = find_inner_path_subpath(&g.children[0])?;
                 let mut out = Vec::with_capacity(inner.len() + 1);
                 out.push(0);
                 out.extend(inner);
                 Some(out)
+            } else if g.children.len() == 2 {
+                if let (Node::Path(a), Node::Path(b)) = (&g.children[0], &g.children[1]) {
+                    let stroke_idx = if a.stroke.is_some() && a.fill.is_none() {
+                        Some(0)
+                    } else if b.stroke.is_some() && b.fill.is_none() {
+                        Some(1)
+                    } else {
+                        None
+                    };
+                    if let Some(i) = stroke_idx {
+                        return Some(vec![i]);
+                    }
+                }
+                None
             } else {
                 None
             }
