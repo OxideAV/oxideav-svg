@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.6](https://github.com/OxideAV/oxideav-svg/compare/v0.1.5...v0.1.6) - 2026-06-02
+
+### Added
+
+- round 209 — SVG 2 §8.13 vector-effect property + non-inherited cascade
+- round 205 — SVG 2 §13.8 paint-order property + scene-graph operation-order split
+- round 199 — SVG 2 §11.2 / §11.2.2 list-of-values on <text>/<tspan> x/y/dx/dy/rotate
+
 ### Added
 
 - **Round 209** — SVG 2 §8.13 `vector-effect` property
