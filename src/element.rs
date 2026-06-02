@@ -177,6 +177,135 @@ impl PaintOrder {
     }
 }
 
+/// Round 209 — SVG 2 §8.13 `vector-effect` keyword. Each keyword in a
+/// non-`none` `vector-effect` value selects one constrained-transform
+/// effect; the spec's `[ non-scaling-stroke | non-scaling-size |
+/// non-rotation | fixed-position ]+` grammar lets the author combine
+/// several (e.g. `non-scaling-size non-rotation`). The actual transform
+/// suppression happens in the renderer (`oxideav-raster`); this crate
+/// parses the keyword set, round-trips it, and exposes it on the
+/// resolved [`PaintState`] for downstream consumption.
+///
+/// Per SVG 2 §8.13 the spec WG flagged values other than
+/// `non-scaling-stroke` and `none` as at risk of being dropped from
+/// SVG 2 due to a lack of implementations (the issue 31 note in §8.13
+/// preamble). We model all four so the parse + round-trip is faithful
+/// to the spec grammar even if a future revision narrows the value
+/// set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VectorEffectKeyword {
+    NonScalingStroke,
+    NonScalingSize,
+    NonRotation,
+    FixedPosition,
+}
+
+/// Round 209 — SVG 2 §8.13 `vector-effect` host-coordinate-space
+/// suffix. The optional `[ viewport | screen ]?` half of the §8.13
+/// grammar names the host coordinate space the constrained
+/// transformations are evaluated against. Initial / absent → `Viewport`
+/// per the spec ("An initial value in case it is not specified is
+/// `viewport`").
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum VectorEffectHost {
+    /// Initial value per §8.13 — host coordinate space is the immediate
+    /// viewport coordinate system.
+    #[default]
+    Viewport,
+    /// Host coordinate space is the rootmost content's coordinate
+    /// system (the SVG-T 1.2 "screen coordinate space").
+    Screen,
+}
+
+/// Round 209 — SVG 2 §8.13 `vector-effect` resolved value.
+///
+/// * [`Self::None`] — initial value; the renderer applies the normal
+///   `CTM * (x, y)` coordinate transformation (SVG 1.1 behaviour).
+/// * [`Self::Custom`] — one or more effect keywords plus a host
+///   coordinate-space suffix. The keyword list is order-preserving and
+///   de-duplicated at parse time (each `[ … ]+` keyword may appear at
+///   most once per the CSS `|` combinator).
+///
+/// The property is **not inherited** (§8.13 attribute table:
+/// "Inherited: no") — descendants do not pick the value up from an
+/// ancestor `<g vector-effect=…>`. Applies to graphics elements and
+/// `<use>` per the §8.13 attribute table.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub enum VectorEffect {
+    /// Initial value per §8.13.
+    #[default]
+    None,
+    /// Resolved keyword list with the host coordinate-space suffix.
+    Custom {
+        keywords: Vec<VectorEffectKeyword>,
+        host: VectorEffectHost,
+    },
+}
+
+impl VectorEffect {
+    /// Resolve a non-`none` `vector-effect` payload per the §8.13
+    /// grammar: `[ non-scaling-stroke | non-scaling-size | non-rotation
+    /// | fixed-position ]+ [ viewport | screen ]?`. Returns `None`
+    /// when no recognised keyword is present (caller treats as
+    /// initial-value fallback).
+    pub(crate) fn parse_custom(value: &str) -> Option<Self> {
+        let mut keywords: Vec<VectorEffectKeyword> = Vec::with_capacity(4);
+        let mut seen = [false; 4]; // 0=NSStroke, 1=NSSize, 2=NRot, 3=FixedPos
+        let mut host: VectorEffectHost = VectorEffectHost::Viewport;
+        let mut host_seen = false;
+        for tok in value.split_ascii_whitespace() {
+            let (kw, idx) = if tok.eq_ignore_ascii_case("non-scaling-stroke") {
+                (VectorEffectKeyword::NonScalingStroke, 0)
+            } else if tok.eq_ignore_ascii_case("non-scaling-size") {
+                (VectorEffectKeyword::NonScalingSize, 1)
+            } else if tok.eq_ignore_ascii_case("non-rotation") {
+                (VectorEffectKeyword::NonRotation, 2)
+            } else if tok.eq_ignore_ascii_case("fixed-position") {
+                (VectorEffectKeyword::FixedPosition, 3)
+            } else if tok.eq_ignore_ascii_case("viewport") {
+                host = VectorEffectHost::Viewport;
+                host_seen = true;
+                continue;
+            } else if tok.eq_ignore_ascii_case("screen") {
+                host = VectorEffectHost::Screen;
+                host_seen = true;
+                continue;
+            } else {
+                // Unknown token — silently skip, matching the
+                // tolerant policy of `paint-order` / `text-anchor` /
+                // `visibility` so a future SVG keyword extension
+                // doesn't reject the whole document.
+                continue;
+            };
+            if !seen[idx] {
+                seen[idx] = true;
+                keywords.push(kw);
+            }
+        }
+        if keywords.is_empty() {
+            // No effect keyword — the §8.13 grammar requires at least
+            // one. A payload of just `viewport` / `screen` / unknown
+            // tokens is not a valid `vector-effect` value; caller
+            // treats as initial-value fallback (`None`).
+            let _ = host_seen;
+            return None;
+        }
+        Some(Self::Custom { keywords, host })
+    }
+
+    /// Returns `true` when the effect set contains `non-scaling-stroke`.
+    /// Convenience for downstream consumers that only care about the
+    /// most common (and only SVG-2-stable) variant.
+    pub fn has_non_scaling_stroke(&self) -> bool {
+        match self {
+            Self::None => false,
+            Self::Custom { keywords, .. } => {
+                keywords.contains(&VectorEffectKeyword::NonScalingStroke)
+            }
+        }
+    }
+}
+
 /// Round 187 — SVG 2 §11.2.1 `lengthAdjust` attribute on
 /// `<text>` / `<tspan>` (`spacing | spacingAndGlyphs`). Selects how a
 /// `textLength`-driven width adjustment is distributed across the run:
@@ -237,6 +366,15 @@ pub struct PaintState {
     /// `oxideav_core::Node::Path { fill, stroke }` model (which has
     /// no built-in operation-order field).
     pub paint_order: PaintOrder,
+    /// Round 209 — SVG 2 §8.13 `vector-effect` (NOT inherited).
+    /// Initial value [`VectorEffect::None`]. Applies to graphics
+    /// elements and `<use>` per the §8.13 attribute table; a
+    /// `<g vector-effect=…>` ancestor does NOT push the property to
+    /// child shapes (cf. the `display` reset in
+    /// [`Self::merged_with_mctx`]). The actual transform suppression
+    /// happens in `oxideav-raster`; this crate parses + round-trips
+    /// the property and exposes it on the resolved [`PaintState`].
+    pub vector_effect: VectorEffect,
 }
 
 impl Default for PaintState {
@@ -264,6 +402,8 @@ impl Default for PaintState {
             text_anchor: TextAnchor::Start,
             // §13.8 — initial value `normal`.
             paint_order: PaintOrder::Normal,
+            // §8.13 — initial value `none`.
+            vector_effect: VectorEffect::None,
         }
     }
 }
@@ -305,6 +445,13 @@ impl PaintState {
         // reach via a `<use>` of the inner element. `visibility` is
         // inherited, so it is left as cloned from `self`.
         s.display = true;
+        // Round 209 — `vector-effect` is NOT inherited (SVG 2 §8.13,
+        // Inherited: no). Reset to the initial value before the
+        // element's own `vector-effect` (if any) is applied below, so
+        // a child of a `<g vector-effect="non-scaling-stroke">` does
+        // NOT silently pick the property up from the ancestor — only
+        // an explicit `vector-effect=` on the child itself sets it.
+        s.vector_effect = VectorEffect::None;
         let el = mctx.el;
         // 1) presentation attributes from `el`.
         for (name, _) in &el.attrs {
@@ -453,6 +600,30 @@ impl PaintState {
                     // No recognised keyword at all — fall back to the
                     // initial value rather than failing the document.
                     s.paint_order = PaintOrder::Normal;
+                }
+            }
+            // Round 209 — SVG 2 §8.13 `vector-effect`
+            // (`none | [ non-scaling-stroke | non-scaling-size |
+            // non-rotation | fixed-position ]+ [ viewport | screen ]?`).
+            // NOT inherited (the reset above clears the field to the
+            // initial value before this loop runs). `inherit` is
+            // tolerated but, because the `merged_with_mctx` reset
+            // already cleared the inherited value, `inherit` produces
+            // the initial value (which is what a CSS-compliant UA
+            // would also produce when the inherited value is its own
+            // initial). Unknown / malformed payloads fall back to the
+            // initial rather than failing the document.
+            "vector-effect" => {
+                let v = value.trim();
+                if v.is_empty() || v.eq_ignore_ascii_case("none") {
+                    s.vector_effect = VectorEffect::None;
+                } else if v.eq_ignore_ascii_case("inherit") {
+                    // Initial-value fallback per the note above.
+                    s.vector_effect = VectorEffect::None;
+                } else if let Some(ve) = VectorEffect::parse_custom(v) {
+                    s.vector_effect = ve;
+                } else {
+                    s.vector_effect = VectorEffect::None;
                 }
             }
             // Round-4 CSS may carry properties we don't yet model
@@ -652,6 +823,18 @@ pub struct ParseContext {
     /// Always cleared at the end of each `parse_element_to_node_ctx`
     /// call.
     pub pending_paint_order: Option<String>,
+    /// Round 209 — collected `(scene_path, vector-effect)` bindings
+    /// (SVG 2 §8.13). Populated only when the caller opted in via
+    /// [`crate::decoder::parse_svg_with_extras`] (same gate as
+    /// [`Self::track_id_paths`]). The encoder re-emits the source
+    /// attribute on the matching shape / `<use>` group on round-trip.
+    pub vector_effects: Vec<crate::preserved::VectorEffectBinding>,
+    /// Round 209 — scratch slot for the shape / `<use>` branch to hand
+    /// a captured `vector-effect` keyword string to the wrapper-aware
+    /// recorder that runs after `apply_referenced_defs`. Cleared at
+    /// the end of each `parse_element_to_node_ctx` call (the drain
+    /// matches the round-205 `pending_paint_order` flow).
+    pub pending_vector_effect: Option<String>,
     /// Round 118 — "next element is a `<use>` instance root" flag.
     /// SVG 1.1 §11.5: "setting display: none on a `<path>` element will
     /// prevent that element from getting rendered directly onto the
@@ -694,6 +877,8 @@ impl ParseContext {
             use_instance_root_pending: false,
             paint_orders: Vec::new(),
             pending_paint_order: None,
+            vector_effects: Vec::new(),
+            pending_vector_effect: None,
         }
     }
 
@@ -764,6 +949,22 @@ impl ParseContext {
             path: self.current_path.clone(),
             paint_order,
         });
+    }
+
+    /// Round 209 — record an author `vector-effect` attribute against
+    /// the current scene-graph path (SVG 2 §8.13). Same `track_id_paths`
+    /// gate as the other side-channel recorders. The encoder re-emits
+    /// the matching shape / `<use>` group with `vector-effect="..."` on
+    /// round-trip.
+    pub fn record_vector_effect(&mut self, vector_effect: String) {
+        if !self.track_id_paths {
+            return;
+        }
+        self.vector_effects
+            .push(crate::preserved::VectorEffectBinding {
+                path: self.current_path.clone(),
+                vector_effect,
+            });
     }
 
     /// Round 115 — record an `<a>` hyperlink binding at the current
@@ -1641,6 +1842,15 @@ pub fn parse_element_to_node_ctx(
             // through this drain slot.
             let saved_pending_paint_order = ctx.pending_paint_order.take();
             let group_paint_order = capture_paint_order_attr(el);
+            // Round 209 — capture any `vector-effect=` carried on the
+            // `<g>` so a hand-authored attribute survives round-trip.
+            // The property does NOT cascade per §8.13 (Inherited: no),
+            // but the round-trip carrier is purely lexical — it
+            // preserves the author's literal source. The drain at the
+            // bottom of this function attaches the captured string to
+            // the group's emit site.
+            let saved_pending_vector_effect = ctx.pending_vector_effect.take();
+            let group_vector_effect = capture_vector_effect_attr(el);
             let transform = match attr(el, "transform") {
                 Some(v) => parse_transform(v)?,
                 None => Transform2D::identity(),
@@ -1683,6 +1893,9 @@ pub fn parse_element_to_node_ctx(
             // the `<g>`'s own paint-order attribute (if any) so the
             // outer drain attaches it to the group's emit site.
             ctx.pending_paint_order = group_paint_order.or(saved_pending_paint_order);
+            // Round 209 — same restore-then-layer flow for the
+            // `vector-effect` carrier.
+            ctx.pending_vector_effect = group_vector_effect.or(saved_pending_vector_effect);
             Some(Node::Group(group))
         }
         // Round 115 — SVG 2 §16.5 `<a>` hyperlink. The `<a>` element is
@@ -1963,6 +2176,15 @@ pub fn parse_element_to_node_ctx(
             // round-21 pathLength capture's "presentation attribute
             // only" policy. Empty / `normal` / `inherit` are dropped.
             ctx.pending_paint_order = capture_paint_order_attr(el);
+            // Round 209 — SVG 2 §8.13 `vector-effect` round-trip
+            // capture. Same flow as the round-205 `paint-order`
+            // attribute: the cascade has already set the resolved
+            // value on `state.vector_effect`, but the round-trip
+            // carrier records the source-literal so a `parse → write`
+            // cycle re-emits the author's keyword list verbatim
+            // (canonicalised). Empty / `none` / `inherit` skip
+            // recording so the binding is never a no-op.
+            ctx.pending_vector_effect = capture_vector_effect_attr(el);
             // Round 205 — SVG 2 §13.8 `paint-order`. The round-1
             // `PathNode { fill, stroke }` shape always paints fill
             // BEFORE stroke (the §13.8 `normal` order); when the
@@ -2089,6 +2311,17 @@ pub fn parse_element_to_node_ctx(
     if let Some(order) = ctx.pending_paint_order.take() {
         ctx.record_paint_order(order);
     }
+    // Round 209 — drain the shape / `<use>` / `<g>` branch's pending
+    // `vector-effect` (if any) and record it at the same outer-most
+    // emit site the round-205 `paint-order` recorder uses. Per §8.13
+    // the property applies to graphics elements and `<use>` but NOT
+    // groups; we still capture a `<g vector-effect=…>` so a faithful
+    // round-trip survives a hand-authored (off-spec) group attribute,
+    // mirroring how `<g paint-order=…>` is captured for round-trip
+    // even though paint-order is itself per-shape in the scene graph.
+    if let Some(effect) = ctx.pending_vector_effect.take() {
+        ctx.record_vector_effect(effect);
+    }
     Ok(Some(wrapped))
 }
 
@@ -2130,6 +2363,68 @@ fn capture_paint_order_attr(el: &Element) -> Option<String> {
         return None;
     }
     Some(keywords.join(" "))
+}
+
+/// Round 209 — extract a canonicalised `vector-effect` attribute from
+/// `el` for round-trip preservation. Returns `Some(canonical)` when
+/// the attribute carries at least one recognised effect keyword;
+/// returns `None` for an absent attribute, `none`, `inherit`, or a
+/// payload that didn't parse to any recognised effect keyword.
+///
+/// Canonical form lowercases the keywords, collapses whitespace to
+/// single spaces, drops duplicate keywords (preserving first
+/// occurrence) per the `[ … ]+` CSS combinator rule, and appends a
+/// host suffix (`viewport` / `screen`) only when the source explicitly
+/// named one. The initial host value (`viewport`) is implied — emitting
+/// it without source provenance would inflate every round-trip with a
+/// redundant token.
+fn capture_vector_effect_attr(el: &Element) -> Option<String> {
+    let raw = attr(el, "vector-effect")?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case("none")
+        || trimmed.eq_ignore_ascii_case("inherit")
+    {
+        return None;
+    }
+    let mut keywords: Vec<&'static str> = Vec::with_capacity(4);
+    let mut seen = [false; 4];
+    let mut host: Option<&'static str> = None;
+    for tok in trimmed.split_ascii_whitespace() {
+        let (k, i) = if tok.eq_ignore_ascii_case("non-scaling-stroke") {
+            ("non-scaling-stroke", 0)
+        } else if tok.eq_ignore_ascii_case("non-scaling-size") {
+            ("non-scaling-size", 1)
+        } else if tok.eq_ignore_ascii_case("non-rotation") {
+            ("non-rotation", 2)
+        } else if tok.eq_ignore_ascii_case("fixed-position") {
+            ("fixed-position", 3)
+        } else if tok.eq_ignore_ascii_case("viewport") {
+            host = Some("viewport");
+            continue;
+        } else if tok.eq_ignore_ascii_case("screen") {
+            host = Some("screen");
+            continue;
+        } else {
+            continue;
+        };
+        if !seen[i] {
+            seen[i] = true;
+            keywords.push(k);
+        }
+    }
+    if keywords.is_empty() {
+        // No effect keyword — §8.13 grammar requires at least one;
+        // a payload of bare `viewport` / `screen` / unknown tokens
+        // is not a valid `vector-effect` value, so we skip recording.
+        return None;
+    }
+    let mut canon = keywords.join(" ");
+    if let Some(h) = host {
+        canon.push(' ');
+        canon.push_str(h);
+    }
+    Some(canon)
 }
 
 /// Round 21 — return the child-index sub-path from `root` down to the

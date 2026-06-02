@@ -82,6 +82,16 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
     for entry in &extras.paint_orders {
         path_to_paint_order.insert(entry.path.clone(), entry.paint_order.as_str());
     }
+    // Round 209 — index `vector-effect` side-channel bindings (SVG 2
+    // §8.13) by scene-graph tree-path so `write_node` can re-emit
+    // `vector-effect="..."` on the matching shape / `<use>` group on
+    // round-trip. Same per-path index layout as the round-205
+    // `paint-order` map; same routing through `write_node` /
+    // `write_group_children`.
+    let mut path_to_vector_effect: HashMap<Vec<usize>, &str> = HashMap::new();
+    for entry in &extras.vector_effects {
+        path_to_vector_effect.insert(entry.path.clone(), entry.vector_effect.as_str());
+    }
     // Round 122 — index `<title>` / `<desc>` bindings (SVG 2 §5.8) by
     // their *parent* container's scene-graph tree-path so `write_node`
     // can re-emit them as the first children of the matching `<g>` on
@@ -255,6 +265,7 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
         &path_to_path_length,
         &path_to_link,
         &path_to_paint_order,
+        &path_to_vector_effect,
         &parent_to_titles,
         &parent_to_descs,
         &anim_by_parent,
@@ -474,6 +485,7 @@ fn write_group_children(
     path_to_path_length: &HashMap<Vec<usize>, f32>,
     path_to_link: &HashMap<Vec<usize>, &LinkBinding>,
     path_to_paint_order: &HashMap<Vec<usize>, &str>,
+    path_to_vector_effect: &HashMap<Vec<usize>, &str>,
     parent_to_titles: &HashMap<Vec<usize>, &DescriptiveBinding>,
     parent_to_descs: &HashMap<Vec<usize>, &DescriptiveBinding>,
     anim_by_parent: &HashMap<String, Vec<&AnimationFragment>>,
@@ -492,6 +504,7 @@ fn write_group_children(
             path_to_path_length,
             path_to_link,
             path_to_paint_order,
+            path_to_vector_effect,
             parent_to_titles,
             parent_to_descs,
             anim_by_parent,
@@ -513,6 +526,7 @@ fn write_node(
     path_to_path_length: &HashMap<Vec<usize>, f32>,
     path_to_link: &HashMap<Vec<usize>, &LinkBinding>,
     path_to_paint_order: &HashMap<Vec<usize>, &str>,
+    path_to_vector_effect: &HashMap<Vec<usize>, &str>,
     parent_to_titles: &HashMap<Vec<usize>, &DescriptiveBinding>,
     parent_to_descs: &HashMap<Vec<usize>, &DescriptiveBinding>,
     anim_by_parent: &HashMap<String, Vec<&AnimationFragment>>,
@@ -536,6 +550,12 @@ fn write_node(
     // `paint-order` attribute (SVG 2 §13.8)? If so the corresponding
     // shape emission carries `paint-order="..."` on round-trip.
     let paint_order_here: Option<&str> = path_to_paint_order.get(path_stack.as_slice()).copied();
+    // Round 209 — does this scene-graph position carry a recorded
+    // `vector-effect` attribute (SVG 2 §8.13)? If so the corresponding
+    // shape / group emission carries `vector-effect="..."` on
+    // round-trip. Mirrors the round-205 `paint-order` lookup above.
+    let vector_effect_here: Option<&str> =
+        path_to_vector_effect.get(path_stack.as_slice()).copied();
     let inline_anims: &[&AnimationFragment] = id_here
         .and_then(|id| anim_by_parent.get(id))
         .map(Vec::as_slice)
@@ -589,6 +609,13 @@ fn write_node(
             if let Some(po) = paint_order_here {
                 out.push_str(&format!(" paint-order=\"{}\"", escape_attr(po)));
             }
+            // Round 209 — SVG 2 §8.13 `vector-effect`. Mirrors the
+            // round-205 `paint-order` emission above; a `<g
+            // vector-effect=…>` ancestor round-trips on the same `<g>`
+            // emit site even though the property does not cascade.
+            if let Some(ve) = vector_effect_here {
+                out.push_str(&format!(" vector-effect=\"{}\"", escape_attr(ve)));
+            }
             out.push_str(">\n");
             // Round 122 — SVG 2 §5.8: emit captured `<title>` /
             // `<desc>` children of this group as the *first* children
@@ -618,6 +645,7 @@ fn write_node(
                 path_to_path_length,
                 path_to_link,
                 path_to_paint_order,
+                path_to_vector_effect,
                 parent_to_titles,
                 parent_to_descs,
                 anim_by_parent,
@@ -665,6 +693,13 @@ fn write_node(
             // case) so this attribute is purely a round-trip carrier.
             if let Some(po) = paint_order_here {
                 out.push_str(&format!(" paint-order=\"{}\"", escape_attr(po)));
+            }
+            // Round 209 — SVG 2 §8.13 `vector-effect`. Same emit slot
+            // as the round-205 `paint-order` attribute above; both are
+            // purely round-trip carriers, the §8.13 transform
+            // suppression itself happens in the renderer.
+            if let Some(ve) = vector_effect_here {
+                out.push_str(&format!(" vector-effect=\"{}\"", escape_attr(ve)));
             }
             if inline_anims.is_empty() {
                 out.push_str("/>\n");
@@ -722,6 +757,7 @@ fn write_node(
                 path_to_path_length,
                 path_to_link,
                 path_to_paint_order,
+                path_to_vector_effect,
                 parent_to_titles,
                 parent_to_descs,
                 anim_by_parent,
@@ -1241,6 +1277,7 @@ fn write_mask(
     let empty_path_to_pl: HashMap<Vec<usize>, f32> = HashMap::new();
     let empty_path_to_link: HashMap<Vec<usize>, &LinkBinding> = HashMap::new();
     let empty_path_to_paint_order: HashMap<Vec<usize>, &str> = HashMap::new();
+    let empty_path_to_vector_effect: HashMap<Vec<usize>, &str> = HashMap::new();
     let empty_titles: HashMap<Vec<usize>, &DescriptiveBinding> = HashMap::new();
     let empty_descs: HashMap<Vec<usize>, &DescriptiveBinding> = HashMap::new();
     let empty_anims: HashMap<String, Vec<&AnimationFragment>> = HashMap::new();
@@ -1256,6 +1293,7 @@ fn write_mask(
         &empty_path_to_pl,
         &empty_path_to_link,
         &empty_path_to_paint_order,
+        &empty_path_to_vector_effect,
         &empty_titles,
         &empty_descs,
         &empty_anims,

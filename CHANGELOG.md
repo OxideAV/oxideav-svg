@@ -9,6 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 209** — SVG 2 §8.13 `vector-effect` property
+  (`none | [ non-scaling-stroke | non-scaling-size | non-rotation |
+  fixed-position ]+ [ viewport | screen ]?`) on graphics elements and
+  `<use>`.
+  - New [`crate::element::VectorEffectKeyword`] +
+    [`crate::element::VectorEffectHost`] +
+    [`crate::element::VectorEffect`] types capture the §8.13 grammar.
+    `VectorEffect::parse_custom` resolves the `[ … ]+` keyword list
+    (each effect at most once, source order preserved) plus the
+    optional host suffix.
+  - `vector-effect` joins the resolved-property surface on
+    [`crate::element::PaintState`] (initial [`VectorEffect::None`]).
+    NOT inherited per the §8.13 attribute table — the
+    [`PaintState::merged_with_mctx`] cascade resets the field to the
+    initial value at every element before applying the element's own
+    attribute, mirroring the round-118 `display` non-inheritance
+    reset.
+  - Resolves through presentation attributes, inline `style="..."`,
+    and `<style>`-block rules via the existing round-4 cascade. Empty
+    / `none` / `inherit` payloads fall back to the initial value;
+    unknown keywords are silently dropped (matches the tolerant
+    paint-order / text-anchor / visibility policy).
+  - **Round-trip preservation.** New
+    [`crate::preserved::VectorEffectBinding`] +
+    [`crate::preserved::PreservedExtras::vector_effects`] side-channel
+    captures the canonicalised keyword string (lowercased, whitespace
+    collapsed to single spaces, duplicates dropped) at the emit slot
+    for each graphics element / `<g>` carrying a recognised non-`none`
+    `vector-effect=` attribute. The encoder re-emits the attribute on
+    the matching shape / group on round-trip. The canonical form omits
+    the implicit `viewport` host suffix; an explicit `viewport` /
+    `screen` is preserved.
+  - The actual transform suppression happens in `oxideav-raster`;
+    this round only parses, exposes the resolved value on
+    `PaintState`, and round-trips the source attribute.
+  - 17 integration tests in `tests/round209_vector_effect.rs`.
+
 - **Round 205** — SVG 2 §13.8 `paint-order` property
   (`normal | [ fill || stroke || markers ]`) on shapes (`<rect>` /
   `<circle>` / `<ellipse>` / `<line>` / `<polyline>` / `<polygon>` /

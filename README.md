@@ -153,6 +153,73 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
+## Round 209 additions
+
+- **SVG 2 §8.13 `vector-effect` property**
+  (`none | [ non-scaling-stroke | non-scaling-size | non-rotation |
+  fixed-position ]+ [ viewport | screen ]?`) on graphics elements and
+  `<use>`.
+  - New [`crate::element::VectorEffectKeyword`] +
+    [`crate::element::VectorEffectHost`] +
+    [`crate::element::VectorEffect`] types capture the §8.13 grammar.
+    `VectorEffect::parse_custom` resolves the `[ … ]+` keyword list
+    (each effect at most once, source order preserved) plus the
+    optional `viewport` / `screen` host suffix; the initial host value
+    is `viewport`.
+  - `vector-effect` joins the resolved-property surface on
+    [`crate::element::PaintState`] (initial [`VectorEffect::None`]).
+    The property is **NOT inherited** per the §8.13 attribute table
+    ("Inherited: no") — [`PaintState::merged_with_mctx`] resets the
+    field to the initial value at every element before applying that
+    element's own attribute, so a `<g vector-effect="non-scaling-
+    stroke">` does NOT push the property onto child shapes.
+  - Resolves through presentation attributes, inline `style="..."`,
+    and `<style>`-block rules via the existing round-4 cascade. Empty
+    / `none` / `inherit` payloads fall back to the initial value (the
+    `inherit` keyword would inherit the parent's value, but with the
+    non-inheritance reset that's also the initial value). Unknown
+    keywords are silently dropped, matching the tolerant policy of
+    `paint-order` / `text-anchor` / `visibility`.
+  - **Round-trip preservation.** New
+    [`crate::preserved::VectorEffectBinding`] +
+    [`crate::preserved::PreservedExtras::vector_effects`] side-channel
+    captures the canonicalised keyword string (lowercased, whitespace
+    collapsed to single spaces, duplicates dropped) at the emit slot
+    for each graphics element / `<use>` / `<g>` carrying a recognised
+    non-`none` `vector-effect=` attribute. A `<g vector-effect=…>`
+    ancestor's attribute round-trips on the group's emit site even
+    though the cascade does not propagate it — the side-channel is
+    purely lexical so a hand-authored grouping attribute survives a
+    `parse_svg_with_extras → write_svg_with_extras` cycle. The
+    encoder re-emits `vector-effect=` on the matching `<rect>` /
+    `<circle>` / `<ellipse>` / `<line>` / `<polyline>` / `<polygon>` /
+    `<path>` / `<g>` on round-trip.
+  - **Canonical form omits the implicit host suffix.** A source
+    `vector-effect="non-scaling-stroke"` round-trips as
+    `vector-effect="non-scaling-stroke"` (NOT
+    `... viewport`) — emitting the initial host value without source
+    provenance would inflate every round-trip with a redundant token.
+    A source `... screen` (or explicit `... viewport`) is preserved.
+  - The actual transform suppression happens in `oxideav-raster`;
+    this round only parses, exposes the resolved value on
+    `PaintState`, and round-trips the source attribute. SVG 2 issue 31
+    flagged values other than `non-scaling-stroke` and `none` as at
+    risk of being dropped from SVG 2 due to a lack of implementations
+    — we model all four so the parse + round-trip is faithful to the
+    spec grammar even if a future revision narrows the value set.
+  - 17 integration tests in `tests/round209_vector_effect.rs` cover
+    the no-attribute baseline (no binding), single-keyword
+    `non-scaling-stroke` recording, explicit `none` skip, the
+    multi-keyword `[ … ]+` form, the case-insensitive matching, the
+    duplicate-drop rule, the explicit `screen` host suffix preserved,
+    the implicit `viewport` default omitted from the canonical form,
+    the non-inheritance from a `<g>` ancestor, unknown-token tolerance,
+    payload-without-effect-keyword skip, empty / `inherit` skip,
+    `parse_svg`-without-extras still loads the document, round-trip
+    re-emission on `<rect>` / `<path>` (multi-keyword + host) / `<g>`,
+    convergence under a double round-trip pass, and whitespace
+    canonicalisation.
+
 ## Round 205 additions
 
 - **SVG 2 §13.8 `paint-order` property**

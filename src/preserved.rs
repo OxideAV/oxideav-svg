@@ -227,6 +227,14 @@ pub struct PreservedExtras {
     /// the source-equivalent attribute. Populated only by
     /// [`crate::decoder::parse_svg_with_extras`].
     pub paint_orders: Vec<PaintOrderBinding>,
+    /// Round 209 — SVG 2 §8.13 `vector-effect` source-text bindings,
+    /// recorded per emitted shape (or `<use>` group) so the encoder can
+    /// re-emit `vector-effect="..."` on the matching graphics element
+    /// on round-trip. The property is NOT inherited per §8.13, so a
+    /// binding records exactly where the author wrote the attribute —
+    /// the decoder never propagates the value to descendants. Populated
+    /// only by [`crate::decoder::parse_svg_with_extras`].
+    pub vector_effects: Vec<VectorEffectBinding>,
 }
 
 /// One captured animation child of a known-id parent element.
@@ -329,6 +337,7 @@ impl PreservedExtras {
             && self.descs.is_empty()
             && self.metadata.is_empty()
             && self.paint_orders.is_empty()
+            && self.vector_effects.is_empty()
     }
 }
 
@@ -345,6 +354,29 @@ pub struct PaintOrderBinding {
     /// Author-supplied keyword string (e.g. `"stroke fill markers"`),
     /// canonicalised to lowercase. Trimmed and whitespace-collapsed.
     pub paint_order: String,
+}
+
+/// Round 209 — one (scene-graph tree-path, author `vector-effect`
+/// keyword string) pair. Same shape as [`PaintOrderBinding`] but
+/// scoped to the SVG 2 §8.13 grammar. The scene graph does not yet
+/// expose a typed coordinate-suppression hook
+/// (`oxideav_core::PathNode` carries no vector-effect field today —
+/// rasterisation lives in `oxideav-raster`), so the binding's job is
+/// purely to round-trip the source attribute so a `parse → write`
+/// cycle preserves the author's request.
+#[derive(Clone, Debug)]
+pub struct VectorEffectBinding {
+    /// Tree-path through the scene graph; matches the layout of
+    /// [`IdScenePath::path`].
+    pub path: Vec<usize>,
+    /// Author-supplied keyword string, canonicalised: lowercased,
+    /// trimmed, whitespace-collapsed to single spaces, with effect
+    /// keywords in source order (`[ … ]+`-combinator, each at most
+    /// once) followed by an optional host suffix (`viewport` /
+    /// `screen`). Always carries at least one effect keyword (the
+    /// `none` / empty / `inherit` cases skip recording entirely so
+    /// the binding is never an initial-value no-op).
+    pub vector_effect: String,
 }
 
 /// Round 122 — one captured `<title>` or `<desc>` element body. Per SVG
