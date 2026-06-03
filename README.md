@@ -153,6 +153,68 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
+## Round 228 additions
+
+- **SVG 2 §13.10.3 `text-rendering` property**
+  (`auto | optimizeSpeed | optimizeLegibility | geometricPrecision`)
+  on `<text>` and (via the cascade) descendant `<tspan>` /
+  `<textPath>` runs.
+  - New [`crate::element::TextRendering`] enum carried on
+    [`crate::element::PaintState`]. Inherited per the §13.10.3
+    attribute table; initial value `Auto`. Resolves through
+    presentation attributes, inline `style="..."`, and
+    `<style>`-block rules via the existing round-4 cascade.
+    Case-insensitive keyword matching; `inherit` / unknown tokens
+    keep the inherited value (matches the tolerant policy of
+    `text-anchor` / `paint-order` / `visibility` /
+    `shape-rendering`).
+  - **Round-trip preservation.** New
+    [`crate::preserved::TextRenderingBinding`] +
+    [`crate::preserved::PreservedExtras::text_renderings`]
+    side-channel captures the canonicalised camelCase keyword
+    string at the topmost emit slot for each `<text>` / `<g>`
+    carrying a recognised `text-rendering=` attribute. A `<g
+    text-rendering=…>` ancestor records on the group's own slot
+    (one binding per source-attribute slot — not per cascaded
+    descendant), so a hand-authored grouping attribute survives a
+    `parse_svg_with_extras → write_svg_with_extras` cycle. The
+    encoder re-emits `text-rendering=` on the matching element on
+    round-trip.
+  - **Explicit `auto` is preserved.** Mirrors the round-221
+    `shape-rendering` policy — an explicit author
+    `text-rendering="auto"` is recorded because it carries author
+    intent (e.g. an inheritance reset on a descendant of a `<g
+    text-rendering="optimizeLegibility">`). The absent-attribute
+    case is still skipped so an initial-value document doesn't
+    bloat the output with redundant `text-rendering="auto"` on
+    every `<text>`.
+  - **Canonical camelCase emission.** Source `OPTIMIZELEGIBILITY` /
+    `optimizelegibility` / `OptimizeLegibility` all round-trip as
+    `optimizeLegibility`, matching the §13.10.3 attribute table's
+    spelling.
+  - **Coexists with `shape-rendering`.** Both inherited hints can
+    ride on the same `<g>` without interfering; the two
+    side-channels (round-221 and round-228) record independently
+    and the encoder emits both attributes on the same element.
+  - The actual rendering-hint consumption (anti-alias toggle,
+    hint suspension) happens in `oxideav-raster` / `oxideav-scribe`;
+    this round delivers parse + inherited cascade + round-trip
+    preservation. A downstream rasteriser reads the resolved value
+    off the carried `PaintState` or off the per-element
+    `TextRenderingBinding`.
+  - 20 integration tests in `tests/round228_text_rendering.rs`
+    cover the no-attribute baseline (no binding), each of the four
+    spec keywords recorded with canonical camelCase,
+    case-insensitive matching, explicit-`auto` recording,
+    `inherit` skipping, unknown-token tolerance, empty-value
+    skipping, presentation-attribute / `style="…"` cascade
+    resolution, inheritance through a `<g>` ancestor, child
+    override of the inherited value, round-trip emission on `<g>`,
+    double round-trip convergence, `parse_svg` (no extras) still
+    loading the document, the per-child-override-records-separately
+    pattern, and coexistence with the round-221 `shape-rendering`
+    attribute on the same group element.
+
 ## Round 221 additions
 
 - **SVG 2 §13.10.2 `shape-rendering` property**

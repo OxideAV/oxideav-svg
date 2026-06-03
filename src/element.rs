@@ -382,6 +382,86 @@ impl ShapeRendering {
     }
 }
 
+/// Round 228 — SVG 2 §13.10.3 `text-rendering` resolved value
+/// (`auto | optimizeSpeed | optimizeLegibility | geometricPrecision`).
+///
+/// Per §13.10.3 the property is a *hint* to the user agent about the
+/// speed / legibility / geometric-precision tradeoff used when
+/// rasterising text glyphs — it never alters glyph geometry itself.
+/// Values:
+///
+/// * `Auto` (initial): UA balances speed / legibility / precision with
+///   legibility given more importance than the other two.
+/// * `OptimizeSpeed`: rendering speed over legibility and precision —
+///   the UA may turn off text anti-aliasing.
+/// * `OptimizeLegibility`: legibility over speed and precision — the
+///   UA may apply anti-aliasing techniques and built-in font hinting.
+/// * `GeometricPrecision`: emphasise geometric precision over the
+///   other two — the UA usually suspends hinting so glyph outlines
+///   are drawn with the same precision as path data.
+///
+/// **Inherited:** yes (§13.10.3 attribute table). **Applies to:**
+/// `<text>` per the §13.10.3 attribute table (with the property
+/// cascading down to descendant `<tspan>` / `<textPath>` runs through
+/// the normal CSS inheritance). Round 228 ships parse + cascade +
+/// round-trip preservation; the actual rendering-hint consumption
+/// (anti-alias toggle, hint suspension) happens in `oxideav-raster` /
+/// `oxideav-scribe` (which can read the resolved value off the
+/// carried [`PaintState`] or off the per-element
+/// [`crate::preserved::TextRenderingBinding`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum TextRendering {
+    /// Initial value — UA's own balance, with a legibility bias.
+    #[default]
+    Auto,
+    /// Prioritise rendering speed over legibility and precision; the
+    /// UA may disable text anti-aliasing.
+    OptimizeSpeed,
+    /// Prioritise legibility over speed and precision; the UA may
+    /// apply anti-aliasing techniques and built-in font hinting.
+    OptimizeLegibility,
+    /// Prioritise geometric precision over legibility and speed; the
+    /// UA usually suspends hinting so glyph outlines match path data
+    /// precision.
+    GeometricPrecision,
+}
+
+impl TextRendering {
+    /// Parse a `text-rendering` keyword (case-insensitive per CSS).
+    /// `inherit` returns `None` so the caller can keep the inherited
+    /// value already on its `PaintState`. Unknown / malformed tokens
+    /// also return `None`, matching the tolerant policy used by
+    /// `text-anchor` / `paint-order` / `visibility` / `shape-rendering`.
+    pub(crate) fn parse_keyword(value: &str) -> Option<Self> {
+        let v = value.trim();
+        if v.eq_ignore_ascii_case("auto") {
+            Some(Self::Auto)
+        } else if v.eq_ignore_ascii_case("optimizespeed") {
+            Some(Self::OptimizeSpeed)
+        } else if v.eq_ignore_ascii_case("optimizelegibility") {
+            Some(Self::OptimizeLegibility)
+        } else if v.eq_ignore_ascii_case("geometricprecision") {
+            Some(Self::GeometricPrecision)
+        } else {
+            // `inherit` and unknown tokens fall through; the cascade
+            // keeps whatever value was inherited.
+            None
+        }
+    }
+
+    /// Canonicalised lower-camelCase keyword for round-trip emission.
+    /// Matches the spec's source-text spelling (camelCase for the
+    /// three non-`auto` keywords) so the round-trip is byte-faithful.
+    pub(crate) fn as_canonical_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::OptimizeSpeed => "optimizeSpeed",
+            Self::OptimizeLegibility => "optimizeLegibility",
+            Self::GeometricPrecision => "geometricPrecision",
+        }
+    }
+}
+
 /// Round 187 — SVG 2 §11.2.1 `lengthAdjust` attribute on
 /// `<text>` / `<tspan>` (`spacing | spacingAndGlyphs`). Selects how a
 /// `textLength`-driven width adjustment is distributed across the run:
@@ -457,6 +537,12 @@ pub struct PaintState {
     /// `oxideav-raster`; this crate parses + cascades + round-trips
     /// the keyword.
     pub shape_rendering: ShapeRendering,
+    /// Round 228 — SVG 2 §13.10.3 `text-rendering` (inherited).
+    /// Initial value [`TextRendering::Auto`]. The actual hint
+    /// consumption (anti-alias toggle, hint suspension) happens in
+    /// `oxideav-raster` / `oxideav-scribe`; this crate parses,
+    /// cascades, and round-trips the keyword.
+    pub text_rendering: TextRendering,
 }
 
 impl Default for PaintState {
@@ -488,6 +574,8 @@ impl Default for PaintState {
             vector_effect: VectorEffect::None,
             // §13.10.2 — initial value `auto`.
             shape_rendering: ShapeRendering::Auto,
+            // §13.10.3 — initial value `auto`.
+            text_rendering: TextRendering::Auto,
         }
     }
 }
@@ -724,6 +812,15 @@ impl PaintState {
                     s.shape_rendering = sr;
                 }
             }
+            // Round 228 — SVG 2 §13.10.3 `text-rendering` (inherited).
+            // `auto | optimizeSpeed | optimizeLegibility |
+            // geometricPrecision`. Same tolerant-keep-on-`inherit`-or-
+            // unknown policy as `shape-rendering` above.
+            "text-rendering" => {
+                if let Some(tr) = TextRendering::parse_keyword(value) {
+                    s.text_rendering = tr;
+                }
+            }
             // Round-4 CSS may carry properties we don't yet model
             // (font-family, transform, …). Ignore them rather than
             // failing the document.
@@ -945,6 +1042,18 @@ pub struct ParseContext {
     /// the end of each `parse_element_to_node_ctx` call (the drain
     /// matches the round-205 `pending_paint_order` flow).
     pub pending_shape_rendering: Option<String>,
+    /// Round 228 — collected `(scene_path, text-rendering)` bindings
+    /// (SVG 2 §13.10.3). Populated only when the caller opted in via
+    /// [`crate::decoder::parse_svg_with_extras`] (same gate as
+    /// [`Self::track_id_paths`]). The encoder re-emits the source
+    /// attribute on the matching `<text>` / `<g>` on round-trip.
+    pub text_renderings: Vec<crate::preserved::TextRenderingBinding>,
+    /// Round 228 — scratch slot for the `<text>` / `<g>` branch to
+    /// hand a captured `text-rendering` keyword string to the
+    /// wrapper-aware recorder that runs after `apply_referenced_defs`.
+    /// Cleared at the end of each `parse_element_to_node_ctx` call
+    /// (the drain matches the round-221 `pending_shape_rendering` flow).
+    pub pending_text_rendering: Option<String>,
     /// Round 118 — "next element is a `<use>` instance root" flag.
     /// SVG 1.1 §11.5: "setting display: none on a `<path>` element will
     /// prevent that element from getting rendered directly onto the
@@ -991,6 +1100,8 @@ impl ParseContext {
             pending_vector_effect: None,
             shape_renderings: Vec::new(),
             pending_shape_rendering: None,
+            text_renderings: Vec::new(),
+            pending_text_rendering: None,
         }
     }
 
@@ -1092,6 +1203,22 @@ impl ParseContext {
             .push(crate::preserved::ShapeRenderingBinding {
                 path: self.current_path.clone(),
                 shape_rendering,
+            });
+    }
+
+    /// Round 228 — record an author `text-rendering` attribute against
+    /// the current scene-graph path (SVG 2 §13.10.3). Same
+    /// `track_id_paths` gate as the other side-channel recorders. The
+    /// encoder re-emits the matching `<text>` / `<g>` with
+    /// `text-rendering="..."` on round-trip.
+    pub fn record_text_rendering(&mut self, text_rendering: String) {
+        if !self.track_id_paths {
+            return;
+        }
+        self.text_renderings
+            .push(crate::preserved::TextRenderingBinding {
+                path: self.current_path.clone(),
+                text_rendering,
             });
     }
 
@@ -1987,6 +2114,14 @@ pub fn parse_element_to_node_ctx(
             // every cascaded descendant.
             let saved_pending_shape_rendering = ctx.pending_shape_rendering.take();
             let group_shape_rendering = capture_shape_rendering_attr(el);
+            // Round 228 — capture any `text-rendering=` carried on the
+            // `<g>` so a hand-authored attribute survives round-trip.
+            // The property IS inherited per §13.10.3; the carrier is
+            // purely lexical, so emitting it on the topmost emit site
+            // (the group) avoids redundantly recording on every
+            // cascaded descendant `<text>`.
+            let saved_pending_text_rendering = ctx.pending_text_rendering.take();
+            let group_text_rendering = capture_text_rendering_attr(el);
             let transform = match attr(el, "transform") {
                 Some(v) => parse_transform(v)?,
                 None => Transform2D::identity(),
@@ -2035,6 +2170,9 @@ pub fn parse_element_to_node_ctx(
             // Round 221 — same restore-then-layer flow for the
             // `shape-rendering` carrier.
             ctx.pending_shape_rendering = group_shape_rendering.or(saved_pending_shape_rendering);
+            // Round 228 — same restore-then-layer flow for the
+            // `text-rendering` carrier.
+            ctx.pending_text_rendering = group_text_rendering.or(saved_pending_text_rendering);
             Some(Node::Group(group))
         }
         // Round 115 — SVG 2 §16.5 `<a>` hyperlink. The `<a>` element is
@@ -2402,6 +2540,15 @@ pub fn parse_element_to_node_ctx(
         #[cfg(feature = "text")]
         "text" => {
             let state = parent_state.merged_with_mctx(mctx, &ctx.stylesheet)?;
+            // Round 228 — SVG 2 §13.10.3 `text-rendering` round-trip
+            // capture. Mirrors the round-221 `shape-rendering` flow on
+            // the shape branch: the cascade has already resolved the
+            // property onto `state.text_rendering`, but the round-trip
+            // carrier records the source-literal so a `parse → write`
+            // cycle re-emits the author's keyword verbatim
+            // (canonicalised to the spec's camelCase). Absent /
+            // `inherit` / unrecognised tokens skip recording.
+            ctx.pending_text_rendering = capture_text_rendering_attr(el);
             crate::text::parse_text_element(el, &state, ctx)?
         }
         // <text> when text feature is disabled — silently skip.
@@ -2478,6 +2625,15 @@ pub fn parse_element_to_node_ctx(
     // toggle, edge snap) is `oxideav-raster`'s job.
     if let Some(sr) = ctx.pending_shape_rendering.take() {
         ctx.record_shape_rendering(sr);
+    }
+    // Round 228 — drain the `<text>` / `<g>` branch's pending
+    // `text-rendering` (if any) and record it at the same outer-most
+    // emit site the round-221 recorder uses. The encoder re-emits the
+    // source attribute on the matching `<text>` / `<g>` on round-trip;
+    // the actual hint consumption (anti-alias toggle, hint suspension)
+    // is `oxideav-raster` / `oxideav-scribe` work.
+    if let Some(tr) = ctx.pending_text_rendering.take() {
+        ctx.record_text_rendering(tr);
     }
     Ok(Some(wrapped))
 }
@@ -2616,6 +2772,36 @@ fn capture_shape_rendering_attr(el: &Element) -> Option<String> {
     }
     let sr = ShapeRendering::parse_keyword(trimmed)?;
     Some(sr.as_canonical_str().to_string())
+}
+
+/// Round 228 — extract a canonicalised `text-rendering` attribute from
+/// `el` for round-trip preservation. Returns `Some(canonical)` when the
+/// attribute resolves to one of the four §13.10.3 keywords; returns
+/// `None` for an absent attribute, an `inherit` keyword, or an
+/// unrecognised token (the cascade keeps the inherited value in those
+/// cases, so the round-trip carrier matches the parse-time fallback).
+///
+/// Canonical form is the spec's camelCase spelling (`auto` /
+/// `optimizeSpeed` / `optimizeLegibility` / `geometricPrecision`) —
+/// source `OPTIMIZESPEED` round-trips as `optimizeSpeed`, matching the
+/// §13.10.3 attribute table.
+///
+/// Like the round-221 `shape-rendering` helper (and unlike the
+/// round-205 / round-209 helpers which skip the initial-value keyword
+/// to avoid no-op binding bloat), an explicit author
+/// `text-rendering="auto"` IS recorded — it carries author intent
+/// (e.g. an inheritance reset on a `<text>` descendant of a
+/// `<g text-rendering="optimizeLegibility">`). The absent-attribute
+/// case is still skipped so an initial-value document doesn't bloat
+/// the output with redundant `text-rendering="auto"` on every `<text>`.
+fn capture_text_rendering_attr(el: &Element) -> Option<String> {
+    let raw = attr(el, "text-rendering")?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("inherit") {
+        return None;
+    }
+    let tr = TextRendering::parse_keyword(trimmed)?;
+    Some(tr.as_canonical_str().to_string())
 }
 
 /// Round 21 — return the child-index sub-path from `root` down to the

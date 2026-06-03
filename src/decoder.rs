@@ -22,7 +22,7 @@ use crate::parser::{
 use crate::preserved::{
     AnimationFragment, ClipRuleBinding, DescriptiveBinding, IdScenePath, LinkBinding,
     PaintOrderBinding, PathLengthBinding, PreservedExtras, ShapeRenderingBinding,
-    VectorEffectBinding,
+    TextRenderingBinding, VectorEffectBinding,
 };
 
 /// Codec id string for SVG vector frames.
@@ -79,7 +79,7 @@ pub fn parse_svg_at_with_languages(
     let svg =
         find_svg_root(&nodes).ok_or_else(|| Error::invalid("SVG: missing <svg> root element"))?;
     let langs: Vec<String> = system_language.iter().map(|s| s.to_string()).collect();
-    let (frame, _, _, _, _, _, _, _, _) = parse_svg_root(svg, t_seconds, false, &langs)?;
+    let (frame, _, _, _, _, _, _, _, _, _) = parse_svg_root(svg, t_seconds, false, &langs)?;
     Ok(frame)
 }
 
@@ -127,6 +127,7 @@ pub fn parse_svg_with_extras(bytes: &[u8]) -> Result<(VectorFrame, PreservedExtr
         paint_orders,
         vector_effects,
         shape_renderings,
+        text_renderings,
     ) = parse_svg_root(svg, 0.0, true, &[])?;
     extras.id_paths = id_paths;
     extras.path_lengths = path_lengths;
@@ -136,6 +137,7 @@ pub fn parse_svg_with_extras(bytes: &[u8]) -> Result<(VectorFrame, PreservedExtr
     extras.paint_orders = paint_orders;
     extras.vector_effects = vector_effects;
     extras.shape_renderings = shape_renderings;
+    extras.text_renderings = text_renderings;
     Ok((frame, extras))
 }
 
@@ -360,6 +362,7 @@ type SvgRootParse = (
     Vec<PaintOrderBinding>,
     Vec<VectorEffectBinding>,
     Vec<ShapeRenderingBinding>,
+    Vec<TextRenderingBinding>,
 );
 
 fn parse_svg_root(
@@ -521,6 +524,7 @@ fn parse_svg_root(
         ctx.paint_orders,
         ctx.vector_effects,
         ctx.shape_renderings,
+        ctx.text_renderings,
     ))
 }
 

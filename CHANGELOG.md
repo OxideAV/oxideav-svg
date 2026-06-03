@@ -9,6 +9,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 228** — SVG 2 §13.10.3 `text-rendering` property
+  (`auto | optimizeSpeed | optimizeLegibility | geometricPrecision`)
+  on `<text>` and (via the cascade) descendant `<tspan>` /
+  `<textPath>` runs.
+  - New typed [`crate::element::TextRendering`] enum carried on
+    [`crate::element::PaintState`]. Inherited per the §13.10.3
+    attribute table; initial value `Auto`. Resolves through
+    presentation attributes, inline `style="…"`, and `<style>`-block
+    rules via the existing round-4 cascade. Case-insensitive
+    keyword matching; `inherit` / unknown tokens keep the inherited
+    value.
+  - **Round-trip preservation.** New
+    [`crate::preserved::TextRenderingBinding`] +
+    [`crate::preserved::PreservedExtras::text_renderings`]
+    side-channel captures the canonicalised camelCase keyword
+    string at the topmost emit slot for each `<text>` / `<g>`
+    carrying a recognised `text-rendering=` attribute. A `<g
+    text-rendering=…>` ancestor records on the group's own slot
+    (one binding per source-attribute slot — not per cascaded
+    descendant). The encoder re-emits `text-rendering=` on the
+    matching element on round-trip.
+  - **Explicit `auto` is preserved** — mirrors the round-221
+    `shape-rendering` policy. The absent-attribute case is still
+    skipped so an initial-value document doesn't bloat the output.
+  - **Canonical camelCase emission.** Source `OPTIMIZELEGIBILITY` /
+    `optimizelegibility` / `OptimizeLegibility` all round-trip as
+    `optimizeLegibility`, matching the §13.10.3 attribute table's
+    spelling.
+  - **Coexists with `shape-rendering`** on the same `<g>` — the
+    two side-channels (round-221 and round-228) record
+    independently and the encoder emits both attributes on the
+    same element.
+  - The actual rendering-hint consumption (anti-alias toggle,
+    hint suspension) happens in `oxideav-raster` /
+    `oxideav-scribe`; this round delivers parse + inherited
+    cascade + round-trip preservation.
+  - 20 integration tests in `tests/round228_text_rendering.rs`
+    cover the no-attribute baseline, each of the four spec
+    keywords with canonical camelCase, case-insensitive matching,
+    explicit-`auto` recording, `inherit` skipping, unknown-token
+    tolerance, empty-value skipping, presentation-attribute /
+    `style="…"` cascade resolution, inheritance through a `<g>`
+    ancestor, child override of the inherited value, round-trip
+    emission on `<g>`, double round-trip convergence,
+    `parse_svg` (no extras) still loading the document,
+    per-child-override-records-separately, and coexistence with
+    the round-221 `shape-rendering` attribute on the same group.
+
 - **Round 221** — SVG 2 §13.10.2 `shape-rendering` property
   (`auto | optimizeSpeed | crispEdges | geometricPrecision`) on shapes.
   - New typed [`crate::element::ShapeRendering`] enum carried on

@@ -102,6 +102,16 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
     for entry in &extras.shape_renderings {
         path_to_shape_rendering.insert(entry.path.clone(), entry.shape_rendering.as_str());
     }
+    // Round 228 — index `text-rendering` side-channel bindings (SVG 2
+    // §13.10.3) by scene-graph tree-path so `write_node` can re-emit
+    // `text-rendering="..."` on the matching `<text>` / `<g>` on
+    // round-trip. Same per-path index layout as the round-221
+    // `shape-rendering` map; same routing through `write_node` /
+    // `write_group_children`.
+    let mut path_to_text_rendering: HashMap<Vec<usize>, &str> = HashMap::new();
+    for entry in &extras.text_renderings {
+        path_to_text_rendering.insert(entry.path.clone(), entry.text_rendering.as_str());
+    }
     // Round 122 — index `<title>` / `<desc>` bindings (SVG 2 §5.8) by
     // their *parent* container's scene-graph tree-path so `write_node`
     // can re-emit them as the first children of the matching `<g>` on
@@ -291,6 +301,7 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
         &path_to_paint_order,
         &path_to_vector_effect,
         &path_to_shape_rendering,
+        &path_to_text_rendering,
         &parent_to_titles,
         &parent_to_descs,
         &anim_by_parent,
@@ -512,6 +523,7 @@ fn write_group_children(
     path_to_paint_order: &HashMap<Vec<usize>, &str>,
     path_to_vector_effect: &HashMap<Vec<usize>, &str>,
     path_to_shape_rendering: &HashMap<Vec<usize>, &str>,
+    path_to_text_rendering: &HashMap<Vec<usize>, &str>,
     parent_to_titles: &HashMap<Vec<usize>, &DescriptiveBinding>,
     parent_to_descs: &HashMap<Vec<usize>, &DescriptiveBinding>,
     anim_by_parent: &HashMap<String, Vec<&AnimationFragment>>,
@@ -532,6 +544,7 @@ fn write_group_children(
             path_to_paint_order,
             path_to_vector_effect,
             path_to_shape_rendering,
+            path_to_text_rendering,
             parent_to_titles,
             parent_to_descs,
             anim_by_parent,
@@ -555,6 +568,7 @@ fn write_node(
     path_to_paint_order: &HashMap<Vec<usize>, &str>,
     path_to_vector_effect: &HashMap<Vec<usize>, &str>,
     path_to_shape_rendering: &HashMap<Vec<usize>, &str>,
+    path_to_text_rendering: &HashMap<Vec<usize>, &str>,
     parent_to_titles: &HashMap<Vec<usize>, &DescriptiveBinding>,
     parent_to_descs: &HashMap<Vec<usize>, &DescriptiveBinding>,
     anim_by_parent: &HashMap<String, Vec<&AnimationFragment>>,
@@ -591,6 +605,13 @@ fn write_node(
     // `paint-order` / round-209 `vector-effect` lookups above.
     let shape_rendering_here: Option<&str> =
         path_to_shape_rendering.get(path_stack.as_slice()).copied();
+    // Round 228 — does this scene-graph position carry a recorded
+    // `text-rendering` attribute (SVG 2 §13.10.3)? If so the
+    // corresponding `<text>` / `<g>` emission carries
+    // `text-rendering="..."` on round-trip. Mirrors the round-221
+    // `shape-rendering` lookup above.
+    let text_rendering_here: Option<&str> =
+        path_to_text_rendering.get(path_stack.as_slice()).copied();
     let inline_anims: &[&AnimationFragment] = id_here
         .and_then(|id| anim_by_parent.get(id))
         .map(Vec::as_slice)
@@ -656,6 +677,13 @@ fn write_node(
             if let Some(sr) = shape_rendering_here {
                 out.push_str(&format!(" shape-rendering=\"{}\"", escape_attr(sr)));
             }
+            // Round 228 — SVG 2 §13.10.3 `text-rendering`. Same emit
+            // slot as the round-221 `shape-rendering` attribute above;
+            // both attributes can coexist on a single `<g>` carrier when
+            // the source author wrote both.
+            if let Some(tr) = text_rendering_here {
+                out.push_str(&format!(" text-rendering=\"{}\"", escape_attr(tr)));
+            }
             out.push_str(">\n");
             // Round 122 — SVG 2 §5.8: emit captured `<title>` /
             // `<desc>` children of this group as the *first* children
@@ -687,6 +715,7 @@ fn write_node(
                 path_to_paint_order,
                 path_to_vector_effect,
                 path_to_shape_rendering,
+                path_to_text_rendering,
                 parent_to_titles,
                 parent_to_descs,
                 anim_by_parent,
@@ -747,6 +776,15 @@ fn write_node(
             if let Some(sr) = shape_rendering_here {
                 out.push_str(&format!(" shape-rendering=\"{}\"", escape_attr(sr)));
             }
+            // Round 228 — SVG 2 §13.10.3 `text-rendering`. Same emit
+            // slot as `shape-rendering` — a bare `<path>` produced by
+            // a hand-authored `<text text-rendering=…>` wrapped in a
+            // shape branch is unusual, but the carrier rides through
+            // here for completeness so a misplaced source attribute
+            // still round-trips.
+            if let Some(tr) = text_rendering_here {
+                out.push_str(&format!(" text-rendering=\"{}\"", escape_attr(tr)));
+            }
             if inline_anims.is_empty() {
                 out.push_str("/>\n");
             } else {
@@ -805,6 +843,7 @@ fn write_node(
                 path_to_paint_order,
                 path_to_vector_effect,
                 path_to_shape_rendering,
+                path_to_text_rendering,
                 parent_to_titles,
                 parent_to_descs,
                 anim_by_parent,
@@ -1336,6 +1375,7 @@ fn write_mask(
     let empty_path_to_paint_order: HashMap<Vec<usize>, &str> = HashMap::new();
     let empty_path_to_vector_effect: HashMap<Vec<usize>, &str> = HashMap::new();
     let empty_path_to_shape_rendering: HashMap<Vec<usize>, &str> = HashMap::new();
+    let empty_path_to_text_rendering: HashMap<Vec<usize>, &str> = HashMap::new();
     let empty_titles: HashMap<Vec<usize>, &DescriptiveBinding> = HashMap::new();
     let empty_descs: HashMap<Vec<usize>, &DescriptiveBinding> = HashMap::new();
     let empty_anims: HashMap<String, Vec<&AnimationFragment>> = HashMap::new();
@@ -1353,6 +1393,7 @@ fn write_mask(
         &empty_path_to_paint_order,
         &empty_path_to_vector_effect,
         &empty_path_to_shape_rendering,
+        &empty_path_to_text_rendering,
         &empty_titles,
         &empty_descs,
         &empty_anims,

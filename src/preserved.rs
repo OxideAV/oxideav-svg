@@ -256,6 +256,16 @@ pub struct PreservedExtras {
     /// round-209 `vector-effect` carriers). Populated only by
     /// [`crate::decoder::parse_svg_with_extras`].
     pub shape_renderings: Vec<ShapeRenderingBinding>,
+    /// Round 228 — SVG 2 §13.10.3 `text-rendering` source-text
+    /// bindings, recorded per emitted `<text>` so the encoder can
+    /// re-emit `text-rendering="..."` on the matching element (or its
+    /// `<g>` ancestor) on round-trip. Mirrors the round-221
+    /// `shape-rendering` carrier — the property is inherited per
+    /// §13.10.3, but the binding is purely lexical so the round-trip
+    /// preserves exactly where the author wrote the attribute (the
+    /// topmost emit site for the run). Populated only by
+    /// [`crate::decoder::parse_svg_with_extras`].
+    pub text_renderings: Vec<TextRenderingBinding>,
 }
 
 /// One captured animation child of a known-id parent element.
@@ -361,6 +371,7 @@ impl PreservedExtras {
             && self.vector_effects.is_empty()
             && self.clip_rules.is_empty()
             && self.shape_renderings.is_empty()
+            && self.text_renderings.is_empty()
     }
 }
 
@@ -410,6 +421,29 @@ pub struct ShapeRenderingBinding {
     /// initial-value-with-explicit-keyword case records so a
     /// hand-authored `shape-rendering="auto"` survives the round-trip.
     pub shape_rendering: String,
+}
+
+/// Round 228 — one (scene-graph tree-path, author `text-rendering`
+/// keyword) pair. Mirrors [`ShapeRenderingBinding`] — the scene graph
+/// does not yet expose a typed text-quality hook (`oxideav-scribe` /
+/// `oxideav-raster` own the hint consumption), so the binding's job
+/// is purely to round-trip the source attribute so a `parse → write`
+/// cycle preserves the author's hint verbatim.
+#[derive(Clone, Debug)]
+pub struct TextRenderingBinding {
+    /// Tree-path through the scene graph; matches the layout of
+    /// [`IdScenePath::path`].
+    pub path: Vec<usize>,
+    /// Author-supplied keyword string canonicalised to the spec's
+    /// camelCase spelling (`auto` / `optimizeSpeed` /
+    /// `optimizeLegibility` / `geometricPrecision`). The capture
+    /// helper canonicalises case-insensitively, so source
+    /// `OPTIMIZELEGIBILITY` round-trips as `optimizeLegibility`. The
+    /// binding records explicit `auto` (matching round-221
+    /// `shape-rendering` policy) but skips the absent-attribute case
+    /// so an initial-value document doesn't bloat with redundant
+    /// `text-rendering="auto"` on every `<text>`.
+    pub text_rendering: String,
 }
 
 #[derive(Clone, Debug)]
