@@ -306,6 +306,82 @@ impl VectorEffect {
     }
 }
 
+/// Round 221 — SVG 2 §13.10.2 `shape-rendering` resolved value
+/// (`auto | optimizeSpeed | crispEdges | geometricPrecision`).
+///
+/// Per §13.10.2 the property is a *hint* to the user agent about
+/// quality / speed / pixel-snap tradeoffs when rendering vector
+/// shapes — it never changes the geometry itself. Values:
+///
+/// * `Auto` (initial): balance speed / crisp edges / geometric
+///   precision, with geometric precision given more importance than
+///   the other two.
+/// * `OptimizeSpeed`: rendering speed over geometric precision and
+///   crisp edges — the UA may turn off anti-aliasing.
+/// * `CrispEdges`: emphasise edge contrast over speed and precision —
+///   the UA may snap line positions / widths to device pixels.
+/// * `GeometricPrecision`: emphasise geometric precision over speed
+///   and crisp edges.
+///
+/// **Inherited:** yes (§13.10.2 attribute table). **Applies to:** the
+/// SVG-2 `<shape>` element set per the §13.10.2 attribute table —
+/// shapes (`<path>` / `<rect>` / `<circle>` / `<ellipse>` / `<line>` /
+/// `<polyline>` / `<polygon>`). Round 221 ships parse + cascade +
+/// round-trip preservation; the actual rasteriser hint consumption
+/// happens in `oxideav-raster` (which can read the resolved value off
+/// the carried [`PaintState`] or off the per-shape
+/// [`crate::preserved::ShapeRenderingBinding`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ShapeRendering {
+    /// Initial value — UA's own balance, with a precision bias.
+    #[default]
+    Auto,
+    /// Prioritise rendering speed over edges and precision; the UA
+    /// may disable anti-aliasing.
+    OptimizeSpeed,
+    /// Prioritise crisp pixel-aligned edges over speed and precision;
+    /// the UA may snap edges to device pixels.
+    CrispEdges,
+    /// Prioritise geometric precision over edge crispness and speed.
+    GeometricPrecision,
+}
+
+impl ShapeRendering {
+    /// Parse a `shape-rendering` keyword (case-insensitive per CSS).
+    /// `inherit` returns `None` so the caller can keep the inherited
+    /// value already on its `PaintState`. Unknown / malformed tokens
+    /// also return `None`, matching the tolerant policy used by
+    /// `text-anchor` / `paint-order` / `visibility`.
+    pub(crate) fn parse_keyword(value: &str) -> Option<Self> {
+        let v = value.trim();
+        if v.eq_ignore_ascii_case("auto") {
+            Some(Self::Auto)
+        } else if v.eq_ignore_ascii_case("optimizespeed") {
+            Some(Self::OptimizeSpeed)
+        } else if v.eq_ignore_ascii_case("crispedges") {
+            Some(Self::CrispEdges)
+        } else if v.eq_ignore_ascii_case("geometricprecision") {
+            Some(Self::GeometricPrecision)
+        } else {
+            // `inherit` and unknown tokens fall through; the cascade
+            // keeps whatever value was inherited.
+            None
+        }
+    }
+
+    /// Canonicalised lower-camelCase keyword for round-trip emission.
+    /// Matches the spec's source-text spelling (camelCase for the
+    /// three non-`auto` keywords) so the round-trip is byte-faithful.
+    pub(crate) fn as_canonical_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::OptimizeSpeed => "optimizeSpeed",
+            Self::CrispEdges => "crispEdges",
+            Self::GeometricPrecision => "geometricPrecision",
+        }
+    }
+}
+
 /// Round 187 — SVG 2 §11.2.1 `lengthAdjust` attribute on
 /// `<text>` / `<tspan>` (`spacing | spacingAndGlyphs`). Selects how a
 /// `textLength`-driven width adjustment is distributed across the run:
@@ -375,6 +451,12 @@ pub struct PaintState {
     /// happens in `oxideav-raster`; this crate parses + round-trips
     /// the property and exposes it on the resolved [`PaintState`].
     pub vector_effect: VectorEffect,
+    /// Round 221 — SVG 2 §13.10.2 `shape-rendering` (inherited).
+    /// Initial value [`ShapeRendering::Auto`]. The actual hint
+    /// consumption (e.g. anti-aliasing toggle, edge snap) happens in
+    /// `oxideav-raster`; this crate parses + cascades + round-trips
+    /// the keyword.
+    pub shape_rendering: ShapeRendering,
 }
 
 impl Default for PaintState {
@@ -404,6 +486,8 @@ impl Default for PaintState {
             paint_order: PaintOrder::Normal,
             // §8.13 — initial value `none`.
             vector_effect: VectorEffect::None,
+            // §13.10.2 — initial value `auto`.
+            shape_rendering: ShapeRendering::Auto,
         }
     }
 }
@@ -626,6 +710,20 @@ impl PaintState {
                     s.vector_effect = VectorEffect::None;
                 }
             }
+            // Round 221 — SVG 2 §13.10.2 `shape-rendering` (inherited).
+            // `auto | optimizeSpeed | crispEdges | geometricPrecision`.
+            // `inherit` keeps the inherited value already in `s` (the
+            // property IS inherited so the value flowed in from the
+            // cloned parent state at the top of `merged_with_mctx`).
+            // Unknown / malformed tokens also keep the inherited value,
+            // matching the tolerant policy of `text-anchor` /
+            // `visibility` / `paint-order` — a future spec addition
+            // (e.g. a `crispEdges` synonym) won't break documents.
+            "shape-rendering" => {
+                if let Some(sr) = ShapeRendering::parse_keyword(value) {
+                    s.shape_rendering = sr;
+                }
+            }
             // Round-4 CSS may carry properties we don't yet model
             // (font-family, transform, …). Ignore them rather than
             // failing the document.
@@ -835,6 +933,18 @@ pub struct ParseContext {
     /// the end of each `parse_element_to_node_ctx` call (the drain
     /// matches the round-205 `pending_paint_order` flow).
     pub pending_vector_effect: Option<String>,
+    /// Round 221 — collected `(scene_path, shape-rendering)` bindings
+    /// (SVG 2 §13.10.2). Populated only when the caller opted in via
+    /// [`crate::decoder::parse_svg_with_extras`] (same gate as
+    /// [`Self::track_id_paths`]). The encoder re-emits the source
+    /// attribute on the matching shape / `<g>` on round-trip.
+    pub shape_renderings: Vec<crate::preserved::ShapeRenderingBinding>,
+    /// Round 221 — scratch slot for the shape / `<g>` branch to hand a
+    /// captured `shape-rendering` keyword string to the wrapper-aware
+    /// recorder that runs after `apply_referenced_defs`. Cleared at
+    /// the end of each `parse_element_to_node_ctx` call (the drain
+    /// matches the round-205 `pending_paint_order` flow).
+    pub pending_shape_rendering: Option<String>,
     /// Round 118 — "next element is a `<use>` instance root" flag.
     /// SVG 1.1 §11.5: "setting display: none on a `<path>` element will
     /// prevent that element from getting rendered directly onto the
@@ -879,6 +989,8 @@ impl ParseContext {
             pending_paint_order: None,
             vector_effects: Vec::new(),
             pending_vector_effect: None,
+            shape_renderings: Vec::new(),
+            pending_shape_rendering: None,
         }
     }
 
@@ -964,6 +1076,22 @@ impl ParseContext {
             .push(crate::preserved::VectorEffectBinding {
                 path: self.current_path.clone(),
                 vector_effect,
+            });
+    }
+
+    /// Round 221 — record an author `shape-rendering` attribute against
+    /// the current scene-graph path (SVG 2 §13.10.2). Same
+    /// `track_id_paths` gate as the other side-channel recorders. The
+    /// encoder re-emits the matching shape / `<g>` with
+    /// `shape-rendering="..."` on round-trip.
+    pub fn record_shape_rendering(&mut self, shape_rendering: String) {
+        if !self.track_id_paths {
+            return;
+        }
+        self.shape_renderings
+            .push(crate::preserved::ShapeRenderingBinding {
+                path: self.current_path.clone(),
+                shape_rendering,
             });
     }
 
@@ -1851,6 +1979,14 @@ pub fn parse_element_to_node_ctx(
             // the group's emit site.
             let saved_pending_vector_effect = ctx.pending_vector_effect.take();
             let group_vector_effect = capture_vector_effect_attr(el);
+            // Round 221 — capture any `shape-rendering=` carried on the
+            // `<g>` so a hand-authored attribute survives round-trip.
+            // The property IS inherited per §13.10.2, but the round-trip
+            // carrier is purely lexical — emitting it on the topmost
+            // emit site (the group) avoids redundantly recording on
+            // every cascaded descendant.
+            let saved_pending_shape_rendering = ctx.pending_shape_rendering.take();
+            let group_shape_rendering = capture_shape_rendering_attr(el);
             let transform = match attr(el, "transform") {
                 Some(v) => parse_transform(v)?,
                 None => Transform2D::identity(),
@@ -1896,6 +2032,9 @@ pub fn parse_element_to_node_ctx(
             // Round 209 — same restore-then-layer flow for the
             // `vector-effect` carrier.
             ctx.pending_vector_effect = group_vector_effect.or(saved_pending_vector_effect);
+            // Round 221 — same restore-then-layer flow for the
+            // `shape-rendering` carrier.
+            ctx.pending_shape_rendering = group_shape_rendering.or(saved_pending_shape_rendering);
             Some(Node::Group(group))
         }
         // Round 115 — SVG 2 §16.5 `<a>` hyperlink. The `<a>` element is
@@ -2185,6 +2324,15 @@ pub fn parse_element_to_node_ctx(
             // (canonicalised). Empty / `none` / `inherit` skip
             // recording so the binding is never a no-op.
             ctx.pending_vector_effect = capture_vector_effect_attr(el);
+            // Round 221 — SVG 2 §13.10.2 `shape-rendering` round-trip
+            // capture. Same flow as the round-205 / round-209 captures
+            // above: the cascade resolves the property onto
+            // `state.shape_rendering`, but the round-trip carrier
+            // records the source-literal so a `parse → write` cycle
+            // re-emits the author's keyword verbatim (canonicalised to
+            // the spec's camelCase). Absent / `inherit` / unrecognised
+            // tokens skip recording.
+            ctx.pending_shape_rendering = capture_shape_rendering_attr(el);
             // Round 205 — SVG 2 §13.8 `paint-order`. The round-1
             // `PathNode { fill, stroke }` shape always paints fill
             // BEFORE stroke (the §13.8 `normal` order); when the
@@ -2322,6 +2470,15 @@ pub fn parse_element_to_node_ctx(
     if let Some(effect) = ctx.pending_vector_effect.take() {
         ctx.record_vector_effect(effect);
     }
+    // Round 221 — drain the shape / `<g>` branch's pending
+    // `shape-rendering` (if any) and record it at the same outer-most
+    // emit site the round-205 / round-209 recorders use. The encoder
+    // re-emits the source attribute on the matching shape / `<g>` on
+    // round-trip; the actual rendering-hint consumption (anti-alias
+    // toggle, edge snap) is `oxideav-raster`'s job.
+    if let Some(sr) = ctx.pending_shape_rendering.take() {
+        ctx.record_shape_rendering(sr);
+    }
     Ok(Some(wrapped))
 }
 
@@ -2425,6 +2582,40 @@ fn capture_vector_effect_attr(el: &Element) -> Option<String> {
         canon.push_str(h);
     }
     Some(canon)
+}
+
+/// Round 221 — extract a canonicalised `shape-rendering` attribute
+/// from `el` for round-trip preservation. Returns `Some(canonical)`
+/// when the attribute resolves to one of the four spec keywords;
+/// returns `None` for an absent attribute, an `inherit` keyword, or
+/// an unrecognised token (the cascade keeps the inherited value in
+/// those cases, so the round-trip carrier matches the parse-time
+/// fallback).
+///
+/// Canonical form is the spec's camelCase spelling (`auto` /
+/// `optimizeSpeed` / `crispEdges` / `geometricPrecision`) — source
+/// `OPTIMIZESPEED` round-trips as `optimizeSpeed`, matching the
+/// §13.10.2 attribute table.
+///
+/// Unlike the round-205 `paint-order` / round-209 `vector-effect`
+/// capture helpers (which skip the initial-value keyword to avoid
+/// no-op binding bloat), the `auto` keyword IS recorded when the
+/// author explicitly wrote it — a hand-authored
+/// `shape-rendering="auto"` is a deliberate annotation (e.g. an
+/// inheritance reset on a descendant of a `<g shape-rendering=
+/// "optimizeSpeed">`) and round-tripping that intent is more
+/// faithful than silently dropping it. The absent-attribute case is
+/// still skipped (no binding) so an initial-value document doesn't
+/// bloat the output with redundant `shape-rendering="auto"` on every
+/// shape.
+fn capture_shape_rendering_attr(el: &Element) -> Option<String> {
+    let raw = attr(el, "shape-rendering")?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("inherit") {
+        return None;
+    }
+    let sr = ShapeRendering::parse_keyword(trimmed)?;
+    Some(sr.as_canonical_str().to_string())
 }
 
 /// Round 21 — return the child-index sub-path from `root` down to the

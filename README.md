@@ -153,6 +153,59 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
+## Round 221 additions
+
+- **SVG 2 §13.10.2 `shape-rendering` property**
+  (`auto | optimizeSpeed | crispEdges | geometricPrecision`) on
+  shapes.
+  - New [`crate::element::ShapeRendering`] enum carried on
+    [`crate::element::PaintState`]. Inherited per the §13.10.2
+    attribute table; initial value `Auto`. Resolves through
+    presentation attributes, inline `style="..."`, and
+    `<style>`-block rules via the existing round-4 cascade.
+    Case-insensitive keyword matching; `inherit` / unknown tokens
+    keep the inherited value (matches the tolerant policy of
+    `text-anchor` / `paint-order` / `visibility`).
+  - **Round-trip preservation.** New
+    [`crate::preserved::ShapeRenderingBinding`] +
+    [`crate::preserved::PreservedExtras::shape_renderings`]
+    side-channel captures the canonicalised camelCase keyword string
+    at the topmost emit slot for each shape / `<g>` carrying a
+    recognised `shape-rendering=` attribute. A `<g shape-rendering=…>`
+    ancestor records on the group's own slot (one binding per source
+    attribute slot — not per cascaded descendant), so a hand-authored
+    grouping attribute survives a
+    `parse_svg_with_extras → write_svg_with_extras` cycle. The
+    encoder re-emits `shape-rendering=` on the matching shape / `<g>`
+    on round-trip.
+  - **Explicit `auto` is preserved.** Unlike the round-205
+    `paint-order` / round-209 `vector-effect` capturers (which skip
+    the initial value to avoid no-op binding bloat), an explicit
+    author `shape-rendering="auto"` is recorded — it carries author
+    intent (e.g. an inheritance reset on a descendant of a `<g
+    shape-rendering="optimizeSpeed">`). The absent-attribute case is
+    still skipped so an initial-value document doesn't bloat the
+    output with redundant `shape-rendering="auto"` on every shape.
+  - **Canonical camelCase emission.** Source `OPTIMIZESPEED` /
+    `optimizespeed` / `OptimizeSpeed` all round-trip as
+    `optimizeSpeed`, matching the §13.10.2 attribute table's
+    spelling.
+  - The actual rendering-hint consumption (anti-alias toggle, edge
+    snap) happens in `oxideav-raster`; this round delivers parse +
+    inherited cascade + round-trip preservation. A downstream
+    rasteriser reads the resolved value off the carried `PaintState`
+    or off the per-shape `ShapeRenderingBinding`.
+  - 18 integration tests in `tests/round221_shape_rendering.rs` cover
+    the no-attribute baseline (no binding), each of the four spec
+    keywords recorded with canonical camelCase, case-insensitive
+    matching, explicit-`auto` recording, `inherit` skipping,
+    unknown-token tolerance, empty-value skipping, the presentation-
+    attribute and `style="..."` cascade lanes, the inheritance
+    through a `<g>` ancestor, round-trip emission on `<rect>` /
+    `<path>` / `<g>`, double round-trip convergence, `parse_svg` (no
+    extras) still loading the document, and the per-child-override-
+    records-separately pattern.
+
 ## Round 215 additions
 
 - **SVG 1.1 §14.3.5 `clip-rule` property** (`nonzero | evenodd |

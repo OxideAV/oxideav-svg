@@ -245,6 +245,17 @@ pub struct PreservedExtras {
     /// instead of a scene-graph tree-path. Populated only by
     /// [`crate::decoder::parse_svg_with_extras`].
     pub clip_rules: Vec<ClipRuleBinding>,
+    /// Round 221 — SVG 2 §13.10.2 `shape-rendering` source-text
+    /// bindings, recorded per emitted shape so the encoder can re-emit
+    /// `shape-rendering="..."` on the matching `<path>` / `<rect>` /
+    /// `<circle>` / `<ellipse>` / `<line>` / `<polyline>` /
+    /// `<polygon>` / `<g>` on round-trip. The property is inherited
+    /// per §13.10.2, but the binding is purely lexical — it records
+    /// exactly where the author wrote the attribute (the topmost emit
+    /// site for the shape, mirroring the round-205 `paint-order` and
+    /// round-209 `vector-effect` carriers). Populated only by
+    /// [`crate::decoder::parse_svg_with_extras`].
+    pub shape_renderings: Vec<ShapeRenderingBinding>,
 }
 
 /// One captured animation child of a known-id parent element.
@@ -349,6 +360,7 @@ impl PreservedExtras {
             && self.paint_orders.is_empty()
             && self.vector_effects.is_empty()
             && self.clip_rules.is_empty()
+            && self.shape_renderings.is_empty()
     }
 }
 
@@ -375,6 +387,31 @@ pub struct PaintOrderBinding {
 /// rasterisation lives in `oxideav-raster`), so the binding's job is
 /// purely to round-trip the source attribute so a `parse → write`
 /// cycle preserves the author's request.
+/// Round 221 — one (scene-graph tree-path, author `shape-rendering`
+/// keyword) pair. Same shape as [`PaintOrderBinding`] /
+/// [`VectorEffectBinding`] — the scene graph does not yet expose a
+/// typed rendering-hint hook (`oxideav_core::PathNode` carries no
+/// rendering-quality field; the hint consumption lives in
+/// `oxideav-raster`), so the binding's job is purely to round-trip
+/// the source attribute so a `parse → write` cycle preserves the
+/// author's hint verbatim.
+#[derive(Clone, Debug)]
+pub struct ShapeRenderingBinding {
+    /// Tree-path through the scene graph; matches the layout of
+    /// [`IdScenePath::path`].
+    pub path: Vec<usize>,
+    /// Author-supplied keyword string canonicalised to the spec's
+    /// camelCase spelling (`auto` / `optimizeSpeed` / `crispEdges` /
+    /// `geometricPrecision`). The capture helper canonicalises
+    /// case-insensitively, so source `OPTIMIZESPEED` round-trips as
+    /// `optimizeSpeed`. The binding skips recording when the resolved
+    /// keyword is the initial value (`auto`) AND the source author
+    /// didn't write an explicit `shape-rendering=`; the
+    /// initial-value-with-explicit-keyword case records so a
+    /// hand-authored `shape-rendering="auto"` survives the round-trip.
+    pub shape_rendering: String,
+}
+
 #[derive(Clone, Debug)]
 pub struct VectorEffectBinding {
     /// Tree-path through the scene graph; matches the layout of
