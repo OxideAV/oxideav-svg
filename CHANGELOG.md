@@ -7,14 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.6](https://github.com/OxideAV/oxideav-svg/compare/v0.1.5...v0.1.6) - 2026-06-02
-
-### Added
-
-- round 209 — SVG 2 §8.13 vector-effect property + non-inherited cascade
-- round 205 — SVG 2 §13.8 paint-order property + scene-graph operation-order split
-- round 199 — SVG 2 §11.2 / §11.2.2 list-of-values on <text>/<tspan> x/y/dx/dy/rotate
-
 ### Added
 
 - **Round 215** — SVG 1.1 §14.3.5 `clip-rule` property
@@ -184,6 +176,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     whitespace) leave the pen unchanged, matching the round-2
     `max_advance == 0 ⇒ pen.x = origin_x` rule.
   - 9 integration tests in `tests/round199_text_per_char.rs`.
+
+## [0.1.6](https://github.com/OxideAV/oxideav-svg/compare/v0.1.5...v0.1.6) - 2026-06-02
+
+### Added
+
+- round 209 — SVG 2 §8.13 vector-effect property + non-inherited cascade
+- round 205 — SVG 2 §13.8 paint-order property + scene-graph operation-order split
+- round 199 — SVG 2 §11.2 / §11.2.2 list-of-values on <text>/<tspan> x/y/dx/dy/rotate
 
 ## [0.1.5](https://github.com/OxideAV/oxideav-svg/compare/v0.1.4...v0.1.5) - 2026-05-29
 
