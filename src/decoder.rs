@@ -8,10 +8,10 @@ use oxideav_core::{
 
 use crate::css::MatchContext;
 use crate::element::{
-    derive_child_ctx, flatten_gradient_to_paint, parse_clip_path_def, parse_element_to_node_ctx,
-    parse_filter_def, parse_linear_gradient_def, parse_marker_def, parse_mask_def, parse_number,
-    parse_pattern_def, parse_radial_gradient_def, parse_symbol_def, parse_view_def, PaintState,
-    ParseContext,
+    derive_child_ctx, flatten_gradient_to_paint, parse_clip_path_def, parse_clip_rule_attr,
+    parse_element_to_node_ctx, parse_filter_def, parse_linear_gradient_def, parse_marker_def,
+    parse_mask_def, parse_number, parse_pattern_def, parse_radial_gradient_def, parse_symbol_def,
+    parse_view_def, PaintState, ParseContext,
 };
 use crate::filter::{MeetOrSlice, PreserveAspectRatio, PreserveAspectRatioAlign};
 use crate::length::ResolveContext;
@@ -20,8 +20,8 @@ use crate::parser::{
     Node as XmlNode,
 };
 use crate::preserved::{
-    AnimationFragment, DescriptiveBinding, IdScenePath, LinkBinding, PaintOrderBinding,
-    PathLengthBinding, PreservedExtras, VectorEffectBinding,
+    AnimationFragment, ClipRuleBinding, DescriptiveBinding, IdScenePath, LinkBinding,
+    PaintOrderBinding, PathLengthBinding, PreservedExtras, VectorEffectBinding,
 };
 
 /// Codec id string for SVG vector frames.
@@ -102,6 +102,12 @@ pub fn parse_svg_with_extras(bytes: &[u8]) -> Result<(VectorFrame, PreservedExtr
         find_svg_root(&nodes).ok_or_else(|| Error::invalid("SVG: missing <svg> root element"))?;
     let mut extras = PreservedExtras::new();
     collect_extras(svg, &mut extras, None);
+    // Round 215 — SVG 1.1 §14.3.5 `clip-rule` side-channel collection.
+    // The binding records the resolved rule (and path-bytes
+    // fingerprint) for every `<clipPath>` whose rule deviates from the
+    // §14.3.5 initial value `nonzero` OR whose author explicitly wrote
+    // a `clip-rule=` keyword anywhere in the subtree.
+    collect_clip_rule_bindings(svg, &mut extras);
     extras.root_preserve_aspect_ratio = attr(svg, "preserveAspectRatio").map(str::to_string);
     // Round 95 — independent of the scene-graph build, walk the source
     // XML for every id-bearing `<view>` so a caller resolving an SVG
@@ -243,6 +249,83 @@ fn collect_extras(el: &Element, extras: &mut PreservedExtras, current_id: Option
             collect_extras(c, extras, next_id);
         }
     }
+}
+
+/// Round 215 — SVG 1.1 §14.3.5 `clip-rule` side-channel collection.
+/// Walks the source XML for every `<clipPath id="...">` and, when the
+/// resolved rule diverges from the §14.3.5 initial value `nonzero` OR
+/// the author explicitly wrote a `clip-rule=` keyword, parses the
+/// clipPath into a [`crate::defs::ClipPathDef`] and records a
+/// [`ClipRuleBinding`] keyed by the path-bytes fingerprint the encoder
+/// uses for its own clip-path dedup.
+///
+/// Resolution (matching [`crate::element::parse_clip_path_def`]):
+///   1. The `<clipPath>` element's own `clip-rule=` (if any) sets the
+///      inherited default for children.
+///   2. The first contributing shape child's `clip-rule=` (if any)
+///      overrides the inherited default.
+///
+/// Recording rule: a binding is emitted when the resolved rule is
+/// non-default (`evenodd`) OR when the author explicitly wrote a
+/// `clip-rule=` keyword anywhere in the clipPath subtree. An
+/// initial-value (`nonzero`) document with no explicit attribute
+/// records nothing.
+fn collect_clip_rule_bindings(el: &Element, extras: &mut PreservedExtras) {
+    if tag_local(&el.name) == "clippath" {
+        collect_one_clip_rule_binding(el, extras);
+    }
+    for child in &el.children {
+        if let XmlNode::Element(c) = child {
+            collect_clip_rule_bindings(c, extras);
+        }
+    }
+}
+
+fn collect_one_clip_rule_binding(el: &Element, extras: &mut PreservedExtras) {
+    let id = match attr(el, "id") {
+        Some(v) => v.to_string(),
+        None => return, // Id-less clipPath can't be referenced.
+    };
+    let inherited = attr(el, "clip-rule");
+    // First child shape's explicit `clip-rule=`, if any.
+    let mut first_child_rule: Option<&str> = None;
+    for child in &el.children {
+        if let XmlNode::Element(c) = child {
+            let local = tag_local(&c.name);
+            if matches!(
+                local.as_str(),
+                "rect" | "circle" | "ellipse" | "line" | "polyline" | "polygon" | "path"
+            ) {
+                first_child_rule = attr(c, "clip-rule");
+                break;
+            }
+        }
+    }
+    let explicit = first_child_rule.or(inherited);
+    let resolved = parse_clip_rule_attr(explicit);
+    let author_explicit = explicit.is_some_and(|v| parse_clip_rule_attr(Some(v)).is_some());
+    let keyword = match resolved {
+        Some(oxideav_core::FillRule::EvenOdd) => "evenodd",
+        Some(oxideav_core::FillRule::NonZero) if author_explicit => "nonzero",
+        // Initial value with no explicit author keyword — nothing to
+        // record (the round-trip honours the §14.3.5 initial silently).
+        _ => return,
+    };
+    // Re-parse the clipPath subtree to compute the path-bytes
+    // fingerprint the encoder uses for its dedup. We construct a
+    // fresh [`ParseContext`] for this side pass (independent of the
+    // main scene-walk's context) so the binding collection doesn't
+    // mutate `ctx.defs`.
+    let mut ctx = ParseContext::new();
+    let Ok(Some((_, def))) = parse_clip_path_def(el, &mut ctx) else {
+        return;
+    };
+    let path_fingerprint = crate::encoder::path_fingerprint(&def.path);
+    extras.clip_rules.push(ClipRuleBinding {
+        clip_path_id: id,
+        path_fingerprint,
+        clip_rule: keyword.to_string(),
+    });
 }
 
 fn find_svg_root(nodes: &[XmlNode]) -> Option<&Element> {

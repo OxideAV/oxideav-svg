@@ -153,6 +153,81 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
+## Round 215 additions
+
+- **SVG 1.1 §14.3.5 `clip-rule` property** (`nonzero | evenodd |
+  inherit`) on graphics elements within a `<clipPath>` element.
+  - New typed [`crate::defs::ClipPathDef::clip_rule`] exposes the
+    resolved [`oxideav_core::FillRule`] for the merged-path
+    representation. Initial value [`oxideav_core::FillRule::NonZero`]
+    per the §14.3.5 attribute table.
+  - **Inheritance + override** — `clip-rule` is an inherited
+    presentation property per §14.3.5, so a value on the `<clipPath>`
+    element itself cascades to its shape children. A per-shape
+    `clip-rule=` overrides the inherited value (the spec's worked
+    example: `<clipPath clip-rule="nonzero"><path clip-rule="evenodd"/></clipPath>`
+    resolves the child's rule to `evenodd`). Multiple shape children
+    merge into one [`oxideav_core::Path`]; the resolved rule is the
+    **first contributing shape's** rule (subsequent children that
+    disagree are tolerated but the merged path honours only one
+    rule).
+  - **Scope-restricted** — per §14.3.5, "the 'clip-rule' property only
+    applies to graphics elements that are contained within a
+    'clipPath' element". `clip-rule=` on the *referencing* element
+    (the shape with `clip-path="url(#…)"`) is silently ignored —
+    matching the spec's second worked example
+    (`<rect clip-path="url(#MyClip)" clip-rule="evenodd"/>` does NOT
+    flip the clip rule).
+  - **Round-trip preservation.** New
+    [`crate::preserved::ClipRuleBinding`] +
+    [`crate::preserved::PreservedExtras::clip_rules`] side-channel
+    records the canonical keyword (`nonzero` / `evenodd`) for each
+    captured `<clipPath>` that either resolves to `evenodd` OR carries
+    an explicit `clip-rule=` keyword in its subtree. The binding keys
+    on the **source `<clipPath>` id** (for diagnostic visibility) plus
+    the **path-bytes fingerprint** the encoder uses for its own
+    clipPath dedup — the encoder generates fresh `clip1`/`clip2` ids
+    per de-duplicated path, so routing the keyword by fingerprint
+    lands it on the right def even though the source id is rewritten
+    on round-trip. The encoder re-emits `clip-rule="..."` on the
+    inner `<path>` of the matching `<clipPath>` def (matching the
+    §14.3.5 worked example — rule on the clipping-shape, not on the
+    `<clipPath>` element itself). An initial-value document with no
+    explicit author keyword skips the binding entirely so a no-op
+    case doesn't bloat the output.
+  - **Case-insensitive matching** — `EVENODD` / `EvenOdd` /
+    `evenodd` are all canonicalised to lowercase `evenodd` on the
+    binding; unknown / malformed tokens (including the spec's
+    `inherit` keyword and any author typo) fall back to the §14.3.5
+    initial value `nonzero` without recording a binding.
+  - **Id-less `<clipPath>` skipped** — a `<clipPath>` without an
+    `id="..."` cannot be referenced by `clip-path="url(#…)"` and has
+    no round-trip emit site, so the binding skips it even when
+    `clip-rule=evenodd` is present on its children.
+  - The actual clip-rule evaluation happens in `oxideav-raster`; this
+    round delivers parse + scope-restricted cascade + round-trip
+    preservation. `oxideav_core::Path` (used for `Group::clip`)
+    carries no `fill_rule` field today, so a rasterizer that wants
+    the non-default rule reads it from
+    [`crate::defs::ClipPathDef`] (or via the side-channel binding
+    keyed by the same path fingerprint).
+  - 18 integration tests in `tests/round215_clip_rule.rs` cover the
+    no-attribute baseline (no binding), `clip-rule=evenodd` on the
+    child shape, `clip-rule=evenodd` on the `<clipPath>` element
+    cascading to the child, per-child override of the inherited
+    rule (§14.3.5 worked example), explicit `clip-rule=nonzero`
+    recording for round-trip fidelity, case-insensitive keyword
+    matching, unknown-token fallback, the `clip-rule` on the
+    referencing element ignored per §14.3.5, id-less clipPath
+    skipping, `parse_svg` (no extras) still loading the document,
+    round-trip re-emitting `clip-rule="evenodd"` inside the
+    `<clipPath>` def (not on the referencing rect), explicit-nonzero
+    round-trip, no-attribute round-trip omitting the attribute,
+    double-round-trip convergence, first-child-rule-wins for the
+    merged path, typed-def exposing the resolved rule
+    (`FillRule::EvenOdd` and `FillRule::NonZero`), and two distinct
+    clipPaths each recording their own binding.
+
 ## Round 209 additions
 
 - **SVG 2 §8.13 `vector-effect` property**

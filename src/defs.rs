@@ -24,7 +24,7 @@
 
 use std::collections::HashMap;
 
-use oxideav_core::{GradientStop, Group, Path, SpreadMethod, Transform2D, ViewBox};
+use oxideav_core::{FillRule, GradientStop, Group, Path, SpreadMethod, Transform2D, ViewBox};
 
 use crate::filter::{FilterGraph, PreserveAspectRatio};
 use crate::parser::Element;
@@ -333,9 +333,23 @@ pub struct MaskDef {
 /// into a single concatenated [`Path`] — the fill-rule union of the
 /// shapes approximates the SVG semantics (which is "the union of every
 /// child's filled interior").
+///
+/// Round 215 (SVG 1.1 §14.3.5) adds `clip_rule`: the resolved fill rule
+/// (`nonzero` / `evenodd`) that determines clip-path interior membership.
+/// The property cascades from the `<clipPath>` element to its child
+/// shapes; a per-shape `clip-rule=` attribute overrides. Multiple child
+/// shapes are merged into one [`Path`], so the def records the rule of
+/// the **first** child shape (the others are assumed to share it — when
+/// they don't, only the merged-path rule is preserved at the clip
+/// evaluation site; the author's original per-child attribute survives
+/// the round-trip via [`crate::preserved::PreservedExtras::clip_rules`]).
+/// Initial value `nonzero` per the §14.3.5 attribute table.
 #[derive(Clone, Debug)]
 pub struct ClipPathDef {
     pub path: Path,
+    /// Round 215 — SVG 1.1 §14.3.5 `clip-rule` resolved for the merged
+    /// path. Initial value [`FillRule::NonZero`].
+    pub clip_rule: FillRule,
 }
 
 /// Captured `<symbol id="...">`. Like `<defs>`, symbols are deferred

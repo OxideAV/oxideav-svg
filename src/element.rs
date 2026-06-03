@@ -2595,6 +2595,16 @@ pub fn parse_mask_def(el: &Element, ctx: &mut ParseContext) -> Result<Option<(St
 /// fill rule reproduces the SVG semantic of "the union of every
 /// child's filled interior". `<use>` references inside `<clipPath>`
 /// are deferred (round 3).
+///
+/// Round 215 — SVG 1.1 §14.3.5 `clip-rule`. The property cascades from
+/// the `<clipPath>` element into its child shapes (it is an inherited
+/// property per the §14.3.5 attribute table). Each child shape's own
+/// `clip-rule=` overrides the inherited value. The resolved rule for
+/// the merged path is the **first child shape's** rule (subsequent
+/// children that disagree are tolerated but the merged path can carry
+/// only one rule — the author's original per-child attribute is
+/// preserved on the round-trip side-channel by
+/// [`crate::decoder::parse_svg_with_extras`]). Initial value `nonzero`.
 pub fn parse_clip_path_def(
     el: &Element,
     ctx: &mut ParseContext,
@@ -2603,7 +2613,15 @@ pub fn parse_clip_path_def(
         Some(v) => v.to_string(),
         None => return Ok(None),
     };
+    // Round 215 — inherited rule from the `<clipPath>` element itself.
+    // The `<clipPath>` is a never-rendered def, but `clip-rule` is an
+    // inherited presentation property per SVG 1.1 §14.3.5, so a value
+    // declared on the parent reaches the child shape unless that shape
+    // overrides it. Unknown / malformed values fall back to the initial
+    // `nonzero` rather than failing the document.
+    let inherited_rule = parse_clip_rule_attr(attr(el, "clip-rule")).unwrap_or(FillRule::NonZero);
     let mut path = Path::new();
+    let mut resolved_rule: Option<FillRule> = None;
     let elem_ctx = ctx.resolve_ctx;
     for child in &el.children {
         if let XmlNode::Element(c) = child {
@@ -2627,6 +2645,14 @@ pub fn parse_clip_path_def(
                     None => p,
                 };
                 path.commands.extend(transformed.commands);
+                // Round 215 — record the rule contributed by the first
+                // shape child that actually adds geometry. Subsequent
+                // children that disagree are tolerated; the merged path
+                // can only honour one rule at the rasterizer.
+                if resolved_rule.is_none() {
+                    resolved_rule =
+                        Some(parse_clip_rule_attr(attr(c, "clip-rule")).unwrap_or(inherited_rule));
+                }
             }
         }
     }
@@ -2634,7 +2660,31 @@ pub fn parse_clip_path_def(
         return Ok(None);
     }
     let _ = ctx;
-    Ok(Some((id, ClipPathDef { path })))
+    Ok(Some((
+        id,
+        ClipPathDef {
+            path,
+            clip_rule: resolved_rule.unwrap_or(inherited_rule),
+        },
+    )))
+}
+
+/// Round 215 — parse a `clip-rule` attribute value into a typed
+/// [`FillRule`] per SVG 1.1 §14.3.5. `nonzero` / `evenodd` only; any
+/// other token (including `inherit`, the empty string, or unknown
+/// payloads) returns `None` so the caller can fall back to the
+/// inherited / initial value.
+pub(crate) fn parse_clip_rule_attr(value: Option<&str>) -> Option<FillRule> {
+    let v = value?.trim();
+    if v.eq_ignore_ascii_case("nonzero") {
+        Some(FillRule::NonZero)
+    } else if v.eq_ignore_ascii_case("evenodd") {
+        Some(FillRule::EvenOdd)
+    } else {
+        // `inherit` and unrecognised tokens fall through; callers
+        // resolve those against the inherited / initial value.
+        None
+    }
 }
 
 /// Parse `<symbol id="...">` into a [`SymbolDef`]. Captured here for

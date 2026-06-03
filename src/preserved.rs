@@ -235,6 +235,16 @@ pub struct PreservedExtras {
     /// the decoder never propagates the value to descendants. Populated
     /// only by [`crate::decoder::parse_svg_with_extras`].
     pub vector_effects: Vec<VectorEffectBinding>,
+    /// Round 215 — SVG 1.1 §14.3.5 `clip-rule` bindings, recorded per
+    /// captured `<clipPath id="...">` so the encoder can re-emit
+    /// `clip-rule=` on the inner `<path>` element on round-trip. The
+    /// property only applies to graphics elements *inside* a
+    /// `<clipPath>` (§14.3.5: "The 'clip-rule' property only applies to
+    /// graphics elements that are contained within a 'clipPath'
+    /// element"), so the binding keys on the source `<clipPath>` id
+    /// instead of a scene-graph tree-path. Populated only by
+    /// [`crate::decoder::parse_svg_with_extras`].
+    pub clip_rules: Vec<ClipRuleBinding>,
 }
 
 /// One captured animation child of a known-id parent element.
@@ -338,6 +348,7 @@ impl PreservedExtras {
             && self.metadata.is_empty()
             && self.paint_orders.is_empty()
             && self.vector_effects.is_empty()
+            && self.clip_rules.is_empty()
     }
 }
 
@@ -377,6 +388,41 @@ pub struct VectorEffectBinding {
     /// `none` / empty / `inherit` cases skip recording entirely so
     /// the binding is never an initial-value no-op).
     pub vector_effect: String,
+}
+
+/// Round 215 — SVG 1.1 §14.3.5 `clip-rule` source-text binding,
+/// recorded per captured `<clipPath>` so the encoder can re-emit
+/// `clip-rule=` on the round-trip without inheriting the property
+/// onto the wrong element. Unlike the round-205 / 209 bindings (which
+/// key on a scene-graph tree-path), `clip-rule` only applies inside
+/// `<clipPath>` — so the binding keys on the **source `<clipPath>`
+/// id** for diagnostic visibility plus the **path-bytes fingerprint**
+/// for encoder routing (the encoder generates fresh `clip1`/`clip2`
+/// ids per de-duplicated path, so we can't round-trip via the source
+/// id alone). The encoder emits the canonical keyword (`nonzero` /
+/// `evenodd`) on the inner `<path>` element it generates for the
+/// merged-path representation; the binding is omitted when the
+/// resolved rule equals the §14.3.5 initial value (`nonzero`) AND the
+/// author didn't explicitly write a `clip-rule=` keyword, so a no-op
+/// binding doesn't bloat the output.
+#[derive(Clone, Debug)]
+pub struct ClipRuleBinding {
+    /// Source `<clipPath id="...">` id this rule applies to. The
+    /// binding never records when the source `<clipPath>` had no `id`,
+    /// since an id-less clipPath cannot be referenced and therefore
+    /// has no round-trip emit site.
+    pub clip_path_id: String,
+    /// Path-bytes fingerprint (matches the encoder's
+    /// `ClipPathCollector` dedup key). The encoder uses this to route
+    /// the rule to the right auto-generated `<clipPath>` def, even
+    /// though the source id is rewritten on round-trip.
+    pub path_fingerprint: String,
+    /// Canonicalised keyword string: lowercased, trimmed. Either
+    /// `"nonzero"` or `"evenodd"`. Only recorded when the resolved
+    /// rule is non-default (`evenodd`) OR when the source explicitly
+    /// declared `clip-rule="nonzero"` (so the round-trip preserves
+    /// author intent even when the value matches the initial).
+    pub clip_rule: String,
 }
 
 /// Round 122 — one captured `<title>` or `<desc>` element body. Per SVG

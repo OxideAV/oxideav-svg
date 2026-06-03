@@ -224,8 +224,22 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
             }
             write_gradient(&mut out, id, paint);
         }
+        // Round 215 — SVG 1.1 §14.3.5 `clip-rule` lookup. Build a
+        // fingerprint → keyword index from the side-channel so the
+        // inner `<path>` of each emitted clipPath picks up the
+        // author's original rule on round-trip. The binding key
+        // matches `path_fingerprint`, which the encoder also uses for
+        // its own clipPath dedup, so the lookup is direct.
+        let clip_rule_by_fp: HashMap<&str, &str> = extras
+            .clip_rules
+            .iter()
+            .map(|b| (b.path_fingerprint.as_str(), b.clip_rule.as_str()))
+            .collect();
         for (id, path) in &clips.entries {
-            write_clip_path(&mut out, id, path);
+            let rule = clip_rule_by_fp
+                .get(path_fingerprint(path).as_str())
+                .copied();
+            write_clip_path(&mut out, id, path, rule);
         }
         for (id, kind, content) in &masks.entries {
             write_mask(&mut out, id, *kind, content, &gradients);
@@ -1151,7 +1165,7 @@ impl MaskCollector {
     }
 }
 
-fn path_fingerprint(p: &Path) -> String {
+pub(crate) fn path_fingerprint(p: &Path) -> String {
     let mut s = String::with_capacity(p.commands.len() * 12);
     for cmd in &p.commands {
         match cmd {
@@ -1240,12 +1254,22 @@ fn node_fingerprint(n: &Node) -> String {
     }
 }
 
-fn write_clip_path(out: &mut String, id: &str, path: &Path) {
+fn write_clip_path(out: &mut String, id: &str, path: &Path, clip_rule: Option<&str>) {
     out.push_str(&format!(
         "    <clipPath id=\"{}\">\n      <path d=\"",
         escape_attr(id)
     ));
     write_path_d(out, &path.commands);
+    // Round 215 — SVG 1.1 §14.3.5 `clip-rule` attribute on the inner
+    // `<path>` element. The property only applies to graphics elements
+    // inside `<clipPath>`, and the encoder always emits a single
+    // `<path>` per clipPath (merged from the source's children), so
+    // the rule lives on this child rather than on the `<clipPath>`
+    // element itself.
+    if let Some(rule) = clip_rule {
+        out.push_str("\" clip-rule=\"");
+        out.push_str(&escape_attr(rule));
+    }
     out.push_str("\"/>\n    </clipPath>\n");
 }
 
