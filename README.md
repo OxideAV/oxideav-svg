@@ -153,6 +153,66 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
+## Round 235 additions
+
+- **SVG 2 §13.10.4 `image-rendering` property**
+  (`auto | optimizeQuality | optimizeSpeed`) on `<image>` and (via
+  the cascade) any descendant element that paints raster content.
+  - New [`crate::element::ImageRendering`] enum carried on
+    [`crate::element::PaintState`]. Inherited per the §13.10.4
+    attribute table; initial value `Auto`. Resolves through
+    presentation attributes, inline `style="..."`, and
+    `<style>`-block rules via the existing round-4 cascade.
+    Case-insensitive keyword matching; `inherit` / unknown tokens
+    keep the inherited value (matches the tolerant policy of
+    `text-rendering` / `shape-rendering` / `text-anchor` /
+    `paint-order` / `visibility`).
+  - **Round-trip preservation.** New
+    [`crate::image::SvgImage::image_rendering`] field captures the
+    canonicalised camelCase keyword off each source `<image>`
+    element carrying a recognised `image-rendering=` attribute. The
+    `<image>` is captured into
+    [`crate::preserved::PreservedExtras::images`] and the encoder
+    re-emits `image-rendering=` on the matching `<image>` on
+    round-trip — the §13.10.4 property applies to images, so the
+    natural emit site is the image itself rather than a separate
+    side-channel table.
+  - **Explicit `auto` is preserved.** Mirrors the round-221
+    `shape-rendering` / round-228 `text-rendering` policy — an
+    explicit author `image-rendering="auto"` is recorded because it
+    carries author intent (e.g. an inheritance reset on a
+    descendant of a `<g image-rendering="optimizeSpeed">`). The
+    absent-attribute case is still skipped so an initial-value
+    document doesn't bloat the output with redundant
+    `image-rendering="auto"` on every `<image>`.
+  - **Canonical camelCase emission.** Source `OPTIMIZEQUALITY` /
+    `optimizequality` / `OptimizeQuality` all round-trip as
+    `optimizeQuality`, matching the §13.10.4 attribute table's
+    spelling.
+  - **Coexists with `shape-rendering`.** Both inherited hints can
+    ride on the same subtree without interfering; the
+    `shape-rendering` side-channel (round 221) and the per-image
+    `image_rendering` slot record independently and the encoder
+    emits both attributes faithfully.
+  - The actual resampling-algorithm selection (nearest-neighbour,
+    bilinear, …) happens in `oxideav-raster`; this round delivers
+    parse + inherited cascade + round-trip preservation. A
+    downstream rasteriser reads the resolved value off the carried
+    `PaintState` or off the per-image `SvgImage::image_rendering`
+    field.
+  - 18 integration tests in `tests/round235_image_rendering.rs`
+    cover the no-attribute baseline (no binding), each of the
+    three spec keywords recorded with canonical camelCase,
+    case-insensitive matching, explicit-`auto` recording, `inherit`
+    skipping, unknown-token tolerance, empty-value skipping,
+    presentation-attribute / `style="…"` cascade resolution,
+    inheritance through a parent `PaintState`, child override of
+    the inherited value, round-trip emission on `<image>`, double
+    round-trip convergence, source-case canonicalisation through
+    round-trip, `parse_svg` (no extras) still loading the document,
+    and coexistence with the round-221 `shape-rendering` attribute
+    on a sibling subtree.
+
 ## Round 228 additions
 
 - **SVG 2 §13.10.3 `text-rendering` property**

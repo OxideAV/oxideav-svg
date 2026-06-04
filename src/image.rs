@@ -64,6 +64,15 @@ pub struct SvgImage {
     /// verbatim. SVG 2 §6 lets `<image>` carry its own — independent
     /// of the root `<svg>`.
     pub preserve_aspect_ratio: Option<String>,
+    /// Round 235 — SVG 2 §13.10.4 `image-rendering` keyword captured
+    /// off the source `<image>` element when present and recognised
+    /// (`auto` / `optimizeQuality` / `optimizeSpeed`, canonicalised
+    /// to the spec's camelCase). `None` for an absent attribute, an
+    /// `inherit` keyword, or an unrecognised token — the §13.10.4
+    /// property is inherited so the cascade keeps the inherited value
+    /// in those cases. Round-trip is byte-faithful: source
+    /// `OPTIMIZEQUALITY` round-trips as `optimizeQuality`.
+    pub image_rendering: Option<String>,
 }
 
 /// An `<image>` element's `href` resolved into one of the two
@@ -108,6 +117,20 @@ impl SvgImage {
         };
         let id = attr(el, "id").map(str::to_string);
         let preserve_aspect_ratio = attr(el, "preserveAspectRatio").map(str::to_string);
+        // Round 235 — capture an `image-rendering=` attribute when the
+        // value resolves to a §13.10.4 keyword. Absent / `inherit` /
+        // unknown payloads leave the slot empty so the cascade keeps
+        // the inherited value and the round-trip doesn't bloat with a
+        // redundant `image-rendering="auto"` on an initial-value
+        // document.
+        let image_rendering = attr(el, "image-rendering").and_then(|raw| {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("inherit") {
+                return None;
+            }
+            let ir = crate::element::ImageRendering::parse_keyword(trimmed)?;
+            Some(ir.as_canonical_str().to_string())
+        });
         Some(Self {
             href,
             x,
@@ -118,6 +141,7 @@ impl SvgImage {
             id,
             parent_id: parent_id.map(str::to_string),
             preserve_aspect_ratio,
+            image_rendering,
         })
     }
 
@@ -169,6 +193,13 @@ impl SvgImage {
         }
         if let Some(par) = &self.preserve_aspect_ratio {
             out.push_str(&format!(" preserveAspectRatio=\"{}\"", escape_attr(par)));
+        }
+        // Round 235 — SVG 2 §13.10.4 `image-rendering`. Emit only when
+        // a canonical keyword was captured (absent / `inherit` / unknown
+        // tokens leave the slot empty so the round-trip doesn't bloat
+        // an initial-value document).
+        if let Some(ir) = &self.image_rendering {
+            out.push_str(&format!(" image-rendering=\"{}\"", escape_attr(ir)));
         }
         let href_value = self.to_href_attr();
         out.push_str(&format!(" href=\"{}\"", escape_attr(&href_value)));

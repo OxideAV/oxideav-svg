@@ -9,6 +9,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 235** — SVG 2 §13.10.4 `image-rendering` property
+  (`auto | optimizeQuality | optimizeSpeed`) on `<image>` and (via
+  the cascade) any descendant element that paints raster content.
+  - New typed [`crate::element::ImageRendering`] enum carried on
+    [`crate::element::PaintState`]. Inherited per the §13.10.4
+    attribute table; initial value `Auto`. Resolves through
+    presentation attributes, inline `style="…"`, and `<style>`-block
+    rules via the existing round-4 cascade. Case-insensitive keyword
+    matching; `inherit` / unknown tokens keep the inherited value.
+  - **Round-trip preservation.** New
+    [`crate::image::SvgImage::image_rendering`] field captures the
+    canonicalised camelCase keyword off each source `<image>`
+    element. The encoder re-emits `image-rendering=` on the
+    matching `<image>` on round-trip; the §13.10.4 property applies
+    to images, so the natural emit site is the image itself rather
+    than a separate side-channel table.
+  - **Explicit `auto` is preserved** — mirrors the round-221
+    `shape-rendering` / round-228 `text-rendering` policy. The
+    absent-attribute case is still skipped so an initial-value
+    document doesn't bloat the output.
+  - **Canonical camelCase emission.** Source `OPTIMIZEQUALITY` /
+    `optimizequality` / `OptimizeQuality` all round-trip as
+    `optimizeQuality`, matching the §13.10.4 attribute table's
+    spelling.
+  - **Coexists with `shape-rendering`** — the two inherited hints
+    record independently (the `<g shape-rendering=…>` carrier lives
+    on the round-221 side-channel, the `<image image-rendering=…>`
+    carrier lives on the per-image `SvgImage::image_rendering`
+    slot) and the encoder emits both attributes faithfully.
+  - 18 integration tests in `tests/round235_image_rendering.rs`
+    cover the no-attribute baseline, each of the three spec
+    keywords, case-insensitive matching, explicit `auto` recording,
+    `inherit` skipping, unknown-token tolerance, empty-value
+    skipping, presentation-attribute / `style="…"` cascade
+    resolution, inheritance through a parent `PaintState`, child
+    override, round-trip emission on `<image>`, double round-trip
+    convergence, source-case canonicalisation, `parse_svg` (no
+    extras) loading the document, and coexistence with the
+    round-221 `shape-rendering` attribute on a sibling subtree.
+
 - **Round 228** — SVG 2 §13.10.3 `text-rendering` property
   (`auto | optimizeSpeed | optimizeLegibility | geometricPrecision`)
   on `<text>` and (via the cascade) descendant `<tspan>` /

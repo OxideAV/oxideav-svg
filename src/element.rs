@@ -462,6 +462,79 @@ impl TextRendering {
     }
 }
 
+/// Round 235 — SVG 2 §13.10.4 `image-rendering` resolved value
+/// (`auto | optimizeQuality | optimizeSpeed`).
+///
+/// Per §13.10.4 the property is a *hint* to the user agent about the
+/// speed-versus-quality tradeoff when sampling a raster `<image>` into
+/// vector space — it never alters the source bytes themselves. Values:
+///
+/// * `Auto` (initial): UA's own balance, with quality given more
+///   importance than speed. The §13.10.4 normative text requires the
+///   resampling algorithm to be at least as good as nearest-neighbour,
+///   with bilinear strongly preferred.
+/// * `OptimizeQuality`: emphasise quality over speed; resampling at
+///   least as good as bilinear.
+/// * `OptimizeSpeed`: emphasise speed over quality; resampling at
+///   least as good as nearest-neighbour, with a UA free to upgrade
+///   if a higher-quality algorithm meets the performance goal.
+///
+/// **Inherited:** yes (§13.10.4 attribute table). **Applies to:** the
+/// `images` category (`<image>`, plus any element that paints raster
+/// content through a `<filter>` `<feImage>` or a `<pattern>` carrying
+/// raster children — for round 235 only `<image>` is captured).
+/// Round 235 ships parse + cascade + round-trip preservation; the
+/// actual resampling-algorithm selection lives in `oxideav-raster`,
+/// which can read the resolved value off the carried [`PaintState`]
+/// or off the per-image [`crate::image::SvgImage::image_rendering`]
+/// field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ImageRendering {
+    /// Initial value — UA's own balance, with a quality bias.
+    #[default]
+    Auto,
+    /// Prioritise quality over speed; resampling at least as good as
+    /// bilinear.
+    OptimizeQuality,
+    /// Prioritise speed over quality; resampling at least as good as
+    /// nearest-neighbour, with a UA free to upgrade.
+    OptimizeSpeed,
+}
+
+impl ImageRendering {
+    /// Parse an `image-rendering` keyword (case-insensitive per CSS).
+    /// `inherit` returns `None` so the caller can keep the inherited
+    /// value already on its `PaintState`. Unknown / malformed tokens
+    /// also return `None`, matching the tolerant policy used by
+    /// `text-rendering` / `shape-rendering` / `text-anchor` /
+    /// `paint-order` / `visibility`.
+    pub(crate) fn parse_keyword(value: &str) -> Option<Self> {
+        let v = value.trim();
+        if v.eq_ignore_ascii_case("auto") {
+            Some(Self::Auto)
+        } else if v.eq_ignore_ascii_case("optimizequality") {
+            Some(Self::OptimizeQuality)
+        } else if v.eq_ignore_ascii_case("optimizespeed") {
+            Some(Self::OptimizeSpeed)
+        } else {
+            // `inherit` and unknown tokens fall through; the cascade
+            // keeps whatever value was inherited.
+            None
+        }
+    }
+
+    /// Canonicalised lower-camelCase keyword for round-trip emission.
+    /// Matches the spec's source-text spelling (camelCase for the
+    /// two non-`auto` keywords) so the round-trip is byte-faithful.
+    pub(crate) fn as_canonical_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::OptimizeQuality => "optimizeQuality",
+            Self::OptimizeSpeed => "optimizeSpeed",
+        }
+    }
+}
+
 /// Round 187 — SVG 2 §11.2.1 `lengthAdjust` attribute on
 /// `<text>` / `<tspan>` (`spacing | spacingAndGlyphs`). Selects how a
 /// `textLength`-driven width adjustment is distributed across the run:
@@ -543,6 +616,12 @@ pub struct PaintState {
     /// `oxideav-raster` / `oxideav-scribe`; this crate parses,
     /// cascades, and round-trips the keyword.
     pub text_rendering: TextRendering,
+    /// Round 235 — SVG 2 §13.10.4 `image-rendering` (inherited).
+    /// Initial value [`ImageRendering::Auto`]. The actual hint
+    /// consumption (resampling-algorithm selection) happens in
+    /// `oxideav-raster`; this crate parses, cascades, and round-trips
+    /// the keyword.
+    pub image_rendering: ImageRendering,
 }
 
 impl Default for PaintState {
@@ -576,6 +655,8 @@ impl Default for PaintState {
             shape_rendering: ShapeRendering::Auto,
             // §13.10.3 — initial value `auto`.
             text_rendering: TextRendering::Auto,
+            // §13.10.4 — initial value `auto`.
+            image_rendering: ImageRendering::Auto,
         }
     }
 }
@@ -819,6 +900,21 @@ impl PaintState {
             "text-rendering" => {
                 if let Some(tr) = TextRendering::parse_keyword(value) {
                     s.text_rendering = tr;
+                }
+            }
+            // Round 235 — SVG 2 §13.10.4 `image-rendering` (inherited).
+            // `auto | optimizeQuality | optimizeSpeed`. Same tolerant-
+            // keep-on-`inherit`-or-unknown policy as the round-221 /
+            // round-228 rendering hints above. Per §13.10.4 the
+            // property applies to `images`; we accept it on any
+            // element so a hand-authored `<g image-rendering=…>`
+            // cascades down to descendant `<image>` runs through the
+            // normal CSS inheritance, matching the spec note that the
+            // property cascades like other inherited properties even
+            // when an interior element doesn't itself paint a raster.
+            "image-rendering" => {
+                if let Some(ir) = ImageRendering::parse_keyword(value) {
+                    s.image_rendering = ir;
                 }
             }
             // Round-4 CSS may carry properties we don't yet model
