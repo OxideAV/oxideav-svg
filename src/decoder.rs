@@ -20,9 +20,9 @@ use crate::parser::{
     Node as XmlNode,
 };
 use crate::preserved::{
-    AnimationFragment, ClipRuleBinding, ColorRenderingBinding, DescriptiveBinding, IdScenePath,
-    LinkBinding, PaintOrderBinding, PathLengthBinding, PreservedExtras, ShapeRenderingBinding,
-    TextRenderingBinding, VectorEffectBinding,
+    AnimationFragment, ClipRuleBinding, ColorInterpolationBinding, ColorRenderingBinding,
+    DescriptiveBinding, IdScenePath, LinkBinding, PaintOrderBinding, PathLengthBinding,
+    PreservedExtras, ShapeRenderingBinding, TextRenderingBinding, VectorEffectBinding,
 };
 
 /// Codec id string for SVG vector frames.
@@ -79,7 +79,7 @@ pub fn parse_svg_at_with_languages(
     let svg =
         find_svg_root(&nodes).ok_or_else(|| Error::invalid("SVG: missing <svg> root element"))?;
     let langs: Vec<String> = system_language.iter().map(|s| s.to_string()).collect();
-    let (frame, _, _, _, _, _, _, _, _, _, _) = parse_svg_root(svg, t_seconds, false, &langs)?;
+    let (frame, _, _, _, _, _, _, _, _, _, _, _) = parse_svg_root(svg, t_seconds, false, &langs)?;
     Ok(frame)
 }
 
@@ -129,6 +129,7 @@ pub fn parse_svg_with_extras(bytes: &[u8]) -> Result<(VectorFrame, PreservedExtr
         shape_renderings,
         text_renderings,
         color_renderings,
+        color_interpolations,
     ) = parse_svg_root(svg, 0.0, true, &[])?;
     extras.id_paths = id_paths;
     extras.path_lengths = path_lengths;
@@ -140,6 +141,7 @@ pub fn parse_svg_with_extras(bytes: &[u8]) -> Result<(VectorFrame, PreservedExtr
     extras.shape_renderings = shape_renderings;
     extras.text_renderings = text_renderings;
     extras.color_renderings = color_renderings;
+    extras.color_interpolations = color_interpolations;
     Ok((frame, extras))
 }
 
@@ -366,6 +368,7 @@ type SvgRootParse = (
     Vec<ShapeRenderingBinding>,
     Vec<TextRenderingBinding>,
     Vec<ColorRenderingBinding>,
+    Vec<ColorInterpolationBinding>,
 );
 
 fn parse_svg_root(
@@ -529,6 +532,7 @@ fn parse_svg_root(
         ctx.shape_renderings,
         ctx.text_renderings,
         ctx.color_renderings,
+        ctx.color_interpolations,
     ))
 }
 

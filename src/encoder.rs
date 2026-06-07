@@ -122,6 +122,16 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
     for entry in &extras.color_renderings {
         path_to_color_rendering.insert(entry.path.clone(), entry.color_rendering.as_str());
     }
+    // Round 252 — index `color-interpolation` side-channel bindings
+    // (SVG 2 §13.9) by scene-graph tree-path so `write_node` can
+    // re-emit `color-interpolation="..."` on the matching shape /
+    // `<g>` on round-trip. Same per-path index layout as the
+    // round-247 `color-rendering` map; same routing through
+    // `write_node` / `write_group_children`.
+    let mut path_to_color_interpolation: HashMap<Vec<usize>, &str> = HashMap::new();
+    for entry in &extras.color_interpolations {
+        path_to_color_interpolation.insert(entry.path.clone(), entry.color_interpolation.as_str());
+    }
     // Round 122 — index `<title>` / `<desc>` bindings (SVG 2 §5.8) by
     // their *parent* container's scene-graph tree-path so `write_node`
     // can re-emit them as the first children of the matching `<g>` on
@@ -313,6 +323,7 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
         &path_to_shape_rendering,
         &path_to_text_rendering,
         &path_to_color_rendering,
+        &path_to_color_interpolation,
         &parent_to_titles,
         &parent_to_descs,
         &anim_by_parent,
@@ -536,6 +547,7 @@ fn write_group_children(
     path_to_shape_rendering: &HashMap<Vec<usize>, &str>,
     path_to_text_rendering: &HashMap<Vec<usize>, &str>,
     path_to_color_rendering: &HashMap<Vec<usize>, &str>,
+    path_to_color_interpolation: &HashMap<Vec<usize>, &str>,
     parent_to_titles: &HashMap<Vec<usize>, &DescriptiveBinding>,
     parent_to_descs: &HashMap<Vec<usize>, &DescriptiveBinding>,
     anim_by_parent: &HashMap<String, Vec<&AnimationFragment>>,
@@ -558,6 +570,7 @@ fn write_group_children(
             path_to_shape_rendering,
             path_to_text_rendering,
             path_to_color_rendering,
+            path_to_color_interpolation,
             parent_to_titles,
             parent_to_descs,
             anim_by_parent,
@@ -583,6 +596,7 @@ fn write_node(
     path_to_shape_rendering: &HashMap<Vec<usize>, &str>,
     path_to_text_rendering: &HashMap<Vec<usize>, &str>,
     path_to_color_rendering: &HashMap<Vec<usize>, &str>,
+    path_to_color_interpolation: &HashMap<Vec<usize>, &str>,
     parent_to_titles: &HashMap<Vec<usize>, &DescriptiveBinding>,
     parent_to_descs: &HashMap<Vec<usize>, &DescriptiveBinding>,
     anim_by_parent: &HashMap<String, Vec<&AnimationFragment>>,
@@ -633,6 +647,14 @@ fn write_node(
     // `shape-rendering` / round-228 `text-rendering` lookups above.
     let color_rendering_here: Option<&str> =
         path_to_color_rendering.get(path_stack.as_slice()).copied();
+    // Round 252 — does this scene-graph position carry a recorded
+    // `color-interpolation` attribute (SVG 2 §13.9)? If so the
+    // corresponding shape / `<g>` emission carries
+    // `color-interpolation="..."` on round-trip. Mirrors the round-247
+    // `color-rendering` lookup above.
+    let color_interpolation_here: Option<&str> = path_to_color_interpolation
+        .get(path_stack.as_slice())
+        .copied();
     let inline_anims: &[&AnimationFragment] = id_here
         .and_then(|id| anim_by_parent.get(id))
         .map(Vec::as_slice)
@@ -712,6 +734,14 @@ fn write_node(
             if let Some(cr) = color_rendering_here {
                 out.push_str(&format!(" color-rendering=\"{}\"", escape_attr(cr)));
             }
+            // Round 252 — SVG 2 §13.9 `color-interpolation`. Same emit
+            // slot as the §13.10.x rendering hints above; §13.9 is the
+            // working-colour-space selector (orthogonal to the §13.10.1
+            // quality hint), so both attributes can coexist on the same
+            // `<g>` carrier when the source author wrote them together.
+            if let Some(ci) = color_interpolation_here {
+                out.push_str(&format!(" color-interpolation=\"{}\"", escape_attr(ci)));
+            }
             out.push_str(">\n");
             // Round 122 — SVG 2 §5.8: emit captured `<title>` /
             // `<desc>` children of this group as the *first* children
@@ -745,6 +775,7 @@ fn write_node(
                 path_to_shape_rendering,
                 path_to_text_rendering,
                 path_to_color_rendering,
+                path_to_color_interpolation,
                 parent_to_titles,
                 parent_to_descs,
                 anim_by_parent,
@@ -821,6 +852,14 @@ fn write_node(
             if let Some(cr) = color_rendering_here {
                 out.push_str(&format!(" color-rendering=\"{}\"", escape_attr(cr)));
             }
+            // Round 252 — SVG 2 §13.9 `color-interpolation`. Same emit
+            // slot as the rendering-hint attributes above; §13.9 is the
+            // working-colour-space selector, the cascade already
+            // resolved the property onto the carried PaintState, so
+            // this attribute is purely a round-trip carrier.
+            if let Some(ci) = color_interpolation_here {
+                out.push_str(&format!(" color-interpolation=\"{}\"", escape_attr(ci)));
+            }
             if inline_anims.is_empty() {
                 out.push_str("/>\n");
             } else {
@@ -881,6 +920,7 @@ fn write_node(
                 path_to_shape_rendering,
                 path_to_text_rendering,
                 path_to_color_rendering,
+                path_to_color_interpolation,
                 parent_to_titles,
                 parent_to_descs,
                 anim_by_parent,
@@ -1414,6 +1454,7 @@ fn write_mask(
     let empty_path_to_shape_rendering: HashMap<Vec<usize>, &str> = HashMap::new();
     let empty_path_to_text_rendering: HashMap<Vec<usize>, &str> = HashMap::new();
     let empty_path_to_color_rendering: HashMap<Vec<usize>, &str> = HashMap::new();
+    let empty_path_to_color_interpolation: HashMap<Vec<usize>, &str> = HashMap::new();
     let empty_titles: HashMap<Vec<usize>, &DescriptiveBinding> = HashMap::new();
     let empty_descs: HashMap<Vec<usize>, &DescriptiveBinding> = HashMap::new();
     let empty_anims: HashMap<String, Vec<&AnimationFragment>> = HashMap::new();
@@ -1433,6 +1474,7 @@ fn write_mask(
         &empty_path_to_shape_rendering,
         &empty_path_to_text_rendering,
         &empty_path_to_color_rendering,
+        &empty_path_to_color_interpolation,
         &empty_titles,
         &empty_descs,
         &empty_anims,

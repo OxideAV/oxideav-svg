@@ -534,6 +534,95 @@ impl ColorRendering {
     }
 }
 
+/// Round 252 — SVG 2 §13.9 `color-interpolation` resolved value
+/// (`auto | sRGB | linearRGB`).
+///
+/// Per §13.9 the property selects the working colour space used for the
+/// three SVG operations that mix colours componentwise: gradient stop
+/// interpolation, SMIL colour animation, and compositing / blending of
+/// graphics elements into the current background. Values:
+///
+/// * `Auto`: UA may pick `sRGB` or `linearRGB`. The author is signalling
+///   that any componentwise lerp is acceptable.
+/// * `Srgb` (initial): interpolate in the sRGB colour space — the
+///   §13.9 initial value. The 1.1 spec calls this out as the default
+///   for backwards compatibility.
+/// * `LinearRgb`: interpolate in a linearised RGB space (the sRGB
+///   electro-optical transfer function inverted per the §13.9 worked
+///   example). Produces light-energy-linear blends instead of
+///   gamma-encoded ones.
+///
+/// **Inherited:** yes (§13.9 attribute table). **Applies to:** the §13.9
+/// applies-to list — container elements, graphics elements, gradient
+/// elements, `<use>` and `<animate>`. Round 252 ships parse + inherited
+/// cascade + round-trip preservation; the actual working-space selection
+/// for gradient lerps and compositing happens in `oxideav-raster`,
+/// which can read the resolved value off the carried [`PaintState`] or
+/// off the per-element [`crate::preserved::ColorInterpolationBinding`].
+///
+/// The §13.9 informative note that the filter-effects sibling property
+/// `color-interpolation-filters` governs the filter primitive graph
+/// instead is documented but not enforced here — that interaction
+/// belongs to the round-10 / round-7 filter graph work in
+/// `oxideav-filter`. Note that §13.10.1 `color-rendering` (round 247)
+/// is a separate quality hint, not the same property as §13.9
+/// `color-interpolation`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColorInterpolation {
+    /// UA-defined choice between `sRGB` and `linearRGB`.
+    Auto,
+    /// Interpolate in the sRGB colour space — §13.9 initial value.
+    Srgb,
+    /// Interpolate in a linearised RGB colour space (sRGB EOTF
+    /// inverted per the §13.9 worked example).
+    LinearRgb,
+}
+
+impl Default for ColorInterpolation {
+    /// §13.9 attribute table — Initial value: `sRGB`. Distinct from the
+    /// other inherited §13.10.x rendering hints whose initial value is
+    /// `auto`.
+    fn default() -> Self {
+        Self::Srgb
+    }
+}
+
+impl ColorInterpolation {
+    /// Parse a `color-interpolation` keyword (case-insensitive per CSS).
+    /// `inherit` returns `None` so the caller can keep the inherited
+    /// value already on its `PaintState`. Unknown / malformed tokens
+    /// also return `None`, matching the tolerant policy used by the
+    /// other §13.10.x rendering hints and `text-anchor` / `paint-order`
+    /// / `visibility`.
+    pub(crate) fn parse_keyword(value: &str) -> Option<Self> {
+        let v = value.trim();
+        if v.eq_ignore_ascii_case("auto") {
+            Some(Self::Auto)
+        } else if v.eq_ignore_ascii_case("srgb") {
+            Some(Self::Srgb)
+        } else if v.eq_ignore_ascii_case("linearrgb") {
+            Some(Self::LinearRgb)
+        } else {
+            // `inherit` and unknown tokens fall through; the cascade
+            // keeps whatever value was inherited.
+            None
+        }
+    }
+
+    /// Canonical keyword for round-trip emission. The §13.9 attribute
+    /// table spells the non-`auto` keywords with mixed case
+    /// (`sRGB`, `linearRGB`); source-text `SRGB` / `srgb` / `LINEARRGB`
+    /// all round-trip as the canonical mixed-case spelling so the output
+    /// matches §13.9 verbatim.
+    pub(crate) fn as_canonical_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Srgb => "sRGB",
+            Self::LinearRgb => "linearRGB",
+        }
+    }
+}
+
 /// Round 235 — SVG 2 §13.10.4 `image-rendering` resolved value
 /// (`auto | optimizeQuality | optimizeSpeed`).
 ///
@@ -700,6 +789,13 @@ pub struct PaintState {
     /// and compositing) happens in `oxideav-raster`; this crate parses,
     /// cascades, and round-trips the keyword.
     pub color_rendering: ColorRendering,
+    /// Round 252 — SVG 2 §13.9 `color-interpolation` (inherited).
+    /// Initial value [`ColorInterpolation::Srgb`] (per the §13.9 attribute
+    /// table — NOT `auto`, unlike the §13.10.x rendering hints). The
+    /// actual working-space selection for gradient lerps / colour
+    /// animation / compositing happens in `oxideav-raster`; this crate
+    /// parses, cascades, and round-trips the keyword.
+    pub color_interpolation: ColorInterpolation,
 }
 
 impl Default for PaintState {
@@ -737,6 +833,12 @@ impl Default for PaintState {
             image_rendering: ImageRendering::Auto,
             // §13.10.1 — initial value `auto`.
             color_rendering: ColorRendering::Auto,
+            // §13.9 — initial value `sRGB`. NOT `auto`; the §13.9
+            // attribute table specifies `sRGB` as the initial value so
+            // a UA without an explicit `color-interpolation=` attribute
+            // performs gradient / animation / compositing lerps in
+            // sRGB by default.
+            color_interpolation: ColorInterpolation::Srgb,
         }
     }
 }
@@ -1010,6 +1112,21 @@ impl PaintState {
                     s.color_rendering = cr;
                 }
             }
+            // Round 252 — SVG 2 §13.9 `color-interpolation` (inherited).
+            // `auto | sRGB | linearRGB`. Same tolerant-keep-on-`inherit`-
+            // or-unknown policy as the §13.10.x rendering hints. §13.9
+            // applies to container / graphics / gradient elements,
+            // `<use>` and `<animate>`; the cascade itself is uniform
+            // (the property simply propagates), so we accept it on any
+            // element and let inheritance flow. Note: §13.9 is the
+            // working-colour-space selector for gradient / animation /
+            // compositing lerps — distinct from the §13.10.1
+            // `color-rendering` quality hint above.
+            "color-interpolation" => {
+                if let Some(ci) = ColorInterpolation::parse_keyword(value) {
+                    s.color_interpolation = ci;
+                }
+            }
             // Round-4 CSS may carry properties we don't yet model
             // (font-family, transform, …). Ignore them rather than
             // failing the document.
@@ -1255,6 +1372,18 @@ pub struct ParseContext {
     /// end of each `parse_element_to_node_ctx` call (the drain matches
     /// the round-221 / round-228 flows).
     pub pending_color_rendering: Option<String>,
+    /// Round 252 — collected `(scene_path, color-interpolation)` bindings
+    /// (SVG 2 §13.9). Populated only when the caller opted in via
+    /// [`crate::decoder::parse_svg_with_extras`] (same gate as
+    /// [`Self::track_id_paths`]). The encoder re-emits the source
+    /// attribute on the matching shape / `<g>` on round-trip.
+    pub color_interpolations: Vec<crate::preserved::ColorInterpolationBinding>,
+    /// Round 252 — scratch slot for the shape / `<g>` branch to hand a
+    /// captured `color-interpolation` keyword string to the wrapper-aware
+    /// recorder that runs after `apply_referenced_defs`. Cleared at the
+    /// end of each `parse_element_to_node_ctx` call (the drain matches
+    /// the round-221 / round-228 / round-247 flows).
+    pub pending_color_interpolation: Option<String>,
     /// Round 118 — "next element is a `<use>` instance root" flag.
     /// SVG 1.1 §11.5: "setting display: none on a `<path>` element will
     /// prevent that element from getting rendered directly onto the
@@ -1305,6 +1434,8 @@ impl ParseContext {
             pending_text_rendering: None,
             color_renderings: Vec::new(),
             pending_color_rendering: None,
+            color_interpolations: Vec::new(),
+            pending_color_interpolation: None,
         }
     }
 
@@ -1438,6 +1569,22 @@ impl ParseContext {
             .push(crate::preserved::ColorRenderingBinding {
                 path: self.current_path.clone(),
                 color_rendering,
+            });
+    }
+
+    /// Round 252 — record an author `color-interpolation` attribute
+    /// against the current scene-graph path (SVG 2 §13.9). Same
+    /// `track_id_paths` gate as the other side-channel recorders. The
+    /// encoder re-emits the matching shape / `<g>` with
+    /// `color-interpolation="..."` on round-trip.
+    pub fn record_color_interpolation(&mut self, color_interpolation: String) {
+        if !self.track_id_paths {
+            return;
+        }
+        self.color_interpolations
+            .push(crate::preserved::ColorInterpolationBinding {
+                path: self.current_path.clone(),
+                color_interpolation,
             });
     }
 
@@ -2349,6 +2496,14 @@ pub fn parse_element_to_node_ctx(
             // cascaded descendant.
             let saved_pending_color_rendering = ctx.pending_color_rendering.take();
             let group_color_rendering = capture_color_rendering_attr(el);
+            // Round 252 — capture any `color-interpolation=` carried on
+            // the `<g>` so a hand-authored attribute survives round-trip.
+            // The property IS inherited per §13.9; the carrier is purely
+            // lexical so emitting it on the topmost emit site (the
+            // group) avoids redundantly recording on every cascaded
+            // descendant.
+            let saved_pending_color_interpolation = ctx.pending_color_interpolation.take();
+            let group_color_interpolation = capture_color_interpolation_attr(el);
             let transform = match attr(el, "transform") {
                 Some(v) => parse_transform(v)?,
                 None => Transform2D::identity(),
@@ -2403,6 +2558,10 @@ pub fn parse_element_to_node_ctx(
             // Round 247 — same restore-then-layer flow for the
             // `color-rendering` carrier.
             ctx.pending_color_rendering = group_color_rendering.or(saved_pending_color_rendering);
+            // Round 252 — same restore-then-layer flow for the
+            // `color-interpolation` carrier.
+            ctx.pending_color_interpolation =
+                group_color_interpolation.or(saved_pending_color_interpolation);
             Some(Node::Group(group))
         }
         // Round 115 — SVG 2 §16.5 `<a>` hyperlink. The `<a>` element is
@@ -2710,6 +2869,16 @@ pub fn parse_element_to_node_ctx(
             // the spec's camelCase). Absent / `inherit` / unrecognised
             // tokens skip recording.
             ctx.pending_color_rendering = capture_color_rendering_attr(el);
+            // Round 252 — SVG 2 §13.9 `color-interpolation` round-trip
+            // capture. Same flow as the round-247 `color-rendering`
+            // capture above: the cascade has already resolved the
+            // property onto `state.color_interpolation`, but the
+            // round-trip carrier records the source-literal so a
+            // `parse → write` cycle re-emits the author's keyword
+            // verbatim (canonicalised to §13.9's mixed-case spelling
+            // `auto` / `sRGB` / `linearRGB`). Absent / `inherit` /
+            // unrecognised tokens skip recording.
+            ctx.pending_color_interpolation = capture_color_interpolation_attr(el);
             // Round 205 — SVG 2 §13.8 `paint-order`. The round-1
             // `PathNode { fill, stroke }` shape always paints fill
             // BEFORE stroke (the §13.8 `normal` order); when the
@@ -2883,6 +3052,16 @@ pub fn parse_element_to_node_ctx(
     // `oxideav-raster`.
     if let Some(cr) = ctx.pending_color_rendering.take() {
         ctx.record_color_rendering(cr);
+    }
+    // Round 252 — drain the shape / `<g>` branch's pending
+    // `color-interpolation` (if any) and record it at the same
+    // outer-most emit site the round-221 / round-228 / round-247
+    // recorders use. The encoder re-emits the source attribute on the
+    // matching shape / `<g>` on round-trip; the actual working-colour-
+    // space selection for gradient lerps / colour animation /
+    // compositing happens in `oxideav-raster`.
+    if let Some(ci) = ctx.pending_color_interpolation.take() {
+        ctx.record_color_interpolation(ci);
     }
     Ok(Some(wrapped))
 }
@@ -3080,6 +3259,36 @@ fn capture_color_rendering_attr(el: &Element) -> Option<String> {
     }
     let cr = ColorRendering::parse_keyword(trimmed)?;
     Some(cr.as_canonical_str().to_string())
+}
+
+/// Round 252 — extract a canonicalised `color-interpolation` attribute
+/// from `el` for round-trip preservation. Returns `Some(canonical)` when
+/// the attribute resolves to one of the three §13.9 keywords (`auto`,
+/// `sRGB`, `linearRGB`); returns `None` for an absent attribute, an
+/// `inherit` keyword, or an unrecognised token (the cascade keeps the
+/// inherited value in those cases, so the round-trip carrier matches
+/// the parse-time fallback).
+///
+/// Canonical form is the §13.9 spelling (`auto` / `sRGB` / `linearRGB`)
+/// — source `SRGB` / `srgb` / `LINEARRGB` all round-trip as the
+/// canonical mixed-case spelling so the output matches the §13.9
+/// attribute table verbatim.
+///
+/// Like the round-247 `color-rendering` helper, an explicit author
+/// `color-interpolation="sRGB"` IS recorded — even though `sRGB` is the
+/// §13.9 initial value, an explicit author write carries intent (e.g.
+/// an inheritance reset on a descendant of a
+/// `<g color-interpolation="linearRGB">`). The absent-attribute case is
+/// still skipped so an initial-value document doesn't bloat the output
+/// with redundant `color-interpolation="sRGB"` on every element.
+fn capture_color_interpolation_attr(el: &Element) -> Option<String> {
+    let raw = attr(el, "color-interpolation")?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("inherit") {
+        return None;
+    }
+    let ci = ColorInterpolation::parse_keyword(trimmed)?;
+    Some(ci.as_canonical_str().to_string())
 }
 
 /// Round 21 — return the child-index sub-path from `root` down to the

@@ -276,6 +276,21 @@ pub struct PreservedExtras {
     /// topmost emit site for the element). Populated only by
     /// [`crate::decoder::parse_svg_with_extras`].
     pub color_renderings: Vec<ColorRenderingBinding>,
+    /// Round 252 — SVG 2 §13.9 `color-interpolation` source-text
+    /// bindings, recorded per emitted shape / `<g>` so the encoder can
+    /// re-emit `color-interpolation="..."` on the matching element on
+    /// round-trip. Mirrors the round-247 `color-rendering` carrier —
+    /// the property is inherited per §13.9, but the binding is purely
+    /// lexical so the round-trip preserves exactly where the author
+    /// wrote the attribute (the topmost emit site for the element).
+    /// Populated only by [`crate::decoder::parse_svg_with_extras`].
+    ///
+    /// §13.9 selects the working colour space for gradient stop
+    /// interpolation, SMIL colour animation, and graphics-element
+    /// compositing / blending; it is *distinct* from the §13.10.1
+    /// `color-rendering` quality hint that rides on
+    /// [`Self::color_renderings`].
+    pub color_interpolations: Vec<ColorInterpolationBinding>,
 }
 
 /// One captured animation child of a known-id parent element.
@@ -383,6 +398,7 @@ impl PreservedExtras {
             && self.shape_renderings.is_empty()
             && self.text_renderings.is_empty()
             && self.color_renderings.is_empty()
+            && self.color_interpolations.is_empty()
     }
 }
 
@@ -479,6 +495,37 @@ pub struct ColorRenderingBinding {
     /// doesn't bloat with redundant `color-rendering="auto"` on every
     /// element.
     pub color_rendering: String,
+}
+
+/// Round 252 — one (scene-graph tree-path, author `color-interpolation`
+/// keyword) pair. Mirrors [`ColorRenderingBinding`] /
+/// [`ShapeRenderingBinding`] — the scene graph does not yet expose a
+/// typed colour-interpolation-space hook (`oxideav-raster` owns the
+/// working colour-space selection for gradient lerps / colour animation
+/// / compositing), so the binding's job is purely to round-trip the
+/// source attribute so a `parse → write` cycle preserves the author's
+/// hint verbatim.
+///
+/// SVG 2 §13.9 spells the non-`auto` keywords with mixed case
+/// (`sRGB`, `linearRGB`) — distinct from the §13.10.x rendering hints
+/// whose keywords are lower-camelCase. The capture helper canonicalises
+/// to the §13.9 spelling, so source `SRGB` / `linearrgb` round-trip as
+/// the spec spelling.
+#[derive(Clone, Debug)]
+pub struct ColorInterpolationBinding {
+    /// Tree-path through the scene graph; matches the layout of
+    /// [`IdScenePath::path`].
+    pub path: Vec<usize>,
+    /// Author-supplied keyword string canonicalised to the §13.9
+    /// spelling (`auto` / `sRGB` / `linearRGB`). The capture helper
+    /// canonicalises case-insensitively, so source `SRGB` round-trips
+    /// as `sRGB`. The binding records explicit `sRGB` (the §13.9
+    /// initial value) when an author writes it, matching the round-247
+    /// `color-rendering` policy of preserving an explicit-initial-value
+    /// override — but skips the absent-attribute case so an
+    /// initial-value document doesn't bloat with redundant
+    /// `color-interpolation="sRGB"` on every element.
+    pub color_interpolation: String,
 }
 
 #[derive(Clone, Debug)]

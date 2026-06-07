@@ -9,6 +9,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 252** — SVG 2 §13.9 `color-interpolation` property
+  (`auto | sRGB | linearRGB`) on container, graphics, and gradient
+  elements (plus `<use>` and `<animate>` per the §13.9 applies-to list).
+  - New typed [`crate::element::ColorInterpolation`] enum carried on
+    [`crate::element::PaintState`]. Inherited per the §13.9 attribute
+    table; initial value `Srgb` (distinct from the §13.10.x rendering
+    hints whose initial value is `Auto`). Resolves through presentation
+    attributes, inline `style="…"`, and `<style>`-block rules via the
+    existing round-4 cascade. Case-insensitive keyword matching;
+    `inherit` / unknown tokens keep the inherited value.
+  - **Round-trip preservation.** New
+    [`crate::preserved::ColorInterpolationBinding`] +
+    [`crate::preserved::PreservedExtras::color_interpolations`]
+    side-channel captures the canonicalised §13.9 mixed-case keyword
+    at the topmost emit slot for each shape / `<g>` carrying a
+    recognised `color-interpolation=` attribute. A
+    `<g color-interpolation=…>` ancestor records on the group's own
+    slot (one binding per source attribute slot — not per cascaded
+    descendant). The encoder re-emits `color-interpolation=` on the
+    matching element on round-trip.
+  - **Canonical mixed-case emission.** Source `SRGB` / `srgb` /
+    `LINEARRGB` / `linearrgb` all round-trip as the §13.9 attribute
+    table's spelling (`sRGB` / `linearRGB`). Distinct from the
+    lower-camelCase canonicalisation used for the §13.10.x hints.
+  - **Explicit `sRGB` (initial value) is preserved.** Mirrors the
+    round-247 `color-rendering` "explicit `auto` is recorded" policy
+    — even though `sRGB` is the §13.9 initial value, an explicit
+    author write carries intent (e.g. an inheritance reset on a
+    descendant of a `<g color-interpolation="linearRGB">`). The
+    absent-attribute case is still skipped so an initial-value
+    document doesn't bloat with redundant
+    `color-interpolation="sRGB"` on every element.
+  - **Coexists with the §13.10.x rendering hints.** §13.9 (working
+    colour space selector) and §13.10.1 `color-rendering` (quality
+    hint) are orthogonal properties — both can ride on the same
+    `<g>` without interfering. The encoder emits every recognised
+    attribute on the matching element on round-trip.
+  - The actual working-colour-space selection (sRGB vs linearised RGB
+    for gradient stop interpolation, SMIL colour animation, and
+    graphics-element compositing) happens in `oxideav-raster`; this
+    round delivers parse + inherited cascade + round-trip
+    preservation. A downstream rasteriser reads the resolved value
+    off the carried `PaintState` or off the per-element
+    `ColorInterpolationBinding`. The §13.9 informative note that the
+    filter-effects sibling property `color-interpolation-filters`
+    governs the filter primitive graph instead is documented but not
+    enforced here — that interaction belongs to the round-7 / round-10
+    filter graph work in `oxideav-filter`.
+  - 22 integration tests in `tests/round252_color_interpolation.rs`
+    cover the no-attribute baseline (no binding), each of the three
+    §13.9 keywords recorded with canonical case, case-insensitive
+    matching, explicit-`sRGB` recording (initial value preserved),
+    explicit-`auto` recording, `inherit` skipping, unknown-token
+    tolerance, empty-value skipping, presentation-attribute /
+    `style="…"` cascade resolution, inheritance through a parent
+    `PaintState`, child override of the inherited value, round-trip
+    emission on `<g>` and on a bare `<rect>`, double round-trip
+    convergence, source-case canonicalisation through round-trip,
+    `parse_svg` (no extras) still loading the document, the
+    per-child-override-records-separately pattern, and coexistence
+    with the round-221 / round-228 / round-247 hints on the same
+    group element.
+
 - **Round 247** — SVG 2 §13.10.1 `color-rendering` property
   (`auto | optimizeSpeed | optimizeQuality`) on container, graphics,
   and gradient elements (plus `<use>` and `<animate>` per the
