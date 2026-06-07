@@ -9,6 +9,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 247** — SVG 2 §13.10.1 `color-rendering` property
+  (`auto | optimizeSpeed | optimizeQuality`) on container, graphics,
+  and gradient elements (plus `<use>` and `<animate>` per the
+  §13.10.1 applies-to list).
+  - New typed [`crate::element::ColorRendering`] enum carried on
+    [`crate::element::PaintState`]. Inherited per the §13.10.1
+    attribute table; initial value `Auto`. Resolves through
+    presentation attributes, inline `style="…"`, and `<style>`-block
+    rules via the existing round-4 cascade. Case-insensitive keyword
+    matching; `inherit` / unknown tokens keep the inherited value.
+  - **Round-trip preservation.** New
+    [`crate::preserved::ColorRenderingBinding`] +
+    [`crate::preserved::PreservedExtras::color_renderings`]
+    side-channel captures the canonicalised camelCase keyword at the
+    topmost emit slot for each shape / `<g>` carrying a recognised
+    `color-rendering=` attribute. A `<g color-rendering=…>` ancestor
+    records on the group's own slot (one binding per source attribute
+    slot — not per cascaded descendant). The encoder re-emits
+    `color-rendering=` on the matching element on round-trip.
+  - **Explicit `auto` is preserved** — mirrors the round-221
+    `shape-rendering` / round-228 `text-rendering` / round-235
+    `image-rendering` policy. The absent-attribute case is still
+    skipped so an initial-value document doesn't bloat the output
+    with redundant `color-rendering="auto"` on every element.
+  - **Canonical camelCase emission.** Source `OPTIMIZEQUALITY` /
+    `optimizequality` / `OptimizeQuality` all round-trip as
+    `optimizeQuality`, matching the §13.10.1 attribute table's
+    spelling.
+  - **Coexists with the other rendering hints.** All four §13.10.x
+    inherited hints (`color-rendering` / `shape-rendering` /
+    `text-rendering` / `image-rendering`) can ride on the same `<g>`
+    without interfering; each side-channel records independently and
+    the encoder emits every recognised attribute.
+  - The actual working colour-space selection for interpolation and
+    compositing happens in `oxideav-raster`; this round delivers
+    parse + inherited cascade + round-trip preservation. A
+    downstream rasteriser reads the resolved value off the carried
+    `PaintState` or off the per-element `ColorRenderingBinding`. The
+    §13.10.1 informative note that `color-rendering` takes precedence
+    over the filter-effects `color-interpolation-filters` property is
+    documented but not enforced here — that interaction lives in
+    `oxideav-filter` / the filter primitive graph (round-10 work).
+  - 21 integration tests in `tests/round247_color_rendering.rs`
+    cover the no-attribute baseline, each of the three spec
+    keywords with canonical camelCase, case-insensitive matching,
+    explicit-`auto` recording, `inherit` skipping, unknown-token
+    tolerance, empty-value skipping, presentation-attribute /
+    `style="…"` cascade resolution, inheritance through a parent
+    `PaintState`, child override of the inherited value, round-trip
+    emission on `<g>` and on a bare `<rect>`, double round-trip
+    convergence, source-case canonicalisation through round-trip,
+    `parse_svg` (no extras) still loading the document, the
+    per-child-override-records-separately pattern, and coexistence
+    with the round-221 / round-228 / round-235 hints on the same
+    group element.
+
 - **Round 235** — SVG 2 §13.10.4 `image-rendering` property
   (`auto | optimizeQuality | optimizeSpeed`) on `<image>` and (via
   the cascade) any descendant element that paints raster content.

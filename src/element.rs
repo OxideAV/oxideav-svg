@@ -462,6 +462,78 @@ impl TextRendering {
     }
 }
 
+/// Round 247 — SVG 2 §13.10.1 `color-rendering` resolved value
+/// (`auto | optimizeSpeed | optimizeQuality`).
+///
+/// Per §13.10.1 the property is a *hint* to the user agent about the
+/// speed-versus-quality tradeoff when performing colour interpolation and
+/// compositing operations — it never alters the numeric source colours
+/// themselves. The §13.10.1 normative note also makes `color-rendering`
+/// take precedence over the (filter-effects) `color-interpolation-filters`
+/// property; that interaction is documented but not enforced here because
+/// `color-interpolation-filters` lives in the filter primitive graph
+/// (round 10 `oxideav-filter` work). Values:
+///
+/// * `Auto` (initial): UA's own balance, with a quality bias.
+/// * `OptimizeSpeed`: rendering speed over quality. The §13.10.1
+///   informative note observes that, on an RGB display device, the UA
+///   may then perform colour interpolation and compositing in device
+///   RGB rather than a linear / wide-gamut working space.
+/// * `OptimizeQuality`: emphasise colour-operation quality over speed.
+///
+/// **Inherited:** yes (§13.10.1 attribute table). **Applies to:** the
+/// §13.10.1 applies-to list — container elements, graphics elements,
+/// gradient elements, `<use>` and `<animate>`. Round 247 ships parse +
+/// inherited cascade + round-trip preservation; the actual
+/// colour-interpolation-space selection happens in `oxideav-raster`,
+/// which can read the resolved value off the carried [`PaintState`] or
+/// off the per-element [`crate::preserved::ColorRenderingBinding`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ColorRendering {
+    /// Initial value — UA's own balance, with a quality bias.
+    #[default]
+    Auto,
+    /// Prioritise speed over quality; the UA may interpolate and
+    /// composite in the device colour space.
+    OptimizeSpeed,
+    /// Prioritise colour-operation quality over speed.
+    OptimizeQuality,
+}
+
+impl ColorRendering {
+    /// Parse a `color-rendering` keyword (case-insensitive per CSS).
+    /// `inherit` returns `None` so the caller can keep the inherited
+    /// value already on its `PaintState`. Unknown / malformed tokens
+    /// also return `None`, matching the tolerant policy used by
+    /// `image-rendering` / `text-rendering` / `shape-rendering` /
+    /// `text-anchor` / `paint-order` / `visibility`.
+    pub(crate) fn parse_keyword(value: &str) -> Option<Self> {
+        let v = value.trim();
+        if v.eq_ignore_ascii_case("auto") {
+            Some(Self::Auto)
+        } else if v.eq_ignore_ascii_case("optimizespeed") {
+            Some(Self::OptimizeSpeed)
+        } else if v.eq_ignore_ascii_case("optimizequality") {
+            Some(Self::OptimizeQuality)
+        } else {
+            // `inherit` and unknown tokens fall through; the cascade
+            // keeps whatever value was inherited.
+            None
+        }
+    }
+
+    /// Canonicalised lower-camelCase keyword for round-trip emission.
+    /// Matches the spec's source-text spelling (camelCase for the
+    /// two non-`auto` keywords) so the round-trip is byte-faithful.
+    pub(crate) fn as_canonical_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::OptimizeSpeed => "optimizeSpeed",
+            Self::OptimizeQuality => "optimizeQuality",
+        }
+    }
+}
+
 /// Round 235 — SVG 2 §13.10.4 `image-rendering` resolved value
 /// (`auto | optimizeQuality | optimizeSpeed`).
 ///
@@ -622,6 +694,12 @@ pub struct PaintState {
     /// `oxideav-raster`; this crate parses, cascades, and round-trips
     /// the keyword.
     pub image_rendering: ImageRendering,
+    /// Round 247 — SVG 2 §13.10.1 `color-rendering` (inherited).
+    /// Initial value [`ColorRendering::Auto`]. The actual hint
+    /// consumption (working colour-space selection for interpolation
+    /// and compositing) happens in `oxideav-raster`; this crate parses,
+    /// cascades, and round-trips the keyword.
+    pub color_rendering: ColorRendering,
 }
 
 impl Default for PaintState {
@@ -657,6 +735,8 @@ impl Default for PaintState {
             text_rendering: TextRendering::Auto,
             // §13.10.4 — initial value `auto`.
             image_rendering: ImageRendering::Auto,
+            // §13.10.1 — initial value `auto`.
+            color_rendering: ColorRendering::Auto,
         }
     }
 }
@@ -917,6 +997,19 @@ impl PaintState {
                     s.image_rendering = ir;
                 }
             }
+            // Round 247 — SVG 2 §13.10.1 `color-rendering` (inherited).
+            // `auto | optimizeSpeed | optimizeQuality`. Same tolerant-
+            // keep-on-`inherit`-or-unknown policy as the round-221 /
+            // round-228 / round-235 rendering hints above. §13.10.1
+            // applies to container / graphics / gradient elements,
+            // `<use>` and `<animate>`; the cascade itself is uniform
+            // (the property simply propagates), so we accept it on any
+            // element and let the inheritance flow do its work.
+            "color-rendering" => {
+                if let Some(cr) = ColorRendering::parse_keyword(value) {
+                    s.color_rendering = cr;
+                }
+            }
             // Round-4 CSS may carry properties we don't yet model
             // (font-family, transform, …). Ignore them rather than
             // failing the document.
@@ -1150,6 +1243,18 @@ pub struct ParseContext {
     /// Cleared at the end of each `parse_element_to_node_ctx` call
     /// (the drain matches the round-221 `pending_shape_rendering` flow).
     pub pending_text_rendering: Option<String>,
+    /// Round 247 — collected `(scene_path, color-rendering)` bindings
+    /// (SVG 2 §13.10.1). Populated only when the caller opted in via
+    /// [`crate::decoder::parse_svg_with_extras`] (same gate as
+    /// [`Self::track_id_paths`]). The encoder re-emits the source
+    /// attribute on the matching shape / `<g>` on round-trip.
+    pub color_renderings: Vec<crate::preserved::ColorRenderingBinding>,
+    /// Round 247 — scratch slot for the shape / `<g>` branch to hand a
+    /// captured `color-rendering` keyword string to the wrapper-aware
+    /// recorder that runs after `apply_referenced_defs`. Cleared at the
+    /// end of each `parse_element_to_node_ctx` call (the drain matches
+    /// the round-221 / round-228 flows).
+    pub pending_color_rendering: Option<String>,
     /// Round 118 — "next element is a `<use>` instance root" flag.
     /// SVG 1.1 §11.5: "setting display: none on a `<path>` element will
     /// prevent that element from getting rendered directly onto the
@@ -1198,6 +1303,8 @@ impl ParseContext {
             pending_shape_rendering: None,
             text_renderings: Vec::new(),
             pending_text_rendering: None,
+            color_renderings: Vec::new(),
+            pending_color_rendering: None,
         }
     }
 
@@ -1315,6 +1422,22 @@ impl ParseContext {
             .push(crate::preserved::TextRenderingBinding {
                 path: self.current_path.clone(),
                 text_rendering,
+            });
+    }
+
+    /// Round 247 — record an author `color-rendering` attribute against
+    /// the current scene-graph path (SVG 2 §13.10.1). Same
+    /// `track_id_paths` gate as the other side-channel recorders. The
+    /// encoder re-emits the matching shape / `<g>` with
+    /// `color-rendering="..."` on round-trip.
+    pub fn record_color_rendering(&mut self, color_rendering: String) {
+        if !self.track_id_paths {
+            return;
+        }
+        self.color_renderings
+            .push(crate::preserved::ColorRenderingBinding {
+                path: self.current_path.clone(),
+                color_rendering,
             });
     }
 
@@ -2218,6 +2341,14 @@ pub fn parse_element_to_node_ctx(
             // cascaded descendant `<text>`.
             let saved_pending_text_rendering = ctx.pending_text_rendering.take();
             let group_text_rendering = capture_text_rendering_attr(el);
+            // Round 247 — capture any `color-rendering=` carried on the
+            // `<g>` so a hand-authored attribute survives round-trip.
+            // The property IS inherited per §13.10.1; the carrier is
+            // purely lexical so emitting it on the topmost emit site
+            // (the group) avoids redundantly recording on every
+            // cascaded descendant.
+            let saved_pending_color_rendering = ctx.pending_color_rendering.take();
+            let group_color_rendering = capture_color_rendering_attr(el);
             let transform = match attr(el, "transform") {
                 Some(v) => parse_transform(v)?,
                 None => Transform2D::identity(),
@@ -2269,6 +2400,9 @@ pub fn parse_element_to_node_ctx(
             // Round 228 — same restore-then-layer flow for the
             // `text-rendering` carrier.
             ctx.pending_text_rendering = group_text_rendering.or(saved_pending_text_rendering);
+            // Round 247 — same restore-then-layer flow for the
+            // `color-rendering` carrier.
+            ctx.pending_color_rendering = group_color_rendering.or(saved_pending_color_rendering);
             Some(Node::Group(group))
         }
         // Round 115 — SVG 2 §16.5 `<a>` hyperlink. The `<a>` element is
@@ -2567,6 +2701,15 @@ pub fn parse_element_to_node_ctx(
             // the spec's camelCase). Absent / `inherit` / unrecognised
             // tokens skip recording.
             ctx.pending_shape_rendering = capture_shape_rendering_attr(el);
+            // Round 247 — SVG 2 §13.10.1 `color-rendering` round-trip
+            // capture. Same flow as the round-221 `shape-rendering`
+            // capture: the cascade has already resolved the property
+            // onto `state.color_rendering`, but the round-trip carrier
+            // records the source-literal so a `parse → write` cycle
+            // re-emits the author's keyword verbatim (canonicalised to
+            // the spec's camelCase). Absent / `inherit` / unrecognised
+            // tokens skip recording.
+            ctx.pending_color_rendering = capture_color_rendering_attr(el);
             // Round 205 — SVG 2 §13.8 `paint-order`. The round-1
             // `PathNode { fill, stroke }` shape always paints fill
             // BEFORE stroke (the §13.8 `normal` order); when the
@@ -2730,6 +2873,16 @@ pub fn parse_element_to_node_ctx(
     // is `oxideav-raster` / `oxideav-scribe` work.
     if let Some(tr) = ctx.pending_text_rendering.take() {
         ctx.record_text_rendering(tr);
+    }
+    // Round 247 — drain the shape / `<g>` branch's pending
+    // `color-rendering` (if any) and record it at the same outer-most
+    // emit site the round-221 / round-228 recorders use. The encoder
+    // re-emits the source attribute on the matching shape / `<g>` on
+    // round-trip; the actual hint consumption (working colour-space
+    // selection for interpolation and compositing) lives in
+    // `oxideav-raster`.
+    if let Some(cr) = ctx.pending_color_rendering.take() {
+        ctx.record_color_rendering(cr);
     }
     Ok(Some(wrapped))
 }
@@ -2898,6 +3051,35 @@ fn capture_text_rendering_attr(el: &Element) -> Option<String> {
     }
     let tr = TextRendering::parse_keyword(trimmed)?;
     Some(tr.as_canonical_str().to_string())
+}
+
+/// Round 247 — extract a canonicalised `color-rendering` attribute from
+/// `el` for round-trip preservation. Returns `Some(canonical)` when the
+/// attribute resolves to one of the three §13.10.1 keywords; returns
+/// `None` for an absent attribute, an `inherit` keyword, or an
+/// unrecognised token (the cascade keeps the inherited value in those
+/// cases, so the round-trip carrier matches the parse-time fallback).
+///
+/// Canonical form is the spec's camelCase spelling (`auto` /
+/// `optimizeSpeed` / `optimizeQuality`) — source `OPTIMIZESPEED`
+/// round-trips as `optimizeSpeed`, matching the §13.10.1 attribute
+/// table.
+///
+/// Like the round-221 `shape-rendering` / round-228 `text-rendering` /
+/// round-235 `image-rendering` helpers, an explicit author
+/// `color-rendering="auto"` IS recorded — it carries author intent
+/// (e.g. an inheritance reset on a descendant of a
+/// `<g color-rendering="optimizeQuality">`). The absent-attribute case
+/// is still skipped so an initial-value document doesn't bloat the
+/// output with redundant `color-rendering="auto"` on every element.
+fn capture_color_rendering_attr(el: &Element) -> Option<String> {
+    let raw = attr(el, "color-rendering")?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("inherit") {
+        return None;
+    }
+    let cr = ColorRendering::parse_keyword(trimmed)?;
+    Some(cr.as_canonical_str().to_string())
 }
 
 /// Round 21 — return the child-index sub-path from `root` down to the

@@ -112,6 +112,16 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
     for entry in &extras.text_renderings {
         path_to_text_rendering.insert(entry.path.clone(), entry.text_rendering.as_str());
     }
+    // Round 247 — index `color-rendering` side-channel bindings (SVG 2
+    // §13.10.1) by scene-graph tree-path so `write_node` can re-emit
+    // `color-rendering="..."` on the matching shape / `<g>` on
+    // round-trip. Same per-path index layout as the round-221 /
+    // round-228 maps; same routing through `write_node` /
+    // `write_group_children`.
+    let mut path_to_color_rendering: HashMap<Vec<usize>, &str> = HashMap::new();
+    for entry in &extras.color_renderings {
+        path_to_color_rendering.insert(entry.path.clone(), entry.color_rendering.as_str());
+    }
     // Round 122 — index `<title>` / `<desc>` bindings (SVG 2 §5.8) by
     // their *parent* container's scene-graph tree-path so `write_node`
     // can re-emit them as the first children of the matching `<g>` on
@@ -302,6 +312,7 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
         &path_to_vector_effect,
         &path_to_shape_rendering,
         &path_to_text_rendering,
+        &path_to_color_rendering,
         &parent_to_titles,
         &parent_to_descs,
         &anim_by_parent,
@@ -524,6 +535,7 @@ fn write_group_children(
     path_to_vector_effect: &HashMap<Vec<usize>, &str>,
     path_to_shape_rendering: &HashMap<Vec<usize>, &str>,
     path_to_text_rendering: &HashMap<Vec<usize>, &str>,
+    path_to_color_rendering: &HashMap<Vec<usize>, &str>,
     parent_to_titles: &HashMap<Vec<usize>, &DescriptiveBinding>,
     parent_to_descs: &HashMap<Vec<usize>, &DescriptiveBinding>,
     anim_by_parent: &HashMap<String, Vec<&AnimationFragment>>,
@@ -545,6 +557,7 @@ fn write_group_children(
             path_to_vector_effect,
             path_to_shape_rendering,
             path_to_text_rendering,
+            path_to_color_rendering,
             parent_to_titles,
             parent_to_descs,
             anim_by_parent,
@@ -569,6 +582,7 @@ fn write_node(
     path_to_vector_effect: &HashMap<Vec<usize>, &str>,
     path_to_shape_rendering: &HashMap<Vec<usize>, &str>,
     path_to_text_rendering: &HashMap<Vec<usize>, &str>,
+    path_to_color_rendering: &HashMap<Vec<usize>, &str>,
     parent_to_titles: &HashMap<Vec<usize>, &DescriptiveBinding>,
     parent_to_descs: &HashMap<Vec<usize>, &DescriptiveBinding>,
     anim_by_parent: &HashMap<String, Vec<&AnimationFragment>>,
@@ -612,6 +626,13 @@ fn write_node(
     // `shape-rendering` lookup above.
     let text_rendering_here: Option<&str> =
         path_to_text_rendering.get(path_stack.as_slice()).copied();
+    // Round 247 — does this scene-graph position carry a recorded
+    // `color-rendering` attribute (SVG 2 §13.10.1)? If so the
+    // corresponding shape / `<g>` emission carries
+    // `color-rendering="..."` on round-trip. Mirrors the round-221
+    // `shape-rendering` / round-228 `text-rendering` lookups above.
+    let color_rendering_here: Option<&str> =
+        path_to_color_rendering.get(path_stack.as_slice()).copied();
     let inline_anims: &[&AnimationFragment] = id_here
         .and_then(|id| anim_by_parent.get(id))
         .map(Vec::as_slice)
@@ -684,6 +705,13 @@ fn write_node(
             if let Some(tr) = text_rendering_here {
                 out.push_str(&format!(" text-rendering=\"{}\"", escape_attr(tr)));
             }
+            // Round 247 — SVG 2 §13.10.1 `color-rendering`. Same emit
+            // slot as the round-221 / round-228 attributes above; all
+            // three rendering-hint attributes can coexist on a single
+            // `<g>` carrier when the source author wrote them together.
+            if let Some(cr) = color_rendering_here {
+                out.push_str(&format!(" color-rendering=\"{}\"", escape_attr(cr)));
+            }
             out.push_str(">\n");
             // Round 122 — SVG 2 §5.8: emit captured `<title>` /
             // `<desc>` children of this group as the *first* children
@@ -716,6 +744,7 @@ fn write_node(
                 path_to_vector_effect,
                 path_to_shape_rendering,
                 path_to_text_rendering,
+                path_to_color_rendering,
                 parent_to_titles,
                 parent_to_descs,
                 anim_by_parent,
@@ -785,6 +814,13 @@ fn write_node(
             if let Some(tr) = text_rendering_here {
                 out.push_str(&format!(" text-rendering=\"{}\"", escape_attr(tr)));
             }
+            // Round 247 — SVG 2 §13.10.1 `color-rendering`. Same emit
+            // slot as the round-221 / round-228 hints above; the cascade
+            // already resolved the property onto the carried PaintState,
+            // so this attribute is purely a round-trip carrier.
+            if let Some(cr) = color_rendering_here {
+                out.push_str(&format!(" color-rendering=\"{}\"", escape_attr(cr)));
+            }
             if inline_anims.is_empty() {
                 out.push_str("/>\n");
             } else {
@@ -844,6 +880,7 @@ fn write_node(
                 path_to_vector_effect,
                 path_to_shape_rendering,
                 path_to_text_rendering,
+                path_to_color_rendering,
                 parent_to_titles,
                 parent_to_descs,
                 anim_by_parent,
@@ -1376,6 +1413,7 @@ fn write_mask(
     let empty_path_to_vector_effect: HashMap<Vec<usize>, &str> = HashMap::new();
     let empty_path_to_shape_rendering: HashMap<Vec<usize>, &str> = HashMap::new();
     let empty_path_to_text_rendering: HashMap<Vec<usize>, &str> = HashMap::new();
+    let empty_path_to_color_rendering: HashMap<Vec<usize>, &str> = HashMap::new();
     let empty_titles: HashMap<Vec<usize>, &DescriptiveBinding> = HashMap::new();
     let empty_descs: HashMap<Vec<usize>, &DescriptiveBinding> = HashMap::new();
     let empty_anims: HashMap<String, Vec<&AnimationFragment>> = HashMap::new();
@@ -1394,6 +1432,7 @@ fn write_mask(
         &empty_path_to_vector_effect,
         &empty_path_to_shape_rendering,
         &empty_path_to_text_rendering,
+        &empty_path_to_color_rendering,
         &empty_titles,
         &empty_descs,
         &empty_anims,

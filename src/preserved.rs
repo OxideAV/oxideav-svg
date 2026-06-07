@@ -266,6 +266,16 @@ pub struct PreservedExtras {
     /// topmost emit site for the run). Populated only by
     /// [`crate::decoder::parse_svg_with_extras`].
     pub text_renderings: Vec<TextRenderingBinding>,
+    /// Round 247 — SVG 2 §13.10.1 `color-rendering` source-text
+    /// bindings, recorded per emitted shape / `<g>` so the encoder can
+    /// re-emit `color-rendering="..."` on the matching element on
+    /// round-trip. Mirrors the round-221 `shape-rendering` / round-228
+    /// `text-rendering` carriers — the property is inherited per
+    /// §13.10.1, but the binding is purely lexical so the round-trip
+    /// preserves exactly where the author wrote the attribute (the
+    /// topmost emit site for the element). Populated only by
+    /// [`crate::decoder::parse_svg_with_extras`].
+    pub color_renderings: Vec<ColorRenderingBinding>,
 }
 
 /// One captured animation child of a known-id parent element.
@@ -372,6 +382,7 @@ impl PreservedExtras {
             && self.clip_rules.is_empty()
             && self.shape_renderings.is_empty()
             && self.text_renderings.is_empty()
+            && self.color_renderings.is_empty()
     }
 }
 
@@ -444,6 +455,30 @@ pub struct TextRenderingBinding {
     /// so an initial-value document doesn't bloat with redundant
     /// `text-rendering="auto"` on every `<text>`.
     pub text_rendering: String,
+}
+
+/// Round 247 — one (scene-graph tree-path, author `color-rendering`
+/// keyword) pair. Mirrors [`TextRenderingBinding`] / [`ShapeRenderingBinding`]
+/// — the scene graph does not yet expose a typed
+/// colour-interpolation-space hook (`oxideav-raster` owns the working
+/// colour-space selection), so the binding's job is purely to
+/// round-trip the source attribute so a `parse → write` cycle preserves
+/// the author's hint verbatim.
+#[derive(Clone, Debug)]
+pub struct ColorRenderingBinding {
+    /// Tree-path through the scene graph; matches the layout of
+    /// [`IdScenePath::path`].
+    pub path: Vec<usize>,
+    /// Author-supplied keyword string canonicalised to the spec's
+    /// camelCase spelling (`auto` / `optimizeSpeed` / `optimizeQuality`).
+    /// The capture helper canonicalises case-insensitively, so source
+    /// `OPTIMIZESPEED` round-trips as `optimizeSpeed`. The binding
+    /// records explicit `auto` (matching round-221 `shape-rendering` /
+    /// round-228 `text-rendering` / round-235 `image-rendering` policy)
+    /// but skips the absent-attribute case so an initial-value document
+    /// doesn't bloat with redundant `color-rendering="auto"` on every
+    /// element.
+    pub color_rendering: String,
 }
 
 #[derive(Clone, Debug)]
