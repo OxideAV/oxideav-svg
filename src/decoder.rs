@@ -249,9 +249,9 @@ fn collect_extras(el: &Element, extras: &mut PreservedExtras, current_id: Option
         "metadata" => {
             // Round 122 — SVG 2 §5.9 `<metadata>` content model is "any
             // elements or character data" (typically RDF / Dublin Core
-            // / foreign-namespace markup from authoring tools like
-            // Inkscape / Sodipodi). A structured parse is out of scope
-            // — we capture the whole element verbatim and re-emit at
+            // / foreign-namespace markup from upstream authoring
+            // tooling). A structured parse is out of scope —
+            // we capture the whole element verbatim and re-emit at
             // the trailing edge of the document so a `parse → write`
             // round-trip preserves embedded provenance / licensing /
             // catalogue metadata. Per §5.9 the UA stylesheet forces
