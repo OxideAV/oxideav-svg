@@ -21,8 +21,9 @@ use crate::parser::{
 };
 use crate::preserved::{
     AnimationFragment, ClipRuleBinding, ColorInterpolationBinding, ColorRenderingBinding,
-    DescriptiveBinding, IdScenePath, LinkBinding, PaintOrderBinding, PathLengthBinding,
-    PreservedExtras, ShapeRenderingBinding, TextRenderingBinding, VectorEffectBinding,
+    DescriptiveBinding, IdScenePath, LinkBinding, OverflowBinding, PaintOrderBinding,
+    PathLengthBinding, PreservedExtras, ShapeRenderingBinding, TextRenderingBinding,
+    VectorEffectBinding,
 };
 
 /// Codec id string for SVG vector frames.
@@ -79,7 +80,8 @@ pub fn parse_svg_at_with_languages(
     let svg =
         find_svg_root(&nodes).ok_or_else(|| Error::invalid("SVG: missing <svg> root element"))?;
     let langs: Vec<String> = system_language.iter().map(|s| s.to_string()).collect();
-    let (frame, _, _, _, _, _, _, _, _, _, _, _) = parse_svg_root(svg, t_seconds, false, &langs)?;
+    let (frame, _, _, _, _, _, _, _, _, _, _, _, _) =
+        parse_svg_root(svg, t_seconds, false, &langs)?;
     Ok(frame)
 }
 
@@ -130,6 +132,7 @@ pub fn parse_svg_with_extras(bytes: &[u8]) -> Result<(VectorFrame, PreservedExtr
         text_renderings,
         color_renderings,
         color_interpolations,
+        overflows,
     ) = parse_svg_root(svg, 0.0, true, &[])?;
     extras.id_paths = id_paths;
     extras.path_lengths = path_lengths;
@@ -142,6 +145,7 @@ pub fn parse_svg_with_extras(bytes: &[u8]) -> Result<(VectorFrame, PreservedExtr
     extras.text_renderings = text_renderings;
     extras.color_renderings = color_renderings;
     extras.color_interpolations = color_interpolations;
+    extras.overflows = overflows;
     Ok((frame, extras))
 }
 
@@ -369,6 +373,7 @@ type SvgRootParse = (
     Vec<TextRenderingBinding>,
     Vec<ColorRenderingBinding>,
     Vec<ColorInterpolationBinding>,
+    Vec<OverflowBinding>,
 );
 
 fn parse_svg_root(
@@ -533,6 +538,7 @@ fn parse_svg_root(
         ctx.text_renderings,
         ctx.color_renderings,
         ctx.color_interpolations,
+        ctx.overflows,
     ))
 }
 

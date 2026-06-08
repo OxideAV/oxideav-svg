@@ -291,6 +291,22 @@ pub struct PreservedExtras {
     /// `color-rendering` quality hint that rides on
     /// [`Self::color_renderings`].
     pub color_interpolations: Vec<ColorInterpolationBinding>,
+    /// Round 257 — SVG 2 §3.11 `overflow` source-text bindings,
+    /// recorded per emitted shape / `<g>` so the encoder can re-emit
+    /// `overflow="..."` on the matching element on round-trip.
+    /// Mirrors the round-252 `color-interpolation` carrier — the
+    /// binding is purely lexical, so even though `overflow` is NOT
+    /// inherited per CSS 2.1 the round-trip still captures exactly
+    /// where the author wrote the attribute (the topmost emit site
+    /// for the element). Populated only by
+    /// [`crate::decoder::parse_svg_with_extras`].
+    ///
+    /// §3.11 selects whether a UA establishes a clipping rectangle
+    /// for an element's content; the actual clipping behaviour +
+    /// UA-stylesheet override of the initial value to `hidden` for
+    /// non-root `<svg>` / `<symbol>` / `<marker>` / `<pattern>` /
+    /// `<image>` live in `oxideav-raster`.
+    pub overflows: Vec<OverflowBinding>,
 }
 
 /// One captured animation child of a known-id parent element.
@@ -399,6 +415,7 @@ impl PreservedExtras {
             && self.text_renderings.is_empty()
             && self.color_renderings.is_empty()
             && self.color_interpolations.is_empty()
+            && self.overflows.is_empty()
     }
 }
 
@@ -526,6 +543,39 @@ pub struct ColorInterpolationBinding {
     /// initial-value document doesn't bloat with redundant
     /// `color-interpolation="sRGB"` on every element.
     pub color_interpolation: String,
+}
+
+/// Round 257 — one (scene-graph tree-path, author `overflow`
+/// keyword) pair. Mirrors [`ColorInterpolationBinding`] /
+/// [`ShapeRenderingBinding`] — the scene graph does not yet expose
+/// a typed clipping-rectangle hook (`oxideav-raster` owns the
+/// §3.11 clip-vs-no-clip decision), so the binding's job is purely
+/// to round-trip the source attribute so a `parse → write` cycle
+/// preserves the author's request verbatim.
+///
+/// SVG 2 §3.11 reuses the CSS 2.1 keyword set unchanged (`visible`,
+/// `hidden`, `scroll`, `auto`), all lowercase — distinct from the
+/// §13.9 mixed-case spellings (`sRGB` / `linearRGB`). The capture
+/// helper canonicalises case-insensitively, so source `HIDDEN`
+/// round-trips as `hidden`.
+#[derive(Clone, Debug)]
+pub struct OverflowBinding {
+    /// Tree-path through the scene graph; matches the layout of
+    /// [`IdScenePath::path`].
+    pub path: Vec<usize>,
+    /// Author-supplied keyword string canonicalised to the §3.11
+    /// spelling (`visible` / `hidden` / `scroll` / `auto`). The
+    /// capture helper canonicalises case-insensitively, so source
+    /// `HIDDEN` round-trips as `hidden`. The binding records
+    /// explicit `visible` (the §3.11 initial value) when an author
+    /// writes it — matching the round-221 / round-247 / round-252
+    /// "explicit initial value carries intent" policy (e.g. an
+    /// override of the UA-stylesheet `overflow: hidden` default that
+    /// fires for non-root `<svg>` / `<symbol>` / `<marker>` /
+    /// `<pattern>` / `<image>` per §3.11) — but skips the
+    /// absent-attribute case so an initial-value document doesn't
+    /// bloat with redundant `overflow="visible"` on every element.
+    pub overflow: String,
 }
 
 #[derive(Clone, Debug)]

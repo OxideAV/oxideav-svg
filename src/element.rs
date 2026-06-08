@@ -623,6 +623,122 @@ impl ColorInterpolation {
     }
 }
 
+/// Round 257 — SVG 2 §3.11 `overflow` property
+/// (`visible | hidden | scroll | auto`).
+///
+/// Per §3.11 the property selects whether a UA establishes a clipping
+/// rectangle for an element's content when that content would render
+/// outside the element's bounds. The §3.11 normative summary table
+/// gives `visible` as the initial value for every SVG element that
+/// `overflow` applies to (document-root `<svg>`, other `<svg>`,
+/// `<text>`, `<pattern>`, `<marker>`, `<symbol>`, `<image>`,
+/// `<iframe>`, `<foreignObject>`); the UA stylesheet additionally
+/// overrides the initial value to `hidden` for non-root `<svg>`,
+/// `<pattern>`, `<marker>`, `<symbol>`, and `<image>` per the same
+/// §3.11 table. Both behaviours fall outside this round — the cascade
+/// resolution + side-channel round-trip live here, the UA-stylesheet
+/// default + actual clipping-rectangle creation belong to
+/// `oxideav-raster` (and the §3.11 informative note that
+/// `scroll` may degrade to `hidden` when no scrolling mechanism is
+/// available is also a renderer concern, not a parser one).
+///
+/// **Inherited:** **no** — CSS 2.1 §11.1.1 lists `overflow` as not
+/// inherited (mirrors SVG 2 §3.11's "same parameter values and …
+/// same meaning as defined in CSS 2.1" cross-reference). So a
+/// `<g overflow="hidden">` does NOT push `hidden` down to descendant
+/// shapes via the cascade; [`PaintState::merged_with_mctx`] resets
+/// `overflow` to the initial value before applying the element's
+/// own attribute (matching the `display` / `vector_effect` resets).
+/// The §3.11 round-trip side-channel is purely lexical — it captures
+/// the source attribute on its own emit slot regardless of
+/// cascade — so a hand-authored `<g overflow="hidden">` survives a
+/// `parse → write` cycle on the same group element even though the
+/// resolved per-shape values would not have picked up `hidden`.
+///
+/// **Applies to:** the §3.11 summary table's element list (`svg` /
+/// `symbol` / `marker` / `pattern` / `image` / `text` / `iframe` /
+/// `foreignObject`). We don't enforce the apply-to gate at parse
+/// time (consistent with the round-235 `image-rendering` /
+/// round-247 `color-rendering` policy of accepting the property on
+/// any element so a hand-authored attribute round-trips through any
+/// emit slot); the §3.11 normative semantics still only fire when
+/// the renderer pulls the resolved value off an applicable element.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Overflow {
+    /// `visible` — §3.11 initial value: no clipping rectangle is
+    /// established. Per §3.11: "If the overflow property has a value
+    /// of 'visible', the property has no effect (i.e., a clipping
+    /// rectangle is not created)."
+    #[default]
+    Visible,
+    /// `hidden` — clip to the SVG viewport rectangle for applicable
+    /// elements (`<svg>`, `<symbol>`, `<marker>`, `<pattern>`,
+    /// `<image>`, `<text>`, `<iframe>`, `<foreignObject>`). Per
+    /// §3.11: "If the overflow property has the value 'hidden' or
+    /// 'scroll', a clip, the exact size of the SVG viewport is
+    /// applied."
+    Hidden,
+    /// `scroll` — same clip as `hidden`, with a UA scrolling
+    /// mechanism (per §3.11 bullet 3, "if the user agent uses a
+    /// scrolling mechanism that is visible on the screen … that
+    /// mechanism should be displayed for the SVG viewport whether or
+    /// not any of its content is clipped"). For the §3.11 summary
+    /// table's `<text>`/`<pattern>`/`<marker>`/`<symbol>`/`<image>`
+    /// rows, `scroll` resolves to `hidden` (the cells in the table
+    /// agree — `scroll` is listed as `hidden`); we still parse and
+    /// round-trip the source keyword, the resolution lives in
+    /// `oxideav-raster`.
+    Scroll,
+    /// `auto` — UA's choice between `visible` and `scroll` (per
+    /// §3.11 bullet 4: "the value 'auto' implies that all rendered
+    /// content for child elements must be visible, either through a
+    /// scrolling mechanism, or by rendering with no clip … If the
+    /// user agent has no scrolling mechanism, the content would not
+    /// be clipped … then the value 'auto' must be treated as
+    /// 'visible'"). Parsed and round-tripped here; the UA-side
+    /// resolution lives in `oxideav-raster`.
+    Auto,
+}
+
+impl Overflow {
+    /// Parse an `overflow` keyword (case-insensitive per CSS).
+    /// `inherit` returns `None` so the caller can keep the inherited
+    /// (or, after the §3.11 non-inheritance reset, the initial)
+    /// value. Unknown / malformed tokens also return `None`,
+    /// matching the tolerant policy used by the §13.x rendering
+    /// hints and `text-anchor` / `paint-order` / `visibility`.
+    pub(crate) fn parse_keyword(value: &str) -> Option<Self> {
+        let v = value.trim();
+        if v.eq_ignore_ascii_case("visible") {
+            Some(Self::Visible)
+        } else if v.eq_ignore_ascii_case("hidden") {
+            Some(Self::Hidden)
+        } else if v.eq_ignore_ascii_case("scroll") {
+            Some(Self::Scroll)
+        } else if v.eq_ignore_ascii_case("auto") {
+            Some(Self::Auto)
+        } else {
+            // `inherit` and unknown tokens fall through; the cascade
+            // keeps whatever value was inherited (or, since
+            // `overflow` is not inherited, the initial `visible` set
+            // by the per-element reset in `merged_with_mctx`).
+            None
+        }
+    }
+
+    /// Canonical keyword for round-trip emission. §3.11 reuses the
+    /// CSS 2.1 keywords verbatim, all lowercase, so source `HIDDEN`
+    /// / `Scroll` round-trip as `hidden` / `scroll`.
+    pub(crate) fn as_canonical_str(self) -> &'static str {
+        match self {
+            Self::Visible => "visible",
+            Self::Hidden => "hidden",
+            Self::Scroll => "scroll",
+            Self::Auto => "auto",
+        }
+    }
+}
+
 /// Round 235 — SVG 2 §13.10.4 `image-rendering` resolved value
 /// (`auto | optimizeQuality | optimizeSpeed`).
 ///
@@ -796,6 +912,15 @@ pub struct PaintState {
     /// animation / compositing happens in `oxideav-raster`; this crate
     /// parses, cascades, and round-trips the keyword.
     pub color_interpolation: ColorInterpolation,
+    /// Round 257 — SVG 2 §3.11 `overflow` (NOT inherited per CSS
+    /// 2.1). Initial value [`Overflow::Visible`]. The actual
+    /// clipping-rectangle establishment + UA-stylesheet override of
+    /// the initial value to `hidden` for non-root `<svg>` /
+    /// `<symbol>` / `<marker>` / `<pattern>` / `<image>` happen in
+    /// `oxideav-raster`; this crate parses + resets per-element +
+    /// round-trips the source attribute via the
+    /// [`crate::preserved::OverflowBinding`] side-channel.
+    pub overflow: Overflow,
 }
 
 impl Default for PaintState {
@@ -839,6 +964,11 @@ impl Default for PaintState {
             // performs gradient / animation / compositing lerps in
             // sRGB by default.
             color_interpolation: ColorInterpolation::Srgb,
+            // §3.11 — initial value `visible` per the summary table.
+            // CSS 2.1 §11.1.1 lists `overflow` as not inherited, so
+            // `merged_with_mctx` resets this to the initial value
+            // before applying the element's own attribute.
+            overflow: Overflow::Visible,
         }
     }
 }
@@ -887,6 +1017,17 @@ impl PaintState {
         // NOT silently pick the property up from the ancestor — only
         // an explicit `vector-effect=` on the child itself sets it.
         s.vector_effect = VectorEffect::None;
+        // Round 257 — `overflow` is NOT inherited (SVG 2 §3.11
+        // cross-references CSS 2.1 §11.1.1, which lists `overflow`
+        // with Inherited: no). Reset to the initial value
+        // [`Overflow::Visible`] before the element's own attribute
+        // (if any) is applied below, matching the `display` /
+        // `vector_effect` reset policy. A `<g overflow="hidden">`
+        // ancestor therefore does NOT push `hidden` onto descendant
+        // shapes via the cascade — the round-trip side-channel
+        // captures the source attribute on its own emit slot instead
+        // (so the author's intent still survives a `parse → write`).
+        s.overflow = Overflow::Visible;
         let el = mctx.el;
         // 1) presentation attributes from `el`.
         for (name, _) in &el.attrs {
@@ -1125,6 +1266,21 @@ impl PaintState {
             "color-interpolation" => {
                 if let Some(ci) = ColorInterpolation::parse_keyword(value) {
                     s.color_interpolation = ci;
+                }
+            }
+            // Round 257 — SVG 2 §3.11 `overflow` (NOT inherited per
+            // CSS 2.1). `visible | hidden | scroll | auto`. Same
+            // tolerant-keep-on-`inherit`-or-unknown policy as the
+            // §13.x rendering hints above. §3.11 lists `<svg>` /
+            // `<symbol>` / `<marker>` / `<pattern>` / `<image>` /
+            // `<text>` / `<iframe>` / `<foreignObject>` as the
+            // elements the property applies to; we accept the
+            // keyword on any element so a hand-authored attribute
+            // resolves into the carried PaintState even when the
+            // renderer's applies-to gate would later ignore it.
+            "overflow" => {
+                if let Some(o) = Overflow::parse_keyword(value) {
+                    s.overflow = o;
                 }
             }
             // Round-4 CSS may carry properties we don't yet model
@@ -1384,6 +1540,18 @@ pub struct ParseContext {
     /// end of each `parse_element_to_node_ctx` call (the drain matches
     /// the round-221 / round-228 / round-247 flows).
     pub pending_color_interpolation: Option<String>,
+    /// Round 257 — collected `(scene_path, overflow)` bindings
+    /// (SVG 2 §3.11). Populated only when the caller opted in via
+    /// [`crate::decoder::parse_svg_with_extras`] (same gate as
+    /// [`Self::track_id_paths`]). The encoder re-emits the source
+    /// attribute on the matching shape / `<g>` on round-trip.
+    pub overflows: Vec<crate::preserved::OverflowBinding>,
+    /// Round 257 — scratch slot for the shape / `<g>` branch to hand a
+    /// captured `overflow` keyword string to the wrapper-aware recorder
+    /// that runs after `apply_referenced_defs`. Cleared at the end of
+    /// each `parse_element_to_node_ctx` call (the drain matches the
+    /// round-221 / round-228 / round-247 / round-252 flows).
+    pub pending_overflow: Option<String>,
     /// Round 118 — "next element is a `<use>` instance root" flag.
     /// SVG 1.1 §11.5: "setting display: none on a `<path>` element will
     /// prevent that element from getting rendered directly onto the
@@ -1436,6 +1604,8 @@ impl ParseContext {
             pending_color_rendering: None,
             color_interpolations: Vec::new(),
             pending_color_interpolation: None,
+            overflows: Vec::new(),
+            pending_overflow: None,
         }
     }
 
@@ -1586,6 +1756,25 @@ impl ParseContext {
                 path: self.current_path.clone(),
                 color_interpolation,
             });
+    }
+
+    /// Round 257 — record an author `overflow` attribute against
+    /// the current scene-graph path (SVG 2 §3.11). Same
+    /// `track_id_paths` gate as the other side-channel recorders. The
+    /// encoder re-emits the matching shape / `<g>` with
+    /// `overflow="..."` on round-trip. Unlike the §13.9 / §13.10.x
+    /// hints, `overflow` is NOT inherited, so the per-element reset
+    /// in [`PaintState::merged_with_mctx`] ensures the resolved value
+    /// stops at the carrier element; the lexical side-channel still
+    /// preserves the source attribute on its own emit slot.
+    pub fn record_overflow(&mut self, overflow: String) {
+        if !self.track_id_paths {
+            return;
+        }
+        self.overflows.push(crate::preserved::OverflowBinding {
+            path: self.current_path.clone(),
+            overflow,
+        });
     }
 
     /// Round 115 — record an `<a>` hyperlink binding at the current
@@ -2504,6 +2693,15 @@ pub fn parse_element_to_node_ctx(
             // descendant.
             let saved_pending_color_interpolation = ctx.pending_color_interpolation.take();
             let group_color_interpolation = capture_color_interpolation_attr(el);
+            // Round 257 — capture any `overflow=` carried on the
+            // `<g>` so a hand-authored attribute survives round-trip.
+            // The property is NOT inherited per CSS 2.1 §11.1.1, but
+            // the round-trip carrier is purely lexical so a
+            // `<g overflow="hidden">` round-trips on its own emit
+            // slot regardless of whether the cascade would have
+            // pushed the value to descendants (it doesn't).
+            let saved_pending_overflow = ctx.pending_overflow.take();
+            let group_overflow = capture_overflow_attr(el);
             let transform = match attr(el, "transform") {
                 Some(v) => parse_transform(v)?,
                 None => Transform2D::identity(),
@@ -2562,6 +2760,9 @@ pub fn parse_element_to_node_ctx(
             // `color-interpolation` carrier.
             ctx.pending_color_interpolation =
                 group_color_interpolation.or(saved_pending_color_interpolation);
+            // Round 257 — same restore-then-layer flow for the
+            // `overflow` carrier.
+            ctx.pending_overflow = group_overflow.or(saved_pending_overflow);
             Some(Node::Group(group))
         }
         // Round 115 — SVG 2 §16.5 `<a>` hyperlink. The `<a>` element is
@@ -2879,6 +3080,17 @@ pub fn parse_element_to_node_ctx(
             // `auto` / `sRGB` / `linearRGB`). Absent / `inherit` /
             // unrecognised tokens skip recording.
             ctx.pending_color_interpolation = capture_color_interpolation_attr(el);
+            // Round 257 — SVG 2 §3.11 `overflow` round-trip capture.
+            // Same flow as the round-252 `color-interpolation` capture
+            // above: the cascade has already resolved the property
+            // onto `state.overflow` (after the §3.11 non-inheritance
+            // reset), but the round-trip carrier records the
+            // source-literal so a `parse → write` cycle re-emits the
+            // author's keyword verbatim (canonicalised to lowercase
+            // per the §3.11 / CSS 2.1 keyword set `visible` /
+            // `hidden` / `scroll` / `auto`). Absent / `inherit` /
+            // unrecognised tokens skip recording.
+            ctx.pending_overflow = capture_overflow_attr(el);
             // Round 205 — SVG 2 §13.8 `paint-order`. The round-1
             // `PathNode { fill, stroke }` shape always paints fill
             // BEFORE stroke (the §13.8 `normal` order); when the
@@ -3062,6 +3274,15 @@ pub fn parse_element_to_node_ctx(
     // compositing happens in `oxideav-raster`.
     if let Some(ci) = ctx.pending_color_interpolation.take() {
         ctx.record_color_interpolation(ci);
+    }
+    // Round 257 — drain the shape / `<g>` branch's pending
+    // `overflow` (if any) and record it at the same outer-most emit
+    // site the §13.x / §3.11 lexical recorders use. The encoder
+    // re-emits the source attribute on the matching shape / `<g>` on
+    // round-trip; the actual clipping-rectangle establishment +
+    // UA-stylesheet initial-value override happen in `oxideav-raster`.
+    if let Some(o) = ctx.pending_overflow.take() {
+        ctx.record_overflow(o);
     }
     Ok(Some(wrapped))
 }
@@ -3289,6 +3510,38 @@ fn capture_color_interpolation_attr(el: &Element) -> Option<String> {
     }
     let ci = ColorInterpolation::parse_keyword(trimmed)?;
     Some(ci.as_canonical_str().to_string())
+}
+
+/// Round 257 — extract a canonicalised `overflow` attribute from
+/// `el` for round-trip preservation. Returns `Some(canonical)` when
+/// the attribute resolves to one of the four §3.11 keywords
+/// (`visible` / `hidden` / `scroll` / `auto`); returns `None` for an
+/// absent attribute, an `inherit` keyword, or an unrecognised token
+/// (the cascade keeps the inherited — or, since `overflow` is not
+/// inherited, the per-element-reset initial — value in those cases,
+/// so the round-trip carrier matches the parse-time fallback).
+///
+/// Canonical form is the §3.11 spelling (all lowercase, matching the
+/// CSS 2.1 keyword set verbatim) — source `HIDDEN` / `Hidden`
+/// round-trip as `hidden`.
+///
+/// Like the round-221 / round-228 / round-247 / round-252 helpers,
+/// an explicit author `overflow="visible"` IS recorded — even though
+/// `visible` is the §3.11 initial value, an explicit author write
+/// carries intent (e.g. an override of the UA stylesheet's
+/// `hidden` default that fires for non-root `<svg>` / `<symbol>` /
+/// `<marker>` / `<pattern>` / `<image>`, per §3.11). The
+/// absent-attribute case is still skipped so an initial-value
+/// document doesn't bloat the output with redundant
+/// `overflow="visible"` on every element.
+fn capture_overflow_attr(el: &Element) -> Option<String> {
+    let raw = attr(el, "overflow")?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("inherit") {
+        return None;
+    }
+    let o = Overflow::parse_keyword(trimmed)?;
+    Some(o.as_canonical_str().to_string())
 }
 
 /// Round 21 — return the child-index sub-path from `root` down to the

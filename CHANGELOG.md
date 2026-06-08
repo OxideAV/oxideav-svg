@@ -9,6 +9,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 257** — SVG 2 §3.11 `overflow` property
+  (`visible | hidden | scroll | auto`) on the §3.11 summary-table
+  element list (`<svg>` / `<symbol>` / `<marker>` / `<pattern>` /
+  `<image>` / `<text>` / `<iframe>` / `<foreignObject>`).
+  - New typed [`crate::element::Overflow`] enum carried on
+    [`crate::element::PaintState`]. Per the §3.11 summary table the
+    initial value is `Visible`; the property is NOT inherited per
+    CSS 2.1 §11.1.1 (matching the round-118 `display` and round-209
+    `vector-effect` non-inheritance reset policy), so
+    [`PaintState::merged_with_mctx`] resets `overflow` to the
+    initial value before applying the element's own attribute.
+    Resolves through presentation attributes, inline `style="…"`,
+    and `<style>`-block rules via the existing round-4 cascade.
+    Case-insensitive keyword matching; `inherit` / unknown tokens
+    keep the post-reset value (per the §3.11 normative tolerance
+    note: "as `overflow="invalid"` will result in a rule setting
+    overflow to visible").
+  - **Round-trip preservation.** New
+    [`crate::preserved::OverflowBinding`] +
+    [`crate::preserved::PreservedExtras::overflows`] side-channel
+    captures the canonicalised lowercase keyword at the topmost
+    emit slot for each shape / `<g>` carrying a recognised
+    `overflow=` attribute. The carrier is purely lexical (the
+    cascade itself does not inherit `overflow`), so a hand-authored
+    `<g overflow="hidden">` survives a
+    `parse_svg_with_extras → write_svg_with_extras` cycle on the
+    same group element. The encoder re-emits `overflow=` on the
+    matching shape / `<g>` on round-trip.
+  - **Explicit initial value `visible` is preserved.** Mirrors the
+    round-221 `shape-rendering` / round-247 `color-rendering` /
+    round-252 `color-interpolation` explicit-initial-value policy
+    — even though `visible` is the §3.11 initial value, an
+    explicit author write carries intent (e.g. an override of the
+    UA-stylesheet `overflow: hidden` default that fires for
+    non-root `<svg>` / `<symbol>` / `<marker>` / `<pattern>` /
+    `<image>` per §3.11). The absent-attribute case is still
+    skipped so an initial-value document doesn't bloat with
+    redundant `overflow="visible"` on every element.
+  - **Canonical lowercase emission.** Source `HIDDEN` / `Hidden` /
+    `SCROLL` round-trip as `hidden` / `scroll` — §3.11 reuses the
+    CSS 2.1 keyword set verbatim, all lowercase (distinct from the
+    §13.9 mixed-case spellings `sRGB` / `linearRGB` and the
+    §13.10.x lower-camelCase spellings).
+  - **Coexists with the §13.x rendering / colour hints.** §3.11
+    (clipping rectangle) and §13.10.1 `color-rendering` (quality
+    hint) / §13.9 `color-interpolation` (working colour space) are
+    orthogonal properties — they can all ride on the same `<g>`
+    without interfering. Each side-channel records independently
+    and the encoder emits every recognised attribute on round-trip.
+  - The actual clipping-rectangle establishment (per §3.11
+    `hidden` / `scroll` → clip-to-viewport behaviour) + the
+    UA-stylesheet override of the initial value to `hidden` for
+    non-root `<svg>` / `<symbol>` / `<marker>` / `<pattern>` /
+    `<image>` + the renderer-side resolution of `scroll` / `auto`
+    against UA scrolling-mechanism availability all happen in
+    `oxideav-raster`; this round delivers parse + non-inherited
+    cascade + round-trip preservation. A downstream rasteriser
+    reads the resolved value off the carried `PaintState` or off
+    the per-element `OverflowBinding`.
+  - 21 integration tests in `tests/round257_overflow.rs`.
+
 - **Round 252** — SVG 2 §13.9 `color-interpolation` property
   (`auto | sRGB | linearRGB`) on container, graphics, and gradient
   elements (plus `<use>` and `<animate>` per the §13.9 applies-to list).
