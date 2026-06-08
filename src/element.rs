@@ -739,6 +739,133 @@ impl Overflow {
     }
 }
 
+/// Round 260 — SVG 2 §15.6 `pointer-events` resolved value
+/// (`bounding-box | visiblePainted | visibleFill | visibleStroke |
+/// visible | painted | fill | stroke | all | none`).
+///
+/// Per §15.6 the property selects the circumstances under which an
+/// element can be the **target** of a pointer event (mouse click,
+/// hover, focus, hyperlink). The keyword set crosses two orthogonal
+/// gates:
+///
+/// 1. **Visibility gate** (`visible*` prefix): only the keywords whose
+///    name starts with `visible` (`visiblePainted`, `visibleFill`,
+///    `visibleStroke`, `visible`) require the `visibility` property to
+///    resolve to `visible`; the bare `painted` / `fill` / `stroke` /
+///    `all` keywords ignore visibility, and `none` disables hit testing
+///    entirely.
+/// 2. **Paint gate** (`*Painted` suffix or bare `painted` / `fill` /
+///    `stroke`): some keywords additionally require the corresponding
+///    paint to resolve to a value other than `none` — `visiblePainted`
+///    and `painted` need either fill or stroke to be painted;
+///    `visibleFill` / `fill` only test the interior; `visibleStroke` /
+///    `stroke` only test the perimeter; `visible` / `all` ignore the
+///    paint properties entirely. The `bounding-box` keyword uses the
+///    element's bounding box rather than the geometry, and `none`
+///    short-circuits all of the above.
+///
+/// **Inherited:** yes (§15.6 attribute table). **Applies to:** container
+/// elements, graphics elements, `<use>` (per the §15.6 attribute
+/// table). The actual hit-testing happens in the interactive layer
+/// (e.g. `oxideav-pipeline` event-routing or `oxideav-raster`
+/// hit-test queries against the rendered scene); this crate parses,
+/// cascades, and round-trips the keyword so the resolved value
+/// reaches whichever layer cares.
+///
+/// Note: §15.6 spells the four `visible*` keywords with lower-camelCase
+/// (`visiblePainted`, `visibleFill`, `visibleStroke`) and the
+/// `bounding-box` keyword with a hyphen — the canonicalisation map
+/// preserves that spelling on round-trip even when the source uses
+/// `VISIBLEPAINTED` / `BOUNDING-BOX`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum PointerEvents {
+    /// `bounding-box` — hit-test the axis-aligned bounding box.
+    BoundingBox,
+    /// `visiblePainted` (initial) — only painted areas, only when
+    /// `visibility: visible`. The §15.6 initial value.
+    #[default]
+    VisiblePainted,
+    /// `visibleFill` — interior only, gated on `visibility: visible`;
+    /// `fill: none` does NOT disable hit testing.
+    VisibleFill,
+    /// `visibleStroke` — perimeter only, gated on `visibility: visible`;
+    /// `stroke: none` does NOT disable hit testing.
+    VisibleStroke,
+    /// `visible` — interior or perimeter, gated on
+    /// `visibility: visible`; fill / stroke values are ignored.
+    Visible,
+    /// `painted` — only painted areas, ignoring `visibility`.
+    Painted,
+    /// `fill` — interior only, ignoring `visibility` and `fill` value.
+    Fill,
+    /// `stroke` — perimeter only, ignoring `visibility` and `stroke`
+    /// value.
+    Stroke,
+    /// `all` — interior or perimeter, ignoring `visibility` and fill /
+    /// stroke values.
+    All,
+    /// `none` — element is never a pointer-event target.
+    None,
+}
+
+impl PointerEvents {
+    /// Parse a `pointer-events` keyword (case-insensitive per CSS).
+    /// `inherit` returns `None` so the caller can keep the inherited
+    /// value already on its `PaintState`. Unknown / malformed tokens
+    /// also return `None`, matching the tolerant policy used by the
+    /// §13.x rendering hints and `text-anchor` / `paint-order` /
+    /// `visibility`.
+    pub(crate) fn parse_keyword(value: &str) -> Option<Self> {
+        let v = value.trim();
+        if v.eq_ignore_ascii_case("bounding-box") {
+            Some(Self::BoundingBox)
+        } else if v.eq_ignore_ascii_case("visiblepainted") {
+            Some(Self::VisiblePainted)
+        } else if v.eq_ignore_ascii_case("visiblefill") {
+            Some(Self::VisibleFill)
+        } else if v.eq_ignore_ascii_case("visiblestroke") {
+            Some(Self::VisibleStroke)
+        } else if v.eq_ignore_ascii_case("visible") {
+            Some(Self::Visible)
+        } else if v.eq_ignore_ascii_case("painted") {
+            Some(Self::Painted)
+        } else if v.eq_ignore_ascii_case("fill") {
+            Some(Self::Fill)
+        } else if v.eq_ignore_ascii_case("stroke") {
+            Some(Self::Stroke)
+        } else if v.eq_ignore_ascii_case("all") {
+            Some(Self::All)
+        } else if v.eq_ignore_ascii_case("none") {
+            Some(Self::None)
+        } else {
+            // `inherit` and unknown tokens fall through; the cascade
+            // keeps whatever value was inherited.
+            None
+        }
+    }
+
+    /// Canonical keyword for round-trip emission. §15.6 uses
+    /// lower-camelCase for the four `visible*` keywords
+    /// (`visiblePainted`, `visibleFill`, `visibleStroke`) and a hyphen
+    /// for `bounding-box`; the remaining keywords are all-lowercase.
+    /// Source `VISIBLEPAINTED` / `BOUNDING-BOX` round-trip as the
+    /// §15.6 canonical spelling.
+    pub(crate) fn as_canonical_str(self) -> &'static str {
+        match self {
+            Self::BoundingBox => "bounding-box",
+            Self::VisiblePainted => "visiblePainted",
+            Self::VisibleFill => "visibleFill",
+            Self::VisibleStroke => "visibleStroke",
+            Self::Visible => "visible",
+            Self::Painted => "painted",
+            Self::Fill => "fill",
+            Self::Stroke => "stroke",
+            Self::All => "all",
+            Self::None => "none",
+        }
+    }
+}
+
 /// Round 235 — SVG 2 §13.10.4 `image-rendering` resolved value
 /// (`auto | optimizeQuality | optimizeSpeed`).
 ///
@@ -921,6 +1048,14 @@ pub struct PaintState {
     /// round-trips the source attribute via the
     /// [`crate::preserved::OverflowBinding`] side-channel.
     pub overflow: Overflow,
+    /// Round 260 — SVG 2 §15.6 `pointer-events` (inherited). Initial
+    /// value [`PointerEvents::VisiblePainted`]. The actual hit-test
+    /// gating happens in the interactive layer (e.g.
+    /// `oxideav-pipeline` event routing or `oxideav-raster`
+    /// hit-query); this crate parses, cascades, and round-trips the
+    /// keyword via the [`crate::preserved::PointerEventsBinding`]
+    /// side-channel.
+    pub pointer_events: PointerEvents,
 }
 
 impl Default for PaintState {
@@ -969,6 +1104,12 @@ impl Default for PaintState {
             // `merged_with_mctx` resets this to the initial value
             // before applying the element's own attribute.
             overflow: Overflow::Visible,
+            // §15.6 — initial value `visiblePainted` per the attribute
+            // table. The property IS inherited, so a child without its
+            // own `pointer-events=` picks up the parent's resolved
+            // value (no per-element reset like `display` /
+            // `vector-effect` / `overflow`).
+            pointer_events: PointerEvents::VisiblePainted,
         }
     }
 }
@@ -1283,6 +1424,23 @@ impl PaintState {
                     s.overflow = o;
                 }
             }
+            // Round 260 — SVG 2 §15.6 `pointer-events` (inherited).
+            // `bounding-box | visiblePainted | visibleFill |
+            // visibleStroke | visible | painted | fill | stroke | all |
+            // none`. Same tolerant-keep-on-`inherit`-or-unknown policy
+            // as the §13.x rendering hints — a future spec addition or
+            // an upstream typo won't break documents. §15.6 lists
+            // container / graphics elements + `<use>` as the applies-to
+            // set; we accept the keyword on any element so a
+            // hand-authored attribute resolves into the carried
+            // PaintState even when the renderer's applies-to gate would
+            // later ignore it (matches the round-247 / round-252 /
+            // round-257 policy).
+            "pointer-events" => {
+                if let Some(pe) = PointerEvents::parse_keyword(value) {
+                    s.pointer_events = pe;
+                }
+            }
             // Round-4 CSS may carry properties we don't yet model
             // (font-family, transform, …). Ignore them rather than
             // failing the document.
@@ -1552,6 +1710,19 @@ pub struct ParseContext {
     /// each `parse_element_to_node_ctx` call (the drain matches the
     /// round-221 / round-228 / round-247 / round-252 flows).
     pub pending_overflow: Option<String>,
+    /// Round 260 — collected `(scene_path, pointer-events)` bindings
+    /// (SVG 2 §15.6). Populated only when the caller opted in via
+    /// [`crate::decoder::parse_svg_with_extras`] (same gate as
+    /// [`Self::track_id_paths`]). The encoder re-emits the source
+    /// attribute on the matching shape / `<g>` on round-trip.
+    pub pointer_eventss: Vec<crate::preserved::PointerEventsBinding>,
+    /// Round 260 — scratch slot for the shape / `<g>` branch to hand a
+    /// captured `pointer-events` keyword string to the wrapper-aware
+    /// recorder that runs after `apply_referenced_defs`. Cleared at
+    /// the end of each `parse_element_to_node_ctx` call (the drain
+    /// matches the round-221 / round-228 / round-247 / round-252 /
+    /// round-257 flows).
+    pub pending_pointer_events: Option<String>,
     /// Round 118 — "next element is a `<use>` instance root" flag.
     /// SVG 1.1 §11.5: "setting display: none on a `<path>` element will
     /// prevent that element from getting rendered directly onto the
@@ -1606,6 +1777,8 @@ impl ParseContext {
             pending_color_interpolation: None,
             overflows: Vec::new(),
             pending_overflow: None,
+            pointer_eventss: Vec::new(),
+            pending_pointer_events: None,
         }
     }
 
@@ -1775,6 +1948,27 @@ impl ParseContext {
             path: self.current_path.clone(),
             overflow,
         });
+    }
+
+    /// Round 260 — record an author `pointer-events` attribute against
+    /// the current scene-graph path (SVG 2 §15.6). Same
+    /// `track_id_paths` gate as the other side-channel recorders. The
+    /// encoder re-emits the matching shape / `<g>` with
+    /// `pointer-events="..."` on round-trip. §15.6 selects the
+    /// circumstances under which an element can be the target of a
+    /// pointer event; the property IS inherited, so the lexical
+    /// side-channel captures the source attribute at the topmost
+    /// emit site (the carrier element) — descendant emissions inherit
+    /// the resolved value through `PaintState`.
+    pub fn record_pointer_events(&mut self, pointer_events: String) {
+        if !self.track_id_paths {
+            return;
+        }
+        self.pointer_eventss
+            .push(crate::preserved::PointerEventsBinding {
+                path: self.current_path.clone(),
+                pointer_events,
+            });
     }
 
     /// Round 115 — record an `<a>` hyperlink binding at the current
@@ -2702,6 +2896,14 @@ pub fn parse_element_to_node_ctx(
             // pushed the value to descendants (it doesn't).
             let saved_pending_overflow = ctx.pending_overflow.take();
             let group_overflow = capture_overflow_attr(el);
+            // Round 260 — capture any `pointer-events=` carried on the
+            // `<g>` so a hand-authored attribute survives round-trip.
+            // The property IS inherited per §15.6; the carrier is
+            // purely lexical so emitting it on the topmost emit site
+            // (the group) avoids redundantly recording on every
+            // cascaded descendant.
+            let saved_pending_pointer_events = ctx.pending_pointer_events.take();
+            let group_pointer_events = capture_pointer_events_attr(el);
             let transform = match attr(el, "transform") {
                 Some(v) => parse_transform(v)?,
                 None => Transform2D::identity(),
@@ -2763,6 +2965,9 @@ pub fn parse_element_to_node_ctx(
             // Round 257 — same restore-then-layer flow for the
             // `overflow` carrier.
             ctx.pending_overflow = group_overflow.or(saved_pending_overflow);
+            // Round 260 — same restore-then-layer flow for the
+            // `pointer-events` carrier.
+            ctx.pending_pointer_events = group_pointer_events.or(saved_pending_pointer_events);
             Some(Node::Group(group))
         }
         // Round 115 — SVG 2 §16.5 `<a>` hyperlink. The `<a>` element is
@@ -3091,6 +3296,17 @@ pub fn parse_element_to_node_ctx(
             // `hidden` / `scroll` / `auto`). Absent / `inherit` /
             // unrecognised tokens skip recording.
             ctx.pending_overflow = capture_overflow_attr(el);
+            // Round 260 — SVG 2 §15.6 `pointer-events` round-trip
+            // capture. Same flow as the round-257 `overflow` capture
+            // above: the cascade has already resolved the property
+            // onto `state.pointer_events`, but the round-trip carrier
+            // records the source-literal so a `parse → write` cycle
+            // re-emits the author's keyword verbatim (canonicalised
+            // to the §15.6 spelling — lower-camelCase for
+            // `visiblePainted` / `visibleFill` / `visibleStroke`,
+            // hyphenated for `bounding-box`, lowercase for the rest).
+            // Absent / `inherit` / unrecognised tokens skip recording.
+            ctx.pending_pointer_events = capture_pointer_events_attr(el);
             // Round 205 — SVG 2 §13.8 `paint-order`. The round-1
             // `PathNode { fill, stroke }` shape always paints fill
             // BEFORE stroke (the §13.8 `normal` order); when the
@@ -3283,6 +3499,16 @@ pub fn parse_element_to_node_ctx(
     // UA-stylesheet initial-value override happen in `oxideav-raster`.
     if let Some(o) = ctx.pending_overflow.take() {
         ctx.record_overflow(o);
+    }
+    // Round 260 — drain the shape / `<g>` branch's pending
+    // `pointer-events` (if any) and record it at the same outer-most
+    // emit site the §13.x / §3.11 lexical recorders use. The encoder
+    // re-emits the source attribute on the matching shape / `<g>` on
+    // round-trip; the actual hit-test gating (visibility + paint
+    // suffix resolution per §15.6) happens in the interactive layer
+    // (e.g. `oxideav-pipeline` event routing).
+    if let Some(pe) = ctx.pending_pointer_events.take() {
+        ctx.record_pointer_events(pe);
     }
     Ok(Some(wrapped))
 }
@@ -3542,6 +3768,38 @@ fn capture_overflow_attr(el: &Element) -> Option<String> {
     }
     let o = Overflow::parse_keyword(trimmed)?;
     Some(o.as_canonical_str().to_string())
+}
+
+/// Round 260 — extract a canonicalised `pointer-events` attribute from
+/// `el` for round-trip preservation. Returns `Some(canonical)` when
+/// the attribute resolves to one of the ten §15.6 keywords
+/// (`bounding-box | visiblePainted | visibleFill | visibleStroke |
+/// visible | painted | fill | stroke | all | none`); returns `None`
+/// for an absent attribute, an `inherit` keyword, or an unrecognised
+/// token (the cascade keeps the inherited value in those cases, so
+/// the round-trip carrier matches the parse-time fallback).
+///
+/// Canonical form is the §15.6 spelling — lower-camelCase for the four
+/// `visible*` keywords, hyphenated for `bounding-box`, all-lowercase
+/// for the rest. Source `VISIBLEPAINTED` / `BOUNDING-BOX` / `Painted`
+/// round-trip as `visiblePainted` / `bounding-box` / `painted`.
+///
+/// Like the round-221 / round-228 / round-247 / round-252 / round-257
+/// helpers, an explicit author `pointer-events="visiblePainted"` IS
+/// recorded — even though `visiblePainted` is the §15.6 initial value,
+/// an explicit author write carries intent (e.g. an inheritance reset
+/// on a descendant of a `<g pointer-events="none">`). The
+/// absent-attribute case is still skipped so an initial-value document
+/// doesn't bloat the output with redundant
+/// `pointer-events="visiblePainted"` on every element.
+fn capture_pointer_events_attr(el: &Element) -> Option<String> {
+    let raw = attr(el, "pointer-events")?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("inherit") {
+        return None;
+    }
+    let pe = PointerEvents::parse_keyword(trimmed)?;
+    Some(pe.as_canonical_str().to_string())
 }
 
 /// Round 21 — return the child-index sub-path from `root` down to the

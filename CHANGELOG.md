@@ -9,6 +9,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 260** — SVG 2 §15.6 `pointer-events` property
+  (`bounding-box | visiblePainted | visibleFill | visibleStroke |
+  visible | painted | fill | stroke | all | none`) on the §15.6
+  applies-to set (container elements, graphics elements, `<use>`).
+  - New typed [`crate::element::PointerEvents`] enum carried on
+    [`crate::element::PaintState`]. Per the §15.6 attribute table the
+    initial value is `VisiblePainted`; the property IS inherited per
+    the same table, so [`PaintState::merged_with_mctx`] does NOT reset
+    `pointer_events` before applying the element's own attribute
+    (matching the round-118 `visibility` / round-172 `text-anchor` /
+    round-205 `paint-order` / round-247 `color-rendering` / round-252
+    `color-interpolation` inheritance flow; distinct from the
+    round-118 `display` / round-209 `vector-effect` / round-257
+    `overflow` non-inherited resets). Resolves through presentation
+    attributes, inline `style="…"`, and `<style>`-block rules via the
+    existing round-4 cascade. Case-insensitive keyword matching;
+    `inherit` / unknown tokens keep the inherited value.
+  - **Round-trip preservation.** New
+    [`crate::preserved::PointerEventsBinding`] +
+    [`crate::preserved::PreservedExtras::pointer_eventss`] side-channel
+    captures the canonicalised keyword at the topmost emit slot for
+    each shape / `<g>` carrying a recognised `pointer-events=`
+    attribute. Mirrors the round-247 / round-252 / round-257 lexical
+    carriers — the property cascades through `PaintState`, but the
+    binding only records the source emit slot so a hand-authored
+    `<g pointer-events="none">` survives a `parse_svg_with_extras →
+    write_svg_with_extras` cycle on the same group element. The
+    encoder re-emits `pointer-events=` on the matching shape / `<g>`
+    on round-trip.
+  - **Explicit initial value `visiblePainted` is preserved.** Mirrors
+    the round-221 `shape-rendering` / round-247 `color-rendering` /
+    round-252 `color-interpolation` / round-257 `overflow`
+    explicit-initial-value policy — even though `visiblePainted` is
+    the §15.6 initial value, an explicit author write carries intent
+    (e.g. an inheritance reset on a descendant of a
+    `<g pointer-events="none">`). The absent-attribute case is still
+    skipped so an initial-value document doesn't bloat with redundant
+    `pointer-events="visiblePainted"` on every element.
+  - **Canonical mixed-spelling emission.** §15.6 spells the keyword
+    set with three conventions: lower-camelCase for the four
+    `visible*` keywords (`visiblePainted` / `visibleFill` /
+    `visibleStroke`), a hyphen for `bounding-box`, and all-lowercase
+    for `visible` / `painted` / `fill` / `stroke` / `all` / `none`.
+    Source `VISIBLEPAINTED` / `BOUNDING-BOX` / `Painted` round-trip
+    as the canonical §15.6 spelling.
+  - **Coexists with the §3.11 `overflow` + §13.9 / §13.10.x
+    rendering / colour hints.** §15.6 (hit-test gate) is orthogonal
+    to §3.11 (clipping rectangle), §13.9 (working colour space) and
+    §13.10.x (rendering-quality hints) — they can all ride on the
+    same `<g>` without interfering. Each side-channel records
+    independently and the encoder emits every recognised attribute
+    on round-trip.
+  - The actual hit-test gating (the §15.6 visibility + paint suffix
+    resolution that decides whether a pointer event over the element
+    counts as a hit) happens in the interactive layer (e.g.
+    `oxideav-pipeline` event routing or `oxideav-raster` hit-test
+    queries against the rendered scene); this round delivers parse +
+    inherited cascade + round-trip preservation. A downstream
+    consumer reads the resolved value off the carried `PaintState`
+    or off the per-element `PointerEventsBinding`.
+  - 23 integration tests in `tests/round260_pointer_events.rs`.
+
 - **Round 257** — SVG 2 §3.11 `overflow` property
   (`visible | hidden | scroll | auto`) on the §3.11 summary-table
   element list (`<svg>` / `<symbol>` / `<marker>` / `<pattern>` /

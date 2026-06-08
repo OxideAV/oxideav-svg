@@ -141,6 +141,16 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
     for entry in &extras.overflows {
         path_to_overflow.insert(entry.path.clone(), entry.overflow.as_str());
     }
+    // Round 260 — index `pointer-events` side-channel bindings (SVG 2
+    // §15.6) by scene-graph tree-path so `write_node` can re-emit
+    // `pointer-events="..."` on the matching shape / `<g>` on
+    // round-trip. Same per-path index layout as the round-257
+    // `overflow` map; same routing through `write_node` /
+    // `write_group_children`.
+    let mut path_to_pointer_events: HashMap<Vec<usize>, &str> = HashMap::new();
+    for entry in &extras.pointer_eventss {
+        path_to_pointer_events.insert(entry.path.clone(), entry.pointer_events.as_str());
+    }
     // Round 122 — index `<title>` / `<desc>` bindings (SVG 2 §5.8) by
     // their *parent* container's scene-graph tree-path so `write_node`
     // can re-emit them as the first children of the matching `<g>` on
@@ -334,6 +344,7 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
         &path_to_color_rendering,
         &path_to_color_interpolation,
         &path_to_overflow,
+        &path_to_pointer_events,
         &parent_to_titles,
         &parent_to_descs,
         &anim_by_parent,
@@ -559,6 +570,7 @@ fn write_group_children(
     path_to_color_rendering: &HashMap<Vec<usize>, &str>,
     path_to_color_interpolation: &HashMap<Vec<usize>, &str>,
     path_to_overflow: &HashMap<Vec<usize>, &str>,
+    path_to_pointer_events: &HashMap<Vec<usize>, &str>,
     parent_to_titles: &HashMap<Vec<usize>, &DescriptiveBinding>,
     parent_to_descs: &HashMap<Vec<usize>, &DescriptiveBinding>,
     anim_by_parent: &HashMap<String, Vec<&AnimationFragment>>,
@@ -583,6 +595,7 @@ fn write_group_children(
             path_to_color_rendering,
             path_to_color_interpolation,
             path_to_overflow,
+            path_to_pointer_events,
             parent_to_titles,
             parent_to_descs,
             anim_by_parent,
@@ -610,6 +623,7 @@ fn write_node(
     path_to_color_rendering: &HashMap<Vec<usize>, &str>,
     path_to_color_interpolation: &HashMap<Vec<usize>, &str>,
     path_to_overflow: &HashMap<Vec<usize>, &str>,
+    path_to_pointer_events: &HashMap<Vec<usize>, &str>,
     parent_to_titles: &HashMap<Vec<usize>, &DescriptiveBinding>,
     parent_to_descs: &HashMap<Vec<usize>, &DescriptiveBinding>,
     anim_by_parent: &HashMap<String, Vec<&AnimationFragment>>,
@@ -673,6 +687,12 @@ fn write_node(
     // shape / `<g>` emission carries `overflow="..."` on round-trip.
     // Mirrors the round-252 `color-interpolation` lookup above.
     let overflow_here: Option<&str> = path_to_overflow.get(path_stack.as_slice()).copied();
+    // Round 260 — does this scene-graph position carry a recorded
+    // `pointer-events` attribute (SVG 2 §15.6)? If so the corresponding
+    // shape / `<g>` emission carries `pointer-events="..."` on
+    // round-trip. Mirrors the round-257 `overflow` lookup above.
+    let pointer_events_here: Option<&str> =
+        path_to_pointer_events.get(path_stack.as_slice()).copied();
     let inline_anims: &[&AnimationFragment] = id_here
         .and_then(|id| anim_by_parent.get(id))
         .map(Vec::as_slice)
@@ -770,6 +790,17 @@ fn write_node(
             if let Some(o) = overflow_here {
                 out.push_str(&format!(" overflow=\"{}\"", escape_attr(o)));
             }
+            // Round 260 — SVG 2 §15.6 `pointer-events`. Same emit
+            // slot as the §3.11 `overflow` attribute above; §15.6
+            // selects the hit-test gate for pointer events. The
+            // property IS inherited, so a `<g pointer-events="none">`
+            // ancestor cascades the value to descendants — the
+            // round-trip carrier emits on the topmost emit site (the
+            // group) without redundantly recording on every cascaded
+            // child.
+            if let Some(pe) = pointer_events_here {
+                out.push_str(&format!(" pointer-events=\"{}\"", escape_attr(pe)));
+            }
             out.push_str(">\n");
             // Round 122 — SVG 2 §5.8: emit captured `<title>` /
             // `<desc>` children of this group as the *first* children
@@ -805,6 +836,7 @@ fn write_node(
                 path_to_color_rendering,
                 path_to_color_interpolation,
                 path_to_overflow,
+                path_to_pointer_events,
                 parent_to_titles,
                 parent_to_descs,
                 anim_by_parent,
@@ -898,6 +930,16 @@ fn write_node(
             if let Some(o) = overflow_here {
                 out.push_str(&format!(" overflow=\"{}\"", escape_attr(o)));
             }
+            // Round 260 — SVG 2 §15.6 `pointer-events`. Same emit
+            // slot as the §3.11 `overflow` attribute above; the
+            // carrier rides on the bare `<path>` when a shape carries
+            // the attribute directly (rather than via a wrapping
+            // group). The cascade already resolved the property onto
+            // the carried PaintState, so this attribute is purely a
+            // round-trip carrier.
+            if let Some(pe) = pointer_events_here {
+                out.push_str(&format!(" pointer-events=\"{}\"", escape_attr(pe)));
+            }
             if inline_anims.is_empty() {
                 out.push_str("/>\n");
             } else {
@@ -960,6 +1002,7 @@ fn write_node(
                 path_to_color_rendering,
                 path_to_color_interpolation,
                 path_to_overflow,
+                path_to_pointer_events,
                 parent_to_titles,
                 parent_to_descs,
                 anim_by_parent,
@@ -1495,6 +1538,7 @@ fn write_mask(
     let empty_path_to_color_rendering: HashMap<Vec<usize>, &str> = HashMap::new();
     let empty_path_to_color_interpolation: HashMap<Vec<usize>, &str> = HashMap::new();
     let empty_path_to_overflow: HashMap<Vec<usize>, &str> = HashMap::new();
+    let empty_path_to_pointer_events: HashMap<Vec<usize>, &str> = HashMap::new();
     let empty_titles: HashMap<Vec<usize>, &DescriptiveBinding> = HashMap::new();
     let empty_descs: HashMap<Vec<usize>, &DescriptiveBinding> = HashMap::new();
     let empty_anims: HashMap<String, Vec<&AnimationFragment>> = HashMap::new();
@@ -1516,6 +1560,7 @@ fn write_mask(
         &empty_path_to_color_rendering,
         &empty_path_to_color_interpolation,
         &empty_path_to_overflow,
+        &empty_path_to_pointer_events,
         &empty_titles,
         &empty_descs,
         &empty_anims,

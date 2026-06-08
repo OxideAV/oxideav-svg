@@ -307,6 +307,22 @@ pub struct PreservedExtras {
     /// non-root `<svg>` / `<symbol>` / `<marker>` / `<pattern>` /
     /// `<image>` live in `oxideav-raster`.
     pub overflows: Vec<OverflowBinding>,
+    /// Round 260 — SVG 2 §15.6 `pointer-events` source-text bindings,
+    /// recorded per emitted shape / `<g>` so the encoder can re-emit
+    /// `pointer-events="..."` on the matching element on round-trip.
+    /// Mirrors the round-257 `overflow` carrier — the property IS
+    /// inherited per §15.6, but the binding is purely lexical so the
+    /// round-trip preserves exactly where the author wrote the
+    /// attribute (the topmost emit site for the element). Populated
+    /// only by [`crate::decoder::parse_svg_with_extras`].
+    ///
+    /// §15.6 selects the circumstances under which an element can be
+    /// the target of a pointer event (mouse click, hover, hyperlink);
+    /// the actual hit-test gating (the visibility / paint / bounding-
+    /// box checks per §15.6) lives in the interactive layer (e.g.
+    /// `oxideav-pipeline` event routing or `oxideav-raster`
+    /// hit-queries).
+    pub pointer_eventss: Vec<PointerEventsBinding>,
 }
 
 /// One captured animation child of a known-id parent element.
@@ -416,6 +432,7 @@ impl PreservedExtras {
             && self.color_renderings.is_empty()
             && self.color_interpolations.is_empty()
             && self.overflows.is_empty()
+            && self.pointer_eventss.is_empty()
     }
 }
 
@@ -576,6 +593,41 @@ pub struct OverflowBinding {
     /// absent-attribute case so an initial-value document doesn't
     /// bloat with redundant `overflow="visible"` on every element.
     pub overflow: String,
+}
+
+/// Round 260 — one (scene-graph tree-path, author `pointer-events`
+/// keyword) pair. Mirrors [`OverflowBinding`] / [`ColorInterpolationBinding`]
+/// — the scene graph does not yet expose a typed hit-test gate
+/// (`oxideav-pipeline` event routing / `oxideav-raster` hit-queries
+/// own the §15.6 visibility + paint resolution), so the binding's job
+/// is purely to round-trip the source attribute so a `parse → write`
+/// cycle preserves the author's request verbatim.
+///
+/// SVG 2 §15.6 spells the keyword set with three different
+/// conventions: lower-camelCase for the four `visible*` keywords
+/// (`visiblePainted` / `visibleFill` / `visibleStroke`), hyphenated
+/// for `bounding-box`, and all-lowercase for the rest (`visible` /
+/// `painted` / `fill` / `stroke` / `all` / `none`). The capture
+/// helper canonicalises case-insensitively, so source
+/// `VISIBLEPAINTED` / `BOUNDING-BOX` round-trip as the §15.6
+/// canonical spelling.
+#[derive(Clone, Debug)]
+pub struct PointerEventsBinding {
+    /// Tree-path through the scene graph; matches the layout of
+    /// [`IdScenePath::path`].
+    pub path: Vec<usize>,
+    /// Author-supplied keyword string canonicalised to the §15.6
+    /// spelling. The capture helper canonicalises case-insensitively,
+    /// so source `VISIBLEPAINTED` round-trips as `visiblePainted`.
+    /// The binding records explicit `visiblePainted` (the §15.6
+    /// initial value) when an author writes it — matching the
+    /// round-221 / round-247 / round-252 / round-257 "explicit
+    /// initial value carries intent" policy (e.g. an inheritance
+    /// reset on a descendant of a `<g pointer-events="none">`) — but
+    /// skips the absent-attribute case so an initial-value document
+    /// doesn't bloat with redundant `pointer-events="visiblePainted"`
+    /// on every element.
+    pub pointer_events: String,
 }
 
 #[derive(Clone, Debug)]

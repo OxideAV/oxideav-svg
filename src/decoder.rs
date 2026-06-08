@@ -22,8 +22,8 @@ use crate::parser::{
 use crate::preserved::{
     AnimationFragment, ClipRuleBinding, ColorInterpolationBinding, ColorRenderingBinding,
     DescriptiveBinding, IdScenePath, LinkBinding, OverflowBinding, PaintOrderBinding,
-    PathLengthBinding, PreservedExtras, ShapeRenderingBinding, TextRenderingBinding,
-    VectorEffectBinding,
+    PathLengthBinding, PointerEventsBinding, PreservedExtras, ShapeRenderingBinding,
+    TextRenderingBinding, VectorEffectBinding,
 };
 
 /// Codec id string for SVG vector frames.
@@ -80,7 +80,7 @@ pub fn parse_svg_at_with_languages(
     let svg =
         find_svg_root(&nodes).ok_or_else(|| Error::invalid("SVG: missing <svg> root element"))?;
     let langs: Vec<String> = system_language.iter().map(|s| s.to_string()).collect();
-    let (frame, _, _, _, _, _, _, _, _, _, _, _, _) =
+    let (frame, _, _, _, _, _, _, _, _, _, _, _, _, _) =
         parse_svg_root(svg, t_seconds, false, &langs)?;
     Ok(frame)
 }
@@ -133,6 +133,7 @@ pub fn parse_svg_with_extras(bytes: &[u8]) -> Result<(VectorFrame, PreservedExtr
         color_renderings,
         color_interpolations,
         overflows,
+        pointer_eventss,
     ) = parse_svg_root(svg, 0.0, true, &[])?;
     extras.id_paths = id_paths;
     extras.path_lengths = path_lengths;
@@ -146,6 +147,7 @@ pub fn parse_svg_with_extras(bytes: &[u8]) -> Result<(VectorFrame, PreservedExtr
     extras.color_renderings = color_renderings;
     extras.color_interpolations = color_interpolations;
     extras.overflows = overflows;
+    extras.pointer_eventss = pointer_eventss;
     Ok((frame, extras))
 }
 
@@ -374,6 +376,7 @@ type SvgRootParse = (
     Vec<ColorRenderingBinding>,
     Vec<ColorInterpolationBinding>,
     Vec<OverflowBinding>,
+    Vec<PointerEventsBinding>,
 );
 
 fn parse_svg_root(
@@ -539,6 +542,7 @@ fn parse_svg_root(
         ctx.color_renderings,
         ctx.color_interpolations,
         ctx.overflows,
+        ctx.pointer_eventss,
     ))
 }
 
