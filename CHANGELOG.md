@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 272** — `<filter>` coordinate-system + colour-space
+  attributes captured in the typed [`crate::filter::FilterGraph`].
+  The primitive set was already complete; this fills the gap where the
+  filter element's own `filterUnits` / `primitiveUnits` /
+  `color-interpolation-filters` were dropped at parse time.
+  - New [`crate::filter::FilterUnits`] enum (`UserSpaceOnUse` /
+    `ObjectBoundingBox`) carried on `FilterGraph::filter_units` and
+    `FilterGraph::primitive_units`. Per SVG 1.1 §15.7.2 the two
+    attributes have *different* defaults: `filterUnits` →
+    `objectBoundingBox`, `primitiveUnits` → `userSpaceOnUse`. Unknown
+    values fall back to those defaults.
+  - New [`crate::filter::ColorInterpolationFilters`] enum (`Auto` /
+    `Srgb` / `LinearRgb`) with `Default` = `LinearRgb`. Per SVG 1.1
+    §11.7.1 the property is inherited, applies to filter primitives,
+    and has initial value `linearRGB` (distinct from
+    `color-interpolation`'s `sRGB`). The `<filter>` element's value is
+    stored on `FilterGraph::color_interpolation_filters`
+    (`Option`, `None` = absent), and each primitive's resolved value
+    lands on `FilterPrimitiveNode::color_interpolation_filters`:
+    primitive's own attribute wins, else the `<filter>`-inherited
+    value, else the initial `linearRGB`. `inherit` with no cascade
+    context collapses to the initial value.
+  - `filterUnits` / `primitiveUnits` / `color-interpolation-filters`
+    continue to survive the verbatim XML round-trip; the typed graph
+    is a parallel pre-rasteriser representation.
+  - 9 new tests in `tests/round12_filter_units.rs`.
 - **Round 261** — SVG 1.1 §16.8.2 `cursor` property
   (`[ [<funciri> ,]* [ auto | crosshair | default | pointer | move |
   e-resize | ne-resize | nw-resize | n-resize | se-resize |

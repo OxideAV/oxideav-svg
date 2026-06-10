@@ -153,6 +153,32 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
+## Round 272 additions
+
+- **`<filter>` coordinate-system + colour-space attributes** —
+  rounds 7–11 typed every filter primitive, but the `<filter>`
+  element's own `filterUnits` / `primitiveUnits` /
+  `color-interpolation-filters` were dropped at parse time. They are
+  now captured on the typed `crate::filter::FilterGraph` /
+  `FilterPrimitiveNode`:
+  - **`filterUnits` / `primitiveUnits`** — new `FilterUnits` enum
+    (`UserSpaceOnUse` / `ObjectBoundingBox`). Per SVG 1.1 §15.7.2 the
+    two attributes have *different* defaults: `filterUnits` →
+    `objectBoundingBox`, `primitiveUnits` → `userSpaceOnUse`; unknown
+    values fall back to those.
+  - **`color-interpolation-filters`** — new
+    `ColorInterpolationFilters` enum (`Auto` / `Srgb` / `LinearRgb`),
+    `Default` = `LinearRgb`. Per SVG 1.1 §11.7.1 the property is
+    inherited, applies to filter primitives, and has initial value
+    `linearRGB` (distinct from `color-interpolation`'s `sRGB`). The
+    `<filter>`-level value is stored on the graph; each primitive's
+    resolved value (own attribute → filter-inherited → initial
+    `linearRGB`) lands on `FilterPrimitiveNode`. `inherit` with no
+    cascade context collapses to the initial value. This closes the
+    round-4/round-10 note that `color-interpolation-filters` was
+    documented but not represented in the typed graph.
+  - All three attributes still survive the verbatim XML round-trip.
+
 ## Round 261 additions
 
 - **SVG 1.1 §16.8.2 `cursor` property**
@@ -436,9 +462,9 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
     off the carried `PaintState` or off the per-element
     `ColorInterpolationBinding`. The §13.9 informative note that the
     filter-effects sibling property `color-interpolation-filters`
-    governs the filter primitive graph instead is documented but not
-    enforced here — that interaction belongs to the round-7 /
-    round-10 filter graph work in `oxideav-filter`.
+    governs the filter primitive graph instead is now captured in the
+    typed graph as of round 272 (see `crate::filter`); pixel-space
+    colour conversion remains `oxideav-raster` work.
   - 22 integration tests in `tests/round252_color_interpolation.rs`
     cover the no-attribute baseline (no binding), each of the three
     §13.9 keywords recorded with canonical case, case-insensitive
@@ -506,10 +532,10 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
     `PaintState` or off the per-element `ColorRenderingBinding`. The
     §13.10.1 informative note that `color-rendering` takes precedence
     over the filter-effects `color-interpolation-filters` property is
-    documented but not enforced here — `color-interpolation-filters`
-    lives in the filter primitive graph (round-10
-    `oxideav-filter` work), and the precedence is something the
-    raster-side composer enforces.
+    not enforced here — `color-interpolation-filters` is captured in
+    the typed filter primitive graph as of round 272 (see
+    `crate::filter`), and the precedence is something the raster-side
+    composer enforces.
   - 21 integration tests in `tests/round247_color_rendering.rs`
     cover the no-attribute baseline (no binding), each of the three
     spec keywords recorded with canonical camelCase,

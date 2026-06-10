@@ -702,6 +702,12 @@ pub struct FilterPrimitiveNode {
     /// Optional `result="name"` — addressable by `in=`/`in2=` of later
     /// primitives.
     pub result: Option<String>,
+    /// Resolved `color-interpolation-filters` for this primitive: the
+    /// primitive's own attribute if present, else the value inherited
+    /// from the `<filter>` element, else the initial value `linearRGB`.
+    /// Per SVG 1.1 §11.7.1 this property is inherited and applies to
+    /// filter primitives, so it is resolved per-node at parse time.
+    pub color_interpolation_filters: ColorInterpolationFilters,
     /// The primitive itself.
     pub primitive: FilterPrimitive,
 }
@@ -717,6 +723,62 @@ pub struct PrimitiveRegion {
     pub height: Option<f32>,
 }
 
+/// The coordinate system a filter-element length attribute is resolved
+/// against. Used by both `filterUnits` (governing the filter region
+/// `x`/`y`/`width`/`height`) and `primitiveUnits` (governing length
+/// values inside each primitive). Per SVG 1.1 §15.7.2.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FilterUnits {
+    /// `userSpaceOnUse` — values are in the user coordinate system in
+    /// place when the `<filter>` is referenced.
+    UserSpaceOnUse,
+    /// `objectBoundingBox` — values are fractions / percentages of the
+    /// bounding box of the element the filter is applied to.
+    ObjectBoundingBox,
+}
+
+impl FilterUnits {
+    fn from_str(s: &str) -> Option<Self> {
+        match s.trim() {
+            "userSpaceOnUse" => Some(Self::UserSpaceOnUse),
+            "objectBoundingBox" => Some(Self::ObjectBoundingBox),
+            _ => None,
+        }
+    }
+}
+
+/// `color-interpolation-filters` — the colour space in which a filter
+/// primitive's pixel maths is performed. Per SVG 1.1 §11.7.1, the
+/// initial value is `linearRGB` (note this differs from the `sRGB`
+/// initial value of `color-interpolation`), the property is inherited,
+/// and it applies to filter primitives.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ColorInterpolationFilters {
+    /// `auto` — the user agent may pick either space.
+    Auto,
+    /// `sRGB` — operations occur in the sRGB colour space.
+    Srgb,
+    /// `linearRGB` — operations occur in linearised RGB. This is the
+    /// initial (default) value per §11.7.1.
+    #[default]
+    LinearRgb,
+}
+
+impl ColorInterpolationFilters {
+    fn from_str(s: &str) -> Option<Self> {
+        match s.trim() {
+            "auto" => Some(Self::Auto),
+            "sRGB" => Some(Self::Srgb),
+            "linearRGB" => Some(Self::LinearRgb),
+            // `inherit` resolves to the inherited value; with no
+            // CSS-cascade context here it collapses to the initial
+            // value, which the caller represents by leaving the
+            // per-primitive override `None`.
+            _ => None,
+        }
+    }
+}
+
 /// A complete `<filter>` element parsed into typed primitives.
 ///
 /// Round-trip emission still uses the original XML in
@@ -729,9 +791,33 @@ pub struct FilterGraph {
     /// rasterizer can apply the spec defaults (`-10% -10% 120% 120%` of
     /// the bounding box).
     pub region: PrimitiveRegion,
+    /// `filterUnits` — the coordinate system for the filter region
+    /// (`region`). Defaults to `objectBoundingBox` per SVG 1.1 §15.7.2
+    /// when the attribute is absent.
+    pub filter_units: FilterUnits,
+    /// `primitiveUnits` — the coordinate system for length values inside
+    /// the primitives. Defaults to `userSpaceOnUse` per SVG 1.1 §15.7.2
+    /// when the attribute is absent.
+    pub primitive_units: FilterUnits,
+    /// `color-interpolation-filters` set on the `<filter>` element
+    /// itself. Because the property is inherited and applies to filter
+    /// primitives, a value here is the cascade source each primitive
+    /// inherits unless the primitive sets its own. `None` means the
+    /// attribute was absent on `<filter>`, so each primitive falls back
+    /// to the initial value (`linearRGB`).
+    pub color_interpolation_filters: Option<ColorInterpolationFilters>,
     /// Primitives in source order. Empty means "no recognised
     /// primitives" (a `<filter>` with only unknown children).
     pub primitives: Vec<FilterPrimitiveNode>,
+}
+
+impl Default for FilterUnits {
+    /// The default applies to `filterUnits`; `primitiveUnits` overrides
+    /// it explicitly at parse time, so this captures the more common
+    /// `objectBoundingBox` region default.
+    fn default() -> Self {
+        Self::ObjectBoundingBox
+    }
 }
 
 /// Walk a `<filter>` element and parse every recognised primitive child.
@@ -743,6 +829,20 @@ pub fn parse_filter_graph(el: &Element) -> FilterGraph {
         width: parse_attr_number(el, "width"),
         height: parse_attr_number(el, "height"),
     };
+    // `filterUnits` defaults to `objectBoundingBox`; `primitiveUnits`
+    // defaults to `userSpaceOnUse` — two different defaults per
+    // SVG 1.1 §15.7.2.
+    let filter_units = attr(el, "filterUnits")
+        .and_then(FilterUnits::from_str)
+        .unwrap_or(FilterUnits::ObjectBoundingBox);
+    let primitive_units = attr(el, "primitiveUnits")
+        .and_then(FilterUnits::from_str)
+        .unwrap_or(FilterUnits::UserSpaceOnUse);
+    // `color-interpolation-filters` is an inheritable presentation
+    // property; capture it on the `<filter>` element as the cascade
+    // source each primitive inherits from.
+    let color_interpolation_filters =
+        attr(el, "color-interpolation-filters").and_then(ColorInterpolationFilters::from_str);
     let mut primitives = Vec::new();
     let mut prev_result: Option<String> = None;
     for child in &el.children {
@@ -778,13 +878,27 @@ pub fn parse_filter_graph(el: &Element) -> FilterGraph {
         if let Some(r) = result.as_deref() {
             prev_result = Some(r.to_string());
         }
+        // Resolve the inherited presentation property: the primitive's
+        // own attribute wins, then the `<filter>` element's value, then
+        // the initial value `linearRGB` (§11.7.1).
+        let cif = attr(c, "color-interpolation-filters")
+            .and_then(ColorInterpolationFilters::from_str)
+            .or(color_interpolation_filters)
+            .unwrap_or_default();
         primitives.push(FilterPrimitiveNode {
             region: prim_region,
             result,
+            color_interpolation_filters: cif,
             primitive,
         });
     }
-    FilterGraph { region, primitives }
+    FilterGraph {
+        region,
+        filter_units,
+        primitive_units,
+        color_interpolation_filters,
+        primitives,
+    }
 }
 
 fn parse_attr_number(el: &Element, name: &str) -> Option<f32> {
