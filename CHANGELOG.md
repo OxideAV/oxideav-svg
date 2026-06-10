@@ -9,6 +9,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 261** — SVG 1.1 §16.8.2 `cursor` property
+  (`[ [<funciri> ,]* [ auto | crosshair | default | pointer | move |
+  e-resize | ne-resize | nw-resize | n-resize | se-resize |
+  sw-resize | s-resize | w-resize | text | wait | help ] ] |
+  inherit`) on the §16.8.2 applies-to set (container + graphics
+  elements). SVG 2 retains `cursor` as a presentation attribute and
+  defers the property definition to CSS; the SVG 1.1 §16.8.2
+  definition carries the keyword set + grammar implemented here.
+  - New typed [`crate::element::CursorKeyword`] (sixteen generic
+    keywords) + [`crate::element::CursorValue`] (funciri list +
+    mandatory trailing generic keyword) carried on
+    [`crate::element::PaintState`]. Initial value `auto`; the
+    property IS inherited per the §16.8.2 attribute table (no
+    per-element reset). Resolves through presentation attributes,
+    inline `style="…"`, and `<style>`-block rules via the round-4
+    cascade; case-insensitive matching; `inherit` / invalid payloads
+    keep the inherited value.
+  - **`<funciri>` list grammar** — zero or more comma-separated
+    `url(...)` custom-cursor references precede the generic keyword.
+    Per §16.8.2 the generic keyword is the mandatory fallback ("it
+    must use the generic cursor at the end of the list"), so a
+    funciri list without one is invalid. Top-level comma splitting
+    keeps a comma-bearing IRI (e.g. `data:`) as one item per the
+    `<funciri>` production.
+  - **Round-trip preservation.** New
+    [`crate::preserved::CursorBinding`] +
+    [`crate::preserved::PreservedExtras::cursors`] side-channel;
+    canonical emission lowercases the `url` token + generic keyword,
+    preserves each IRI verbatim, and joins items comma-and-space
+    (`URL( #c ) , POINTER` → `url(#c), pointer`). Explicit
+    `cursor="auto"` is preserved per the explicit-initial-value
+    policy. Coexists with the §15.6 `pointer-events` + §3.11
+    `overflow` carriers on the same `<g>`.
+  - The actual cursor display (funciri resolution + fallback walk)
+    is interactive-UA work; this round delivers parse + inherited
+    cascade + round-trip preservation.
+  - 27 integration tests in `tests/round261_cursor.rs`.
+
 - **Round 260** — SVG 2 §15.6 `pointer-events` property
   (`bounding-box | visiblePainted | visibleFill | visibleStroke |
   visible | painted | fill | stroke | all | none`) on the §15.6

@@ -323,6 +323,22 @@ pub struct PreservedExtras {
     /// `oxideav-pipeline` event routing or `oxideav-raster`
     /// hit-queries).
     pub pointer_eventss: Vec<PointerEventsBinding>,
+    /// Round 261 — SVG 1.1 §16.8.2 `cursor` source-text bindings,
+    /// recorded per emitted shape / `<g>` so the encoder can re-emit
+    /// `cursor="..."` on the matching element on round-trip. Mirrors
+    /// the round-260 `pointer-events` carrier — the property IS
+    /// inherited per the §16.8.2 attribute table, but the binding is
+    /// purely lexical so the round-trip preserves exactly where the
+    /// author wrote the attribute (the topmost emit site for the
+    /// element). Populated only by
+    /// [`crate::decoder::parse_svg_with_extras`].
+    ///
+    /// §16.8.2 selects the cursor displayed while the pointing device
+    /// hovers the element — zero or more `<funciri>` custom-cursor
+    /// references followed by a mandatory generic keyword fallback;
+    /// the actual cursor display is interactive-UA work (a windowing
+    /// host embedding `oxideav-pipeline`).
+    pub cursors: Vec<CursorBinding>,
 }
 
 /// One captured animation child of a known-id parent element.
@@ -433,6 +449,7 @@ impl PreservedExtras {
             && self.color_interpolations.is_empty()
             && self.overflows.is_empty()
             && self.pointer_eventss.is_empty()
+            && self.cursors.is_empty()
     }
 }
 
@@ -628,6 +645,36 @@ pub struct PointerEventsBinding {
     /// doesn't bloat with redundant `pointer-events="visiblePainted"`
     /// on every element.
     pub pointer_events: String,
+}
+
+/// Round 261 — one (scene-graph tree-path, author `cursor` value) pair.
+/// Mirrors [`PointerEventsBinding`] — the actual cursor display
+/// (SVG 1.1 §16.8.2 funciri resolution + generic-keyword fallback
+/// walk) is interactive-UA work, so the binding's job is purely to
+/// round-trip the source attribute so a `parse → write` cycle
+/// preserves the author's request.
+///
+/// §16.8.2's value grammar is
+/// `[ [<funciri> ,]* [ <generic keyword> ] ] | inherit`: zero or more
+/// comma-separated custom-cursor references followed by a mandatory
+/// generic keyword fallback. The capture helper canonicalises the
+/// value — `url` tokens lowercased with the IRI preserved verbatim,
+/// items joined comma-and-space, generic keyword lowercased — so
+/// source `URL( #c ) , POINTER` round-trips as `url(#c), pointer`.
+#[derive(Clone, Debug)]
+pub struct CursorBinding {
+    /// Tree-path through the scene graph; matches the layout of
+    /// [`IdScenePath::path`].
+    pub path: Vec<usize>,
+    /// Author-supplied value canonicalised per the §16.8.2 grammar
+    /// (see type-level docs). The binding records explicit `auto`
+    /// (the §16.8.2 initial value) when an author writes it —
+    /// matching the round-221 .. round-260 "explicit initial value
+    /// carries intent" policy (e.g. an inheritance reset on a
+    /// descendant of a `<g cursor="wait">`) — but skips the
+    /// absent-attribute case so an initial-value document doesn't
+    /// bloat with redundant `cursor="auto"` on every element.
+    pub cursor: String,
 }
 
 #[derive(Clone, Debug)]

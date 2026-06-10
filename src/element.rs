@@ -866,6 +866,254 @@ impl PointerEvents {
     }
 }
 
+/// Round 261 — SVG 1.1 §16.8.2 `cursor` generic keyword
+/// (`auto | crosshair | default | pointer | move | e-resize |
+/// ne-resize | nw-resize | n-resize | se-resize | sw-resize |
+/// s-resize | w-resize | text | wait | help`).
+///
+/// §16.8.2 specifies the type of cursor displayed for the pointing
+/// device while it hovers the element. The keyword is the *generic*
+/// (built-in) cursor that terminates the property's value list; any
+/// preceding `<funciri>` items reference custom cursors and live on
+/// [`CursorValue::funciris`]. Keyword meanings per §16.8.2: `auto`
+/// (initial — the UA picks based on context), `crosshair`, `default`
+/// (platform default, often an arrow), `pointer` (indicates a link),
+/// `move`, the eight `*-resize` edge keywords (named for the box
+/// corner / edge the movement starts from, e.g. `se-resize` for the
+/// south-east corner), `text` (often an I-bar), `wait` (watch /
+/// hourglass), and `help` (question mark / balloon).
+///
+/// SVG 2 retains `cursor` as a presentation attribute (Appendix L
+/// attribute table) and defers the property definition to CSS; the
+/// SVG 1.1 §16.8.2 definition carries the keyword set and cascade
+/// rules implemented here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum CursorKeyword {
+    /// `auto` (initial) — the UA determines the cursor from context.
+    #[default]
+    Auto,
+    /// `crosshair` — short line segments resembling a "+" sign.
+    Crosshair,
+    /// `default` — the platform-dependent default cursor.
+    Default,
+    /// `pointer` — indicates a link.
+    Pointer,
+    /// `move` — indicates something is to be moved.
+    Move,
+    /// `e-resize` — movement starts from the east edge.
+    EResize,
+    /// `ne-resize` — movement starts from the north-east corner.
+    NeResize,
+    /// `nw-resize` — movement starts from the north-west corner.
+    NwResize,
+    /// `n-resize` — movement starts from the north edge.
+    NResize,
+    /// `se-resize` — movement starts from the south-east corner.
+    SeResize,
+    /// `sw-resize` — movement starts from the south-west corner.
+    SwResize,
+    /// `s-resize` — movement starts from the south edge.
+    SResize,
+    /// `w-resize` — movement starts from the west edge.
+    WResize,
+    /// `text` — selectable text; often an I-bar.
+    Text,
+    /// `wait` — program busy; watch or hourglass.
+    Wait,
+    /// `help` — help available; question mark or balloon.
+    Help,
+}
+
+impl CursorKeyword {
+    /// Parse a §16.8.2 generic cursor keyword (case-insensitive per
+    /// CSS). Returns `None` for `inherit` and unknown / malformed
+    /// tokens so the caller can keep the inherited value, matching
+    /// the tolerant policy used by the §13.x rendering hints and
+    /// `pointer-events`.
+    pub(crate) fn parse_keyword(value: &str) -> Option<Self> {
+        let v = value.trim();
+        if v.eq_ignore_ascii_case("auto") {
+            Some(Self::Auto)
+        } else if v.eq_ignore_ascii_case("crosshair") {
+            Some(Self::Crosshair)
+        } else if v.eq_ignore_ascii_case("default") {
+            Some(Self::Default)
+        } else if v.eq_ignore_ascii_case("pointer") {
+            Some(Self::Pointer)
+        } else if v.eq_ignore_ascii_case("move") {
+            Some(Self::Move)
+        } else if v.eq_ignore_ascii_case("e-resize") {
+            Some(Self::EResize)
+        } else if v.eq_ignore_ascii_case("ne-resize") {
+            Some(Self::NeResize)
+        } else if v.eq_ignore_ascii_case("nw-resize") {
+            Some(Self::NwResize)
+        } else if v.eq_ignore_ascii_case("n-resize") {
+            Some(Self::NResize)
+        } else if v.eq_ignore_ascii_case("se-resize") {
+            Some(Self::SeResize)
+        } else if v.eq_ignore_ascii_case("sw-resize") {
+            Some(Self::SwResize)
+        } else if v.eq_ignore_ascii_case("s-resize") {
+            Some(Self::SResize)
+        } else if v.eq_ignore_ascii_case("w-resize") {
+            Some(Self::WResize)
+        } else if v.eq_ignore_ascii_case("text") {
+            Some(Self::Text)
+        } else if v.eq_ignore_ascii_case("wait") {
+            Some(Self::Wait)
+        } else if v.eq_ignore_ascii_case("help") {
+            Some(Self::Help)
+        } else {
+            // `inherit` and unknown tokens fall through; the cascade
+            // keeps whatever value was inherited.
+            None
+        }
+    }
+
+    /// Canonical keyword for round-trip emission. §16.8.2 spells the
+    /// whole keyword set in lowercase with hyphens for the eight
+    /// `*-resize` keywords; source `POINTER` / `E-RESIZE` round-trip
+    /// as `pointer` / `e-resize`.
+    pub(crate) fn as_canonical_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Crosshair => "crosshair",
+            Self::Default => "default",
+            Self::Pointer => "pointer",
+            Self::Move => "move",
+            Self::EResize => "e-resize",
+            Self::NeResize => "ne-resize",
+            Self::NwResize => "nw-resize",
+            Self::NResize => "n-resize",
+            Self::SeResize => "se-resize",
+            Self::SwResize => "sw-resize",
+            Self::SResize => "s-resize",
+            Self::WResize => "w-resize",
+            Self::Text => "text",
+            Self::Wait => "wait",
+            Self::Help => "help",
+        }
+    }
+}
+
+/// Round 261 — SVG 1.1 §16.8.2 `cursor` resolved value:
+/// `[ [<funciri> ,]* [ <generic keyword> ] ] | inherit`.
+///
+/// Per the §16.8.2 value grammar zero or more comma-separated
+/// `<funciri>` custom-cursor references precede a single required
+/// generic keyword. §16.8.2: "The user agent retrieves the cursor
+/// from the resource designated by the URI. If the user agent cannot
+/// handle the first cursor of a list of cursors, it shall attempt to
+/// handle the second, etc. If the user agent cannot handle any
+/// user-defined cursor, it must use the generic cursor at the end of
+/// the list" — so the trailing keyword is the mandatory fallback and
+/// a funciri list *without* a generic keyword is invalid (the cascade
+/// keeps the inherited value).
+///
+/// **Inherited:** yes (§16.8.2 attribute table). **Applies to:**
+/// container elements and graphics elements. The actual cursor
+/// display is interactive-UA work (e.g. a windowing host embedding
+/// `oxideav-pipeline`); this crate parses, cascades, and round-trips
+/// the value so the resolved cursor request reaches whichever layer
+/// cares. A `<funciri>` may point at an SVG 1.1 §16.8.3 `<cursor>`
+/// element; the reference is carried verbatim (the `<cursor>`
+/// element itself is a separate follow-up).
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct CursorValue {
+    /// `<funciri>` custom-cursor references in source order, each
+    /// canonicalised to `url(<iri>)` (lowercase `url` token, IRI
+    /// preserved verbatim — IRIs are case-significant).
+    pub funciris: Vec<String>,
+    /// The mandatory trailing generic keyword (§16.8.2 fallback).
+    pub keyword: CursorKeyword,
+}
+
+impl CursorValue {
+    /// Parse a §16.8.2 `cursor` property value. Returns `None` for an
+    /// empty payload, the `inherit` keyword, or any grammar violation
+    /// (unknown trailing keyword, a non-`<funciri>` item before the
+    /// keyword, a funciri list without the mandatory trailing generic
+    /// keyword) — the cascade keeps the inherited value in those
+    /// cases, matching the tolerant policy of the §13.x rendering
+    /// hints and `pointer-events`.
+    pub(crate) fn parse_custom(value: &str) -> Option<Self> {
+        let v = value.trim();
+        if v.is_empty() || v.eq_ignore_ascii_case("inherit") {
+            return None;
+        }
+        // Split on top-level commas only: an IRI inside `url(...)` may
+        // itself contain commas (e.g. a data: IRI), which must not
+        // split the list.
+        let items = split_top_level_commas(v);
+        let (last, rest) = items.split_last()?;
+        let keyword = CursorKeyword::parse_keyword(last)?;
+        let mut funciris = Vec::with_capacity(rest.len());
+        for item in rest {
+            funciris.push(canonical_funciri(item)?);
+        }
+        Some(Self { funciris, keyword })
+    }
+
+    /// Canonical value string for round-trip emission: funciris in
+    /// source order, comma-and-space separated, followed by the
+    /// lowercase generic keyword — matching the §16.8.2 example
+    /// `cursor : url("mything.cur"), url("second.svg#curs"), text`
+    /// list shape (whitespace canonicalised to a single space after
+    /// each comma).
+    pub(crate) fn as_canonical_string(&self) -> String {
+        let mut out = String::new();
+        for f in &self.funciris {
+            out.push_str(f);
+            out.push_str(", ");
+        }
+        out.push_str(self.keyword.as_canonical_str());
+        out
+    }
+}
+
+/// Round 261 — split `v` on commas that sit outside any parentheses,
+/// trimming each piece. `url(data:...,...)` therefore stays one item
+/// per the §16.8.2 `<funciri>` production (`url(` wsp* IRI wsp* `)`).
+fn split_top_level_commas(v: &str) -> Vec<&str> {
+    let mut items = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    for (i, c) in v.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                items.push(v[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    items.push(v[start..].trim());
+    items
+}
+
+/// Round 261 — validate + canonicalise one `<funciri>` item from a
+/// §16.8.2 `cursor` list. The production is `url(` wsp* IRI wsp* `)`
+/// with a case-insensitive `url` functional token (per CSS core
+/// tokenisation); the canonical form lowercases the token and trims
+/// the wsp padding while preserving the IRI verbatim (IRIs are
+/// case-significant). Returns `None` for anything that isn't a
+/// well-formed funciri — the whole `cursor` value is then rejected
+/// and the cascade keeps the inherited value.
+fn canonical_funciri(item: &str) -> Option<String> {
+    let t = item.trim();
+    if t.len() < 5 || !t[..4].eq_ignore_ascii_case("url(") || !t.ends_with(')') {
+        return None;
+    }
+    let inner = t[4..t.len() - 1].trim();
+    if inner.is_empty() {
+        return None;
+    }
+    Some(format!("url({})", inner))
+}
+
 /// Round 235 — SVG 2 §13.10.4 `image-rendering` resolved value
 /// (`auto | optimizeQuality | optimizeSpeed`).
 ///
@@ -1056,6 +1304,13 @@ pub struct PaintState {
     /// keyword via the [`crate::preserved::PointerEventsBinding`]
     /// side-channel.
     pub pointer_events: PointerEvents,
+    /// Round 261 — SVG 1.1 §16.8.2 `cursor` (inherited). Initial
+    /// value: empty funciri list + [`CursorKeyword::Auto`]. The
+    /// actual cursor display is interactive-UA work (a windowing
+    /// host embedding `oxideav-pipeline`); this crate parses,
+    /// cascades, and round-trips the value via the
+    /// [`crate::preserved::CursorBinding`] side-channel.
+    pub cursor: CursorValue,
 }
 
 impl Default for PaintState {
@@ -1110,6 +1365,11 @@ impl Default for PaintState {
             // value (no per-element reset like `display` /
             // `vector-effect` / `overflow`).
             pointer_events: PointerEvents::VisiblePainted,
+            // §16.8.2 — initial value `auto` (no custom funciris).
+            // The property IS inherited per the attribute table, so a
+            // child without its own `cursor=` picks up the parent's
+            // resolved value through the clone in `merged_with_mctx`.
+            cursor: CursorValue::default(),
         }
     }
 }
@@ -1441,6 +1701,23 @@ impl PaintState {
                     s.pointer_events = pe;
                 }
             }
+            // Round 261 — SVG 1.1 §16.8.2 `cursor` (inherited).
+            // `[ [<funciri> ,]* [ auto | crosshair | default |
+            // pointer | move | e-resize | ne-resize | nw-resize |
+            // n-resize | se-resize | sw-resize | s-resize | w-resize |
+            // text | wait | help ] ] | inherit`. Same tolerant
+            // keep-on-`inherit`-or-invalid policy as the §13.x
+            // rendering hints and `pointer-events` above. §16.8.2
+            // lists container + graphics elements as the applies-to
+            // set; we accept the value on any element so a
+            // hand-authored attribute resolves into the carried
+            // PaintState even when the renderer's applies-to gate
+            // would later ignore it.
+            "cursor" => {
+                if let Some(c) = CursorValue::parse_custom(value) {
+                    s.cursor = c;
+                }
+            }
             // Round-4 CSS may carry properties we don't yet model
             // (font-family, transform, …). Ignore them rather than
             // failing the document.
@@ -1723,6 +2000,18 @@ pub struct ParseContext {
     /// matches the round-221 / round-228 / round-247 / round-252 /
     /// round-257 flows).
     pub pending_pointer_events: Option<String>,
+    /// Round 261 — collected `(scene_path, cursor)` bindings
+    /// (SVG 1.1 §16.8.2). Populated only when the caller opted in via
+    /// [`crate::decoder::parse_svg_with_extras`] (same gate as
+    /// [`Self::track_id_paths`]). The encoder re-emits the source
+    /// attribute on the matching shape / `<g>` on round-trip.
+    pub cursors: Vec<crate::preserved::CursorBinding>,
+    /// Round 261 — scratch slot for the shape / `<g>` branch to hand
+    /// a captured `cursor` value string to the wrapper-aware recorder
+    /// that runs after `apply_referenced_defs`. Cleared at the end of
+    /// each `parse_element_to_node_ctx` call (the drain matches the
+    /// round-221 .. round-260 flows).
+    pub pending_cursor: Option<String>,
     /// Round 118 — "next element is a `<use>` instance root" flag.
     /// SVG 1.1 §11.5: "setting display: none on a `<path>` element will
     /// prevent that element from getting rendered directly onto the
@@ -1779,6 +2068,8 @@ impl ParseContext {
             pending_overflow: None,
             pointer_eventss: Vec::new(),
             pending_pointer_events: None,
+            cursors: Vec::new(),
+            pending_cursor: None,
         }
     }
 
@@ -1969,6 +2260,26 @@ impl ParseContext {
                 path: self.current_path.clone(),
                 pointer_events,
             });
+    }
+
+    /// Round 261 — record an author `cursor` attribute against the
+    /// current scene-graph path (SVG 1.1 §16.8.2). Same
+    /// `track_id_paths` gate as the other side-channel recorders. The
+    /// encoder re-emits the matching shape / `<g>` with
+    /// `cursor="..."` on round-trip. §16.8.2 specifies the cursor
+    /// shown while the pointing device hovers the element; the
+    /// property IS inherited, so the lexical side-channel captures
+    /// the source attribute at the topmost emit site (the carrier
+    /// element) — descendant emissions inherit the resolved value
+    /// through `PaintState`.
+    pub fn record_cursor(&mut self, cursor: String) {
+        if !self.track_id_paths {
+            return;
+        }
+        self.cursors.push(crate::preserved::CursorBinding {
+            path: self.current_path.clone(),
+            cursor,
+        });
     }
 
     /// Round 115 — record an `<a>` hyperlink binding at the current
@@ -2904,6 +3215,14 @@ pub fn parse_element_to_node_ctx(
             // cascaded descendant.
             let saved_pending_pointer_events = ctx.pending_pointer_events.take();
             let group_pointer_events = capture_pointer_events_attr(el);
+            // Round 261 — capture any `cursor=` carried on the `<g>`
+            // so a hand-authored attribute survives round-trip. The
+            // property IS inherited per SVG 1.1 §16.8.2; the carrier
+            // is purely lexical so emitting it on the topmost emit
+            // site (the group) avoids redundantly recording on every
+            // cascaded descendant.
+            let saved_pending_cursor = ctx.pending_cursor.take();
+            let group_cursor = capture_cursor_attr(el);
             let transform = match attr(el, "transform") {
                 Some(v) => parse_transform(v)?,
                 None => Transform2D::identity(),
@@ -2968,6 +3287,9 @@ pub fn parse_element_to_node_ctx(
             // Round 260 — same restore-then-layer flow for the
             // `pointer-events` carrier.
             ctx.pending_pointer_events = group_pointer_events.or(saved_pending_pointer_events);
+            // Round 261 — same restore-then-layer flow for the
+            // `cursor` carrier.
+            ctx.pending_cursor = group_cursor.or(saved_pending_cursor);
             Some(Node::Group(group))
         }
         // Round 115 — SVG 2 §16.5 `<a>` hyperlink. The `<a>` element is
@@ -3307,6 +3629,16 @@ pub fn parse_element_to_node_ctx(
             // hyphenated for `bounding-box`, lowercase for the rest).
             // Absent / `inherit` / unrecognised tokens skip recording.
             ctx.pending_pointer_events = capture_pointer_events_attr(el);
+            // Round 261 — SVG 1.1 §16.8.2 `cursor` round-trip capture.
+            // Same flow as the round-260 `pointer-events` capture
+            // above: the cascade has already resolved the property
+            // onto `state.cursor`, but the round-trip carrier records
+            // the source-literal so a `parse → write` cycle re-emits
+            // the author's value (canonicalised: lowercase keyword,
+            // funciris in source order, comma-and-space separated per
+            // the §16.8.2 list example). Absent / `inherit` / invalid
+            // payloads skip recording.
+            ctx.pending_cursor = capture_cursor_attr(el);
             // Round 205 — SVG 2 §13.8 `paint-order`. The round-1
             // `PathNode { fill, stroke }` shape always paints fill
             // BEFORE stroke (the §13.8 `normal` order); when the
@@ -3509,6 +3841,15 @@ pub fn parse_element_to_node_ctx(
     // (e.g. `oxideav-pipeline` event routing).
     if let Some(pe) = ctx.pending_pointer_events.take() {
         ctx.record_pointer_events(pe);
+    }
+    // Round 261 — drain the shape / `<g>` branch's pending `cursor`
+    // (if any) and record it at the same outer-most emit site the
+    // other lexical recorders use. The encoder re-emits the source
+    // attribute on the matching shape / `<g>` on round-trip; the
+    // actual cursor display (§16.8.2 funciri resolution + generic
+    // fallback walk) is interactive-UA work.
+    if let Some(c) = ctx.pending_cursor.take() {
+        ctx.record_cursor(c);
     }
     Ok(Some(wrapped))
 }
@@ -3800,6 +4141,37 @@ fn capture_pointer_events_attr(el: &Element) -> Option<String> {
     }
     let pe = PointerEvents::parse_keyword(trimmed)?;
     Some(pe.as_canonical_str().to_string())
+}
+
+/// Round 261 — extract a canonicalised `cursor` attribute from `el`
+/// for round-trip preservation. Returns `Some(canonical)` when the
+/// attribute parses per the SVG 1.1 §16.8.2 grammar
+/// (`[ [<funciri> ,]* [ <generic keyword> ] ]`); returns `None` for an
+/// absent attribute, an `inherit` keyword, or an invalid payload
+/// (unknown trailing keyword, malformed funciri, funciri list without
+/// the mandatory trailing generic keyword) — the cascade keeps the
+/// inherited value in those cases, so the round-trip carrier matches
+/// the parse-time fallback.
+///
+/// Canonical form: funciris in source order (`url` token lowercased,
+/// IRI verbatim), comma-and-space separated, followed by the lowercase
+/// generic keyword — matching the §16.8.2 example list shape.
+///
+/// Like the round-221 .. round-260 helpers, an explicit author
+/// `cursor="auto"` IS recorded — even though `auto` is the §16.8.2
+/// initial value, an explicit author write carries intent (e.g. an
+/// inheritance reset on a descendant of a `<g cursor="wait">`). The
+/// absent-attribute case is still skipped so an initial-value document
+/// doesn't bloat the output with redundant `cursor="auto"` on every
+/// element.
+fn capture_cursor_attr(el: &Element) -> Option<String> {
+    let raw = attr(el, "cursor")?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("inherit") {
+        return None;
+    }
+    let c = CursorValue::parse_custom(trimmed)?;
+    Some(c.as_canonical_string())
 }
 
 /// Round 21 — return the child-index sub-path from `root` down to the

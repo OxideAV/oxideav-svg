@@ -153,6 +153,79 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
+## Round 261 additions
+
+- **SVG 1.1 §16.8.2 `cursor` property**
+  (`[ [<funciri> ,]* [ auto | crosshair | default | pointer | move |
+  e-resize | ne-resize | nw-resize | n-resize | se-resize |
+  sw-resize | s-resize | w-resize | text | wait | help ] ] |
+  inherit`) on the §16.8.2 applies-to set (container elements,
+  graphics elements). SVG 2 retains `cursor` as a presentation
+  attribute and defers the property definition to CSS; the SVG 1.1
+  §16.8.2 definition carries the keyword set + grammar implemented
+  here.
+  - New [`crate::element::CursorKeyword`] (sixteen generic keywords)
+    + [`crate::element::CursorValue`] (funciri list + mandatory
+    trailing generic keyword) carried on
+    [`crate::element::PaintState`]. Per the §16.8.2 attribute table
+    the initial value is `auto` and the property IS inherited
+    (matching the round-260 `pointer-events` inherited-cascade flow;
+    distinct from the round-118 `display` / round-209
+    `vector-effect` / round-257 `overflow` non-inherited resets).
+    Resolves through presentation attributes, inline `style="..."`,
+    and `<style>`-block rules via the existing round-4 cascade.
+    Case-insensitive keyword matching; `inherit` / invalid payloads
+    keep the inherited value.
+  - **`<funciri>` list grammar.** Zero or more comma-separated
+    `url(...)` custom-cursor references precede the generic keyword;
+    per §16.8.2 "if the user agent cannot handle any user-defined
+    cursor, it must use the generic cursor at the end of the list",
+    so a funciri list *without* a trailing generic keyword is
+    invalid (inherited value kept). The list splits on top-level
+    commas only — an IRI containing commas (e.g. a `data:` IRI)
+    stays one item per the `<funciri>` production
+    (`url(` wsp* IRI wsp* `)`). A `<funciri>` may target an SVG 1.1
+    §16.8.3 `<cursor>` element; the reference round-trips verbatim
+    (typed `<cursor>` element capture is a follow-up).
+  - **Round-trip preservation.** New
+    [`crate::preserved::CursorBinding`] +
+    [`crate::preserved::PreservedExtras::cursors`] side-channel
+    captures the canonicalised value at the topmost emit slot for
+    each shape / `<g>` carrying a recognised `cursor=` attribute,
+    mirroring the round-260 lexical carrier. Canonical form: `url`
+    tokens lowercased with the IRI preserved verbatim (IRIs are
+    case-significant), items joined comma-and-space, generic keyword
+    lowercased — `URL( #c ) , POINTER` round-trips as
+    `url(#c), pointer`. Explicit `cursor="auto"` is preserved per
+    the round-221 .. round-260 explicit-initial-value policy.
+  - **Coexists with §15.6 `pointer-events` + §3.11 `overflow`** on
+    the same `<g>` — orthogonal interactivity / clipping properties,
+    independent side-channels, every recognised attribute re-emits
+    on round-trip.
+  - The actual cursor display (funciri resolution + generic fallback
+    walk per §16.8.2) is interactive-UA work (a windowing host
+    embedding `oxideav-pipeline`); this round delivers parse +
+    inherited cascade + round-trip preservation. A downstream
+    consumer reads the resolved value off the carried `PaintState`
+    or off the per-element `CursorBinding`.
+  - 27 integration tests in `tests/round261_cursor.rs` cover the
+    default value, the no-attribute baseline (no binding), all
+    sixteen §16.8.2 keywords recorded with canonical spelling,
+    case-insensitive matching, explicit-`auto` recording, `inherit`
+    skipping, unknown-token tolerance, empty-value skipping, the
+    funciri + keyword list form, multi-funciri whitespace
+    canonicalisation, top-level comma splitting (`data:` IRI with
+    internal commas), the funciri-without-keyword and
+    non-funciri-item invalid forms, presentation-attribute /
+    `style="…"` / `<style>`-block cascade resolution, inheritance
+    through a parent `PaintState`, child attribute overrides,
+    round-trip emission on `<g>` and on a bare `<rect>` (funciri
+    list included), double round-trip convergence, source-case
+    canonicalisation, `parse_svg` (no extras) still loading,
+    group-records-once-not-per-child, per-child-override-records-
+    separately, and coexistence with `pointer-events` / `overflow`
+    on the same group element.
+
 ## Round 260 additions
 
 - **SVG 2 §15.6 `pointer-events` property**
