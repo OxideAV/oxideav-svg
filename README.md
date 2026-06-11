@@ -153,6 +153,39 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
+## Round 279 additions
+
+- **`<filter>` element attribute set completed on the typed graph —
+  SVG 1.1 §15.3 `filterRes` + `xlink:href`** (the two attributes of
+  the §15.3 attribute list still missing after round 272's
+  `filterUnits` / `primitiveUnits` / `color-interpolation-filters`):
+  - **`filterRes`** (§15.5) — new `crate::filter::FilterRes`
+    (`x_pixels` / `y_pixels`) on `FilterGraph::filter_res`. Per §15.5
+    non-integer values are truncated toward zero at parse time and a
+    single `<number-optional-number>` value expands to both axes;
+    negative (error) and zero (disables rendering of the referencing
+    element) values are captured as-is for the rasteriser to enforce.
+    Absent / non-numeric → `None` ("the user agent will use
+    reasonable values").
+  - **`xlink:href` / SVG 2 `href`** — captured `#`-stripped on
+    `FilterGraph::href`; new
+    `crate::filter::resolve_filter_element_chain` implements the
+    §15.3 inheritance: attributes defined on the referenced
+    `<filter>` but not on this one are merged in (nearest chain
+    definition wins; `id` / the reference itself never inherit), and
+    an element with no filter nodes inherits the filter nodes of the
+    nearest chain member that has any (unknown `fe*` children count
+    as filter nodes per the §15.3 content model). Indirect chains
+    resolve up to an eight-hop cap mirroring the §14.1.1 gradient
+    template walker; cycles / self-references / dangling ids
+    terminate gracefully. The decoder resolves every captured
+    `FilterDef::graph` after the defs pre-walk (forward references
+    work); `FilterDef::element` stays the verbatim source so
+    round-trip emission is untouched.
+  - 23 integration tests in `tests/round279_filter_href.rs`. The
+    typed `<filter>` element surface now matches the §15.3 attribute
+    list; the pixel pipeline remains `oxideav-raster` work.
+
 ## Round 272 additions
 
 - **`<filter>` coordinate-system + colour-space attributes** —

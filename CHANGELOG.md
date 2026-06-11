@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 279** — `<filter>` element attribute set completed on the
+  typed graph: SVG 1.1 §15.3 `filterRes` + `xlink:href`, the two
+  attributes still missing after round 272.
+  - New [`crate::filter::FilterRes`] (`x_pixels` / `y_pixels`) on
+    `FilterGraph::filter_res`. Per §15.5 non-integer values truncate
+    toward zero at parse time; a single `<number-optional-number>`
+    expands to both axes; negative (error) / zero (disables rendering
+    of the referencing element) values are captured as-is for the
+    rasteriser to enforce; absent / non-numeric → `None`.
+  - `FilterGraph::href` captures `xlink:href` / SVG 2 `href` as the
+    bare target id. New
+    [`crate::filter::resolve_filter_element_chain`] implements the
+    §15.3 inheritance: attributes defined on the referenced `<filter>`
+    but absent on this one merge in (nearest chain definition wins;
+    `id` and the reference attribute never inherit); an element with
+    no filter nodes inherits the filter nodes of the nearest chain
+    member that has any (unknown `fe*` children count as filter
+    nodes). Chains resolve indirectly up to
+    [`crate::filter::FILTER_HREF_DEPTH_CAP`] (8) hops; cycles,
+    self-references and dangling ids terminate gracefully.
+  - The decoder resolves every captured `FilterDef::graph` in a
+    post-pass after the defs pre-walk, so forward references work;
+    `FilterDef::element` stays the verbatim source and round-trip
+    emission is unchanged.
+  - 23 integration tests in `tests/round279_filter_href.rs`.
 - **Round 272** — `<filter>` coordinate-system + colour-space
   attributes captured in the typed [`crate::filter::FilterGraph`].
   The primitive set was already complete; this fills the gap where the

@@ -34,6 +34,13 @@
 //! The parser does *not* perform layout-time region resolution; it just
 //! captures the user-supplied numbers. Rasterization-time clipping
 //! against the filter region is the rasterizer's job.
+//!
+//! Round 279 completes the `<filter>` element's own SVG 1.1 §15.3
+//! attribute set on the typed graph: `filterRes` (§15.5
+//! intermediate-image resolution, [`FilterRes`]) and `xlink:href` /
+//! `href` cross-filter inheritance ([`resolve_filter_element_chain`]
+//! merges attributes + filter nodes from the referenced `<filter>`
+//! chain before graph parsing).
 
 use crate::element::parse_number;
 use crate::parser::{attr, tag_local, Element, Node as XmlNode};
@@ -779,6 +786,26 @@ impl ColorInterpolationFilters {
     }
 }
 
+/// `filterRes="x-pixels [y-pixels]"` on `<filter>` — SVG 1.1 §15.5.
+///
+/// Indicates the width and height of the intermediate images, in
+/// pixels. Per §15.5 non-integer values are truncated (rounded toward
+/// zero), which the parser applies eagerly; a single
+/// `<number-optional-number>` value is expanded out to both axes (the
+/// general single-number expansion rule, stated explicitly for filter
+/// lengths under the §15.3 `primitiveUnits` definition). Negative
+/// values are an error and zero values disable rendering of the
+/// referencing element per §15.5 — both are *captured* as-is so the
+/// rasteriser can apply the error / disable semantics at render time.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FilterRes {
+    /// Width of the intermediate images, in pixels (truncated).
+    pub x_pixels: f32,
+    /// Height of the intermediate images, in pixels (truncated).
+    /// Equal to `x_pixels` when the source value carried one number.
+    pub y_pixels: f32,
+}
+
 /// A complete `<filter>` element parsed into typed primitives.
 ///
 /// Round-trip emission still uses the original XML in
@@ -806,6 +833,20 @@ pub struct FilterGraph {
     /// attribute was absent on `<filter>`, so each primitive falls back
     /// to the initial value (`linearRGB`).
     pub color_interpolation_filters: Option<ColorInterpolationFilters>,
+    /// `filterRes` — intermediate-image resolution hint per SVG 1.1
+    /// §15.5. `None` when the attribute was absent or carried no
+    /// parseable leading number ("the user agent will use reasonable
+    /// values" per §15.5).
+    pub filter_res: Option<FilterRes>,
+    /// `xlink:href` (or SVG 2 `href`) — an IRI reference to another
+    /// `<filter>` element within the current document per SVG 1.1
+    /// §15.3. Stored as the bare target id (leading `#` stripped);
+    /// `None` when the attribute is absent or empty. The reference is
+    /// resolved (attributes + filter nodes inherited, indirectly to an
+    /// arbitrary level) by [`resolve_filter_element_chain`]; this
+    /// field on an already-resolved graph records where the
+    /// inheritance came from.
+    pub href: Option<String>,
     /// Primitives in source order. Empty means "no recognised
     /// primitives" (a `<filter>` with only unknown children).
     pub primitives: Vec<FilterPrimitiveNode>,
@@ -843,6 +884,24 @@ pub fn parse_filter_graph(el: &Element) -> FilterGraph {
     // source each primitive inherits from.
     let color_interpolation_filters =
         attr(el, "color-interpolation-filters").and_then(ColorInterpolationFilters::from_str);
+    // `filterRes` per SVG 1.1 §15.5 — truncate toward zero, expand a
+    // single number to both axes. An attribute whose first token isn't
+    // a number is treated as absent (UA picks the resolution).
+    let filter_res = attr(el, "filterRes").and_then(|raw| {
+        let mut parts = raw
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .filter(|p| !p.is_empty());
+        let x = parts.next()?.parse::<f32>().ok()?.trunc();
+        let y = parts
+            .next()
+            .and_then(|p| p.parse::<f32>().ok())
+            .map_or(x, f32::trunc);
+        Some(FilterRes {
+            x_pixels: x,
+            y_pixels: y,
+        })
+    });
+    let href = filter_href(el).map(str::to_string);
     let mut primitives = Vec::new();
     let mut prev_result: Option<String> = None;
     for child in &el.children {
@@ -897,8 +956,112 @@ pub fn parse_filter_graph(el: &Element) -> FilterGraph {
         filter_units,
         primitive_units,
         color_interpolation_filters,
+        filter_res,
+        href,
         primitives,
     }
+}
+
+/// SVG 1.1 §15.3 `xlink:href` chains "can be indirect to an arbitrary
+/// level"; mirror the eight-hop cap used for gradient template chains
+/// ([`crate::defs::GRADIENT_HREF_DEPTH_CAP`]) and CSS `@import`.
+pub const FILTER_HREF_DEPTH_CAP: usize = 8;
+
+/// The `<filter>` element's own cross-filter reference — SVG 2 `href`
+/// or SVG 1.1 `xlink:href` (the [`attr`] lookup matches on the local
+/// name, so one probe covers both spellings). Returns the bare target
+/// id with the leading `#` stripped; `None` when absent / empty.
+fn filter_href(el: &Element) -> Option<&str> {
+    let raw = attr(el, "href")?.trim();
+    let id = raw.strip_prefix('#').unwrap_or(raw);
+    (!id.is_empty()).then_some(id)
+}
+
+/// "Filter nodes" per SVG 1.1 §15.3 are the filter primitive elements;
+/// every primitive element name in the §15.3 content model carries the
+/// `fe` prefix, so an element child whose local name starts with `fe`
+/// (case-insensitive — [`tag_local`] lowercases) counts, including
+/// primitives the typed graph doesn't recognise.
+fn has_filter_nodes(el: &Element) -> bool {
+    el.children.iter().any(|c| {
+        let XmlNode::Element(e) = c else {
+            return false;
+        };
+        let local = tag_local(&e.name);
+        local.len() > 2 && local.starts_with("fe")
+    })
+}
+
+/// Resolve the SVG 1.1 §15.3 `xlink:href` inheritance for one
+/// `<filter>` element against its sibling `<filter>` elements,
+/// producing the *effective* element to feed [`parse_filter_graph`]:
+///
+/// - "Any attributes which are defined on the referenced `filter`
+///   element which are not defined on this element are inherited by
+///   this element" — merged at the attribute level (nearest definition
+///   in the chain wins; `id` and the reference attribute itself are
+///   never inherited).
+/// - "If this element has no defined filter nodes, and the referenced
+///   element has defined filter nodes (possibly due to its own
+///   `xlink:href` attribute), then this element inherits the filter
+///   nodes defined from the referenced `filter` element" — the merged
+///   element takes the children of the nearest chain member that has
+///   filter nodes.
+/// - "Inheritance can be indirect to an arbitrary level" — the walk
+///   follows the chain up to [`FILTER_HREF_DEPTH_CAP`] hops; cycles
+///   (including self-references) terminate the walk with whatever
+///   resolution was reached.
+///
+/// `filters` is the document's `<filter>` element list (e.g.
+/// [`crate::preserved::PreservedExtras::filters`]); targets are looked
+/// up by `id`. A reference to an id that is not in the list (including
+/// any non-local IRI) leaves the element unchanged at that hop.
+pub fn resolve_filter_element_chain(start: &Element, filters: &[Element]) -> Element {
+    use std::collections::HashSet;
+    let mut chain: Vec<&Element> = vec![start];
+    let mut visited: HashSet<&str> = HashSet::new();
+    if let Some(own_id) = attr(start, "id") {
+        visited.insert(own_id);
+    }
+    let mut href = filter_href(start);
+    let mut hops = 0usize;
+    while let Some(id) = href {
+        if hops >= FILTER_HREF_DEPTH_CAP || !visited.insert(id) {
+            break;
+        }
+        let target = filters
+            .iter()
+            .find(|f| attr(f, "id").map(str::trim) == Some(id));
+        match target {
+            Some(parent) => {
+                chain.push(parent);
+                href = filter_href(parent);
+                hops += 1;
+            }
+            None => break,
+        }
+    }
+    if chain.len() == 1 {
+        return start.clone();
+    }
+    let mut merged = start.clone();
+    for ancestor in &chain[1..] {
+        for (k, v) in &ancestor.attrs {
+            let local = tag_local(k);
+            if local.eq_ignore_ascii_case("id") || local.eq_ignore_ascii_case("href") {
+                continue;
+            }
+            if attr(&merged, &local).is_none() {
+                merged.attrs.push((k.clone(), v.clone()));
+            }
+        }
+    }
+    if !has_filter_nodes(start) {
+        if let Some(src) = chain[1..].iter().find(|e| has_filter_nodes(e)) {
+            merged.children = src.children.clone();
+        }
+    }
+    merged
 }
 
 fn parse_attr_number(el: &Element, name: &str) -> Option<f32> {

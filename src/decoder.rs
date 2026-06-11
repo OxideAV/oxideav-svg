@@ -447,6 +447,27 @@ fn parse_svg_root(
     // order.
     register_all_defs(svg, &mut ctx)?;
 
+    // Round 279 — SVG 1.1 §15.3 cross-filter `xlink:href` inheritance.
+    // Done AFTER `register_all_defs` so a forward reference
+    // (`<filter id="b" xlink:href="#a">` declared before
+    // `<filter id="a">`) resolves correctly, mirroring the gradient
+    // template pass below. Only the typed graph is re-parsed from the
+    // merged effective element; `FilterDef::element` stays the
+    // verbatim source for round-trip emission.
+    let filter_elements: Vec<crate::parser::Element> = ctx
+        .defs
+        .filters
+        .values()
+        .map(|d| d.element.clone())
+        .collect();
+    for def in ctx.defs.filters.values_mut() {
+        if def.graph.href.is_some() {
+            let merged =
+                crate::filter::resolve_filter_element_chain(&def.element, &filter_elements);
+            def.graph = crate::filter::parse_filter_graph(&merged);
+        }
+    }
+
     // Round 81 — flatten every typed [`GradientDef`] (via the §14.1.1
     // template chain) into a legacy [`Paint`] for the round-1 fill
     // resolver. Done AFTER `register_all_defs` so a forward `href`
