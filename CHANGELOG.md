@@ -9,6 +9,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 283** — pixel-level `<feDropShadow>` evaluation per the W3C
+  Filter Effects Module Level 1 §9.12 normative equivalent composite,
+  in the new [`crate::filter_eval`] module (the crate's first
+  filter-primitive *evaluator*; the typed graph was parse-only).
+  - [`crate::filter_eval::drop_shadow`] runs the five §9.12 steps over
+    a premultiplied-RGBA [`crate::filter_eval::FilterImage`]: input
+    alpha → §9.14 Gaussian blur → §9.18 offset → §9.13 flood
+    composited with the §9.8 Porter-Duff `in` operator → §9.16 merge
+    (`over`, input on top). Steps 3–5 are fused into one pass (§9.12
+    explicitly permits not materialising the equivalent tree).
+  - [`crate::filter_eval::gaussian_blur`] implements the §9.14
+    three-box-blur approximation exactly (`d = floor(s·3·sqrt(2π)/4 +
+    0.5)`; odd `d` → three centred boxes of size `d`; even `d` →
+    left-boundary box + right-boundary box of size `d` + centred box
+    of size `d+1`), with the §9.14 initial `edgeMode` `none` (zero
+    extension), per-axis zero disabling that axis only and a negative
+    `stdDeviation` disabling the primitive.
+  - [`crate::filter_eval::offset`] implements §9.18 with bilinear
+    interpolation for fractional offsets (the §9.18 recommendation).
+  - Pixel maths honours the node's resolved
+    `color-interpolation-filters` (§10): working space `linearRGB`
+    (initial; `auto` resolves to it) or `sRGB`, with the SVG 2 §13.9
+    transfer formula exposed as
+    [`crate::filter_eval::srgb_to_linear`] /
+    [`crate::filter_eval::linear_to_srgb`].
+  - [`crate::filter_eval::evaluate_drop_shadow_node`] evaluates a
+    parsed [`crate::filter::FilterPrimitiveNode`] end-to-end over an
+    8-bit RGBA buffer; [`crate::filter_eval::DropShadowParams`]
+    defaults carry the §9.12 initial values (`dx=dy=2`,
+    `stdDeviation=2`, opaque-black flood, opacity 1).
+  - 21 new tests (11 unit + 10 integration in
+    `tests/round283_drop_shadow_eval.rs`) pin rendered output bytes
+    hand-derived from the spec maths: the even-`d` impulse kernel
+    `[1/12, 1/4, 1/3, 1/4, 1/12]` for `s=0.8`, the default `s=2`
+    centre weight `0.175²`, kernel mass/symmetry, flood
+    colour×opacity, merge-over in both working spaces, and fractional
+    offsets.
 - **Round 279** — `<filter>` element attribute set completed on the
   typed graph: SVG 1.1 §15.3 `filterRes` + `xlink:href`, the two
   attributes still missing after round 272.

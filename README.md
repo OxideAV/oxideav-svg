@@ -153,6 +153,41 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
+## Round 283 additions
+
+- **Pixel-level `<feDropShadow>` evaluation** — the crate's first
+  filter-primitive *evaluator* (the typed graph was parse-only; the
+  general pixel pipeline remains `oxideav-raster` work). New
+  `crate::filter_eval` module implements the W3C Filter Effects
+  Module Level 1 §9.12 normative equivalent composite over
+  premultiplied-RGBA `FilterImage` buffers:
+  - the five §9.12 steps — input alpha → §9.14 Gaussian blur → §9.18
+    offset → §9.13 flood composited with the §9.8 Porter-Duff `in`
+    operator → §9.16 merge (`over`, input on top) — with steps 3–5
+    fused into one pass (§9.12 permits not materialising the tree);
+  - `gaussian_blur` is the exact §9.14 three-box-blur approximation
+    (`d = floor(s·3·sqrt(2π)/4 + 0.5)`; odd `d` → three centred
+    boxes; even `d` → left-boundary + right-boundary boxes of size
+    `d` + centred box of size `d+1`), `edgeMode` `none` zero
+    extension, per-axis zero blurring the other axis only, negative
+    `stdDeviation` disabling the primitive;
+  - `offset` resolves fractional `dx`/`dy` with bilinear
+    interpolation per the §9.18 recommendation;
+  - the working colour space follows the node's resolved
+    `color-interpolation-filters` (§10: initial `linearRGB`, `auto`
+    resolves to it) using the SVG 2 §13.9 sRGB ↔ linear transfer
+    (`srgb_to_linear` / `linear_to_srgb`);
+  - `evaluate_drop_shadow_node` runs a parsed `FilterPrimitiveNode`
+    end-to-end over an 8-bit RGBA buffer; `DropShadowParams::default`
+    carries the §9.12 initial values (`dx=dy=2`, `stdDeviation=2`,
+    opaque-black flood, opacity 1).
+  - 21 tests pin rendered output bytes hand-derived from the spec
+    maths (even-`d` impulse kernel `[1/12, 1/4, 1/3, 1/4, 1/12]` at
+    `s=0.8`, default `s=2` centre weight `0.175²`, kernel
+    mass/symmetry, flood colour×opacity, merge-over in both working
+    spaces, fractional offsets) in
+    `tests/round283_drop_shadow_eval.rs`.
+
 ## Round 279 additions
 
 - **`<filter>` element attribute set completed on the typed graph —

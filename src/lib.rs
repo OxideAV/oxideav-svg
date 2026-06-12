@@ -393,6 +393,12 @@
 //!
 //! * Actual filter-primitive rasterisation (the typed graph is
 //!   pre-rasteriser plumbing; pixel evaluation is oxideav-raster work).
+//!   Round 283 carves out one exception: `<feDropShadow>` (plus the
+//!   `<feGaussianBlur>` / `<feOffset>` building blocks of its W3C
+//!   Filter Effects §9.12 equivalent composite) is evaluated in-crate
+//!   by [`crate::filter_eval`] over [`crate::filter_eval::FilterImage`]
+//!   pixel buffers, honouring the resolved
+//!   `color-interpolation-filters` working space.
 //! * `marker-start` / `marker-mid` / `marker-end` *rendering* — painting
 //!   the marker graphics at shape vertices with `orient` rotation +
 //!   `markerUnits` scaling (SVG 2 §13.7.4) needs a `Marker` construct in
@@ -526,6 +532,7 @@ pub mod defs;
 pub mod element;
 pub mod encoder;
 pub mod filter;
+pub mod filter_eval;
 pub mod image;
 pub mod keyframe;
 pub mod length;
