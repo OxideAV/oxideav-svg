@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 291** — SVG 1.1 §10.9.2 `dominant-baseline` property
+  (`auto | use-script | no-change | reset-size | ideographic |
+  alphabetic | hanging | mathematical | central | middle |
+  text-after-edge | text-before-edge`) on text content elements.
+  - New [`crate::element::DominantBaseline`] enum carried on
+    [`crate::element::PaintState`]. Initial value
+    [`DominantBaseline::Auto`]; the property is **NOT inherited** per
+    the §10.9.2 attribute table, so
+    [`crate::element::PaintState::merged_with_mctx`] resets it to the
+    initial value before applying the element's own attribute
+    (matching the `display` / `vector-effect` / `overflow`
+    non-inheritance resets). Resolves through presentation attributes,
+    inline `style="..."`, and `<style>`-block rules via the round-4
+    cascade. Case-insensitive keyword matching; `inherit` / unknown
+    tokens keep the post-reset value.
+  - **Round-trip preservation** via a new
+    [`crate::preserved::DominantBaselineBinding`] +
+    [`crate::preserved::PreservedExtras::dominant_baselines`]
+    side-channel — purely lexical, recorded at the topmost emit slot
+    for each shape / `<g>` carrying a recognised `dominant-baseline=`
+    attribute. The encoder re-emits the canonicalised (lowercase /
+    hyphenated per §10.9.2) keyword on round-trip; explicit `auto`
+    (the initial value) is preserved, the absent-attribute case is
+    skipped.
+  - The actual scaled-baseline-table construction + glyph positioning
+    live in `oxideav-scribe` / `oxideav-raster`; this round delivers
+    parse + non-inherited cascade + round-trip preservation. 22
+    integration tests in `tests/round291_dominant_baseline.rs`.
 - **Round 283** — pixel-level `<feDropShadow>` evaluation per the W3C
   Filter Effects Module Level 1 §9.12 normative equivalent composite,
   in the new [`crate::filter_eval`] module (the crate's first

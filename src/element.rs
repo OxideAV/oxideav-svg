@@ -1114,6 +1114,167 @@ fn canonical_funciri(item: &str) -> Option<String> {
     Some(format!("url({})", inner))
 }
 
+/// Round 291 — SVG 1.1 §10.9.2 `dominant-baseline` property
+/// (`auto | use-script | no-change | reset-size | ideographic |
+/// alphabetic | hanging | mathematical | central | middle |
+/// text-after-edge | text-before-edge | inherit`).
+///
+/// Per §10.9.2 the property determines (or re-determines) the
+/// *scaled-baseline-table* — a compound value of (baseline-identifier,
+/// baseline-table, baseline-table font-size) — that positions the
+/// glyphs of a text content element along its inline-progression
+/// direction. Some keywords re-determine all three components, others
+/// only re-scale the baseline-table font-size:
+///
+/// * `auto` (initial): on a `<text>` element the dominant baseline is
+///   `alphabetic` for a horizontal `writing-mode` and `central` for a
+///   vertical one; on a `<tspan>` / `<tref>` / `<altGlyph>` /
+///   `<textPath>` the dominant baseline and baseline-table remain those
+///   of the parent text content element.
+/// * `use-script`: pick the baseline-table from the predominant script
+///   of the character data, re-scaled to this element's `font-size`.
+/// * `no-change`: keep the parent's dominant baseline, baseline-table,
+///   *and* baseline-table font-size unchanged.
+/// * `reset-size`: keep the parent's dominant baseline + baseline-table
+///   but re-scale the baseline-table font-size to this element's
+///   `font-size`.
+/// * `ideographic` / `alphabetic` / `hanging` / `mathematical`: set the
+///   dominant baseline to the named baseline, derive the baseline-table
+///   from that named table in the nominal font, re-scaled to this
+///   element's `font-size`.
+/// * `central` / `middle` / `text-after-edge` / `text-before-edge`: set
+///   the dominant baseline to the named position; the derived
+///   baseline-table is constructed from the nominal font's baselines
+///   (`central` / `middle` use a fixed priority order over the
+///   `ideographic` / `alphabetic` / `hanging` / `mathematical` tables;
+///   the two `*-edge` keywords leave the choice implementation-defined),
+///   re-scaled to this element's `font-size`.
+///
+/// **Inherited:** **no** (§10.9.2 attribute table). So a
+/// `<text dominant-baseline="hanging">` does NOT push `hanging` down to
+/// a nested `<tspan>` through the cascade — [`PaintState::merged_with_mctx`]
+/// resets `dominant_baseline` to the initial value before applying the
+/// element's own attribute (matching the `display` / `vector_effect` /
+/// `overflow` non-inheritance resets). The §10.9.2 prose that a
+/// `<tspan>`'s `auto` "remains the same as the parent text content
+/// element" is a *baseline-table* computation that lives in the text
+/// layout engine (`oxideav-scribe` / `oxideav-raster`), not in the
+/// property cascade — the property value itself is non-inherited.
+///
+/// **Applies to:** text content elements (`<text>`, `<tspan>`,
+/// `<tref>`, `<altGlyph>`, `<textPath>`). We don't enforce the
+/// applies-to gate at parse time (consistent with the round-235 /
+/// round-247 / round-257 policy of accepting the property on any
+/// element so a hand-authored attribute round-trips through any emit
+/// slot); the §10.9.2 semantics only fire when the text layout engine
+/// pulls the resolved value off an applicable element.
+///
+/// Round 291 ships parse + non-inherited cascade + round-trip
+/// preservation; the actual scaled-baseline-table construction +
+/// glyph positioning live in `oxideav-scribe` / `oxideav-raster`,
+/// which read the resolved value off the carried [`PaintState`] or off
+/// the per-element [`crate::preserved::DominantBaselineBinding`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum DominantBaseline {
+    /// `auto` (initial) — derive from `writing-mode` on `<text>` or
+    /// inherit the parent text element's baseline on a child run.
+    #[default]
+    Auto,
+    /// `use-script` — derive from the predominant script of the
+    /// character data.
+    UseScript,
+    /// `no-change` — keep the parent's dominant baseline, table, and
+    /// baseline-table font-size.
+    NoChange,
+    /// `reset-size` — keep the parent's dominant baseline + table but
+    /// re-scale the baseline-table font-size to this element.
+    ResetSize,
+    /// `ideographic` — ideographic baseline-table.
+    Ideographic,
+    /// `alphabetic` — alphabetic baseline-table.
+    Alphabetic,
+    /// `hanging` — hanging baseline-table.
+    Hanging,
+    /// `mathematical` — mathematical baseline-table.
+    Mathematical,
+    /// `central` — central baseline; derived-table priority order
+    /// `ideographic`, `alphabetic`, `hanging`, `mathematical`.
+    Central,
+    /// `middle` — middle baseline; derived-table priority order
+    /// `alphabetic`, `ideographic`, `hanging`, `mathematical`.
+    Middle,
+    /// `text-after-edge` — text-after-edge baseline (derived-table
+    /// choice implementation-defined per §10.9.2).
+    TextAfterEdge,
+    /// `text-before-edge` — text-before-edge baseline (derived-table
+    /// choice implementation-defined per §10.9.2).
+    TextBeforeEdge,
+}
+
+impl DominantBaseline {
+    /// Parse a `dominant-baseline` keyword (case-insensitive per CSS).
+    /// `inherit` returns `None` so the caller can keep the inherited
+    /// (or, after the §10.9.2 non-inheritance reset, the initial)
+    /// value. Unknown / malformed tokens also return `None`, matching
+    /// the tolerant policy used by the §13.x rendering hints and
+    /// `text-anchor` / `paint-order` / `visibility` / `overflow`.
+    pub(crate) fn parse_keyword(value: &str) -> Option<Self> {
+        let v = value.trim();
+        if v.eq_ignore_ascii_case("auto") {
+            Some(Self::Auto)
+        } else if v.eq_ignore_ascii_case("use-script") {
+            Some(Self::UseScript)
+        } else if v.eq_ignore_ascii_case("no-change") {
+            Some(Self::NoChange)
+        } else if v.eq_ignore_ascii_case("reset-size") {
+            Some(Self::ResetSize)
+        } else if v.eq_ignore_ascii_case("ideographic") {
+            Some(Self::Ideographic)
+        } else if v.eq_ignore_ascii_case("alphabetic") {
+            Some(Self::Alphabetic)
+        } else if v.eq_ignore_ascii_case("hanging") {
+            Some(Self::Hanging)
+        } else if v.eq_ignore_ascii_case("mathematical") {
+            Some(Self::Mathematical)
+        } else if v.eq_ignore_ascii_case("central") {
+            Some(Self::Central)
+        } else if v.eq_ignore_ascii_case("middle") {
+            Some(Self::Middle)
+        } else if v.eq_ignore_ascii_case("text-after-edge") {
+            Some(Self::TextAfterEdge)
+        } else if v.eq_ignore_ascii_case("text-before-edge") {
+            Some(Self::TextBeforeEdge)
+        } else {
+            // `inherit` and unknown tokens fall through; the cascade
+            // keeps whatever value was inherited (or, since
+            // `dominant-baseline` is not inherited, the initial `auto`
+            // set by the per-element reset in `merged_with_mctx`).
+            None
+        }
+    }
+
+    /// Canonical keyword for round-trip emission. §10.9.2 spells every
+    /// keyword all-lowercase (hyphenated for the multi-word ones), so
+    /// source `HANGING` / `TEXT-AFTER-EDGE` round-trip as `hanging` /
+    /// `text-after-edge`.
+    pub(crate) fn as_canonical_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::UseScript => "use-script",
+            Self::NoChange => "no-change",
+            Self::ResetSize => "reset-size",
+            Self::Ideographic => "ideographic",
+            Self::Alphabetic => "alphabetic",
+            Self::Hanging => "hanging",
+            Self::Mathematical => "mathematical",
+            Self::Central => "central",
+            Self::Middle => "middle",
+            Self::TextAfterEdge => "text-after-edge",
+            Self::TextBeforeEdge => "text-before-edge",
+        }
+    }
+}
+
 /// Round 235 — SVG 2 §13.10.4 `image-rendering` resolved value
 /// (`auto | optimizeQuality | optimizeSpeed`).
 ///
@@ -1311,6 +1472,14 @@ pub struct PaintState {
     /// cascades, and round-trips the value via the
     /// [`crate::preserved::CursorBinding`] side-channel.
     pub cursor: CursorValue,
+    /// Round 291 — SVG 1.1 §10.9.2 `dominant-baseline` (NOT inherited
+    /// per the §10.9.2 attribute table). Initial value
+    /// [`DominantBaseline::Auto`]. The actual scaled-baseline-table
+    /// construction + glyph positioning happen in `oxideav-scribe` /
+    /// `oxideav-raster`; this crate parses + resets per-element +
+    /// round-trips the source attribute via the
+    /// [`crate::preserved::DominantBaselineBinding`] side-channel.
+    pub dominant_baseline: DominantBaseline,
 }
 
 impl Default for PaintState {
@@ -1370,6 +1539,12 @@ impl Default for PaintState {
             // child without its own `cursor=` picks up the parent's
             // resolved value through the clone in `merged_with_mctx`.
             cursor: CursorValue::default(),
+            // §10.9.2 — initial value `auto`. The property is NOT
+            // inherited per the §10.9.2 attribute table, so
+            // `merged_with_mctx` resets this to the initial value
+            // before applying the element's own attribute (matching
+            // the `display` / `vector-effect` / `overflow` resets).
+            dominant_baseline: DominantBaseline::Auto,
         }
     }
 }
@@ -1429,6 +1604,19 @@ impl PaintState {
         // captures the source attribute on its own emit slot instead
         // (so the author's intent still survives a `parse → write`).
         s.overflow = Overflow::Visible;
+        // Round 291 — `dominant-baseline` is NOT inherited (SVG 1.1
+        // §10.9.2, Inherited: no). Reset to the initial value
+        // [`DominantBaseline::Auto`] before the element's own attribute
+        // (if any) is applied below, matching the `display` /
+        // `vector_effect` / `overflow` reset policy. A
+        // `<text dominant-baseline="hanging">` ancestor therefore does
+        // NOT push `hanging` onto a nested `<tspan>` via the property
+        // cascade — the §10.9.2 baseline-table inheritance for a child
+        // run's `auto` is a layout-engine computation, distinct from
+        // the (non-inherited) property value. The round-trip
+        // side-channel captures the source attribute on its own emit
+        // slot instead.
+        s.dominant_baseline = DominantBaseline::Auto;
         let el = mctx.el;
         // 1) presentation attributes from `el`.
         for (name, _) in &el.attrs {
@@ -1716,6 +1904,22 @@ impl PaintState {
             "cursor" => {
                 if let Some(c) = CursorValue::parse_custom(value) {
                     s.cursor = c;
+                }
+            }
+            // Round 291 — SVG 1.1 §10.9.2 `dominant-baseline` (NOT
+            // inherited). `auto | use-script | no-change | reset-size |
+            // ideographic | alphabetic | hanging | mathematical |
+            // central | middle | text-after-edge | text-before-edge`.
+            // Same tolerant-keep-on-`inherit`-or-unknown policy as the
+            // §13.x rendering hints / `overflow` above. §10.9.2 lists
+            // text content elements (`<text>` / `<tspan>` / `<tref>` /
+            // `<altGlyph>` / `<textPath>`) as the applies-to set; we
+            // accept the keyword on any element so a hand-authored
+            // attribute resolves into the carried PaintState even when
+            // the layout engine's applies-to gate would later ignore it.
+            "dominant-baseline" => {
+                if let Some(db) = DominantBaseline::parse_keyword(value) {
+                    s.dominant_baseline = db;
                 }
             }
             // Round-4 CSS may carry properties we don't yet model
@@ -2012,6 +2216,18 @@ pub struct ParseContext {
     /// each `parse_element_to_node_ctx` call (the drain matches the
     /// round-221 .. round-260 flows).
     pub pending_cursor: Option<String>,
+    /// Round 291 — collected `(scene_path, dominant-baseline)` bindings
+    /// (SVG 1.1 §10.9.2). Populated only when the caller opted in via
+    /// [`crate::decoder::parse_svg_with_extras`] (same gate as
+    /// [`Self::track_id_paths`]). The encoder re-emits the source
+    /// attribute on the matching shape / `<g>` on round-trip.
+    pub dominant_baselines: Vec<crate::preserved::DominantBaselineBinding>,
+    /// Round 291 — scratch slot for the shape / `<g>` branch to hand a
+    /// captured `dominant-baseline` keyword string to the wrapper-aware
+    /// recorder that runs after `apply_referenced_defs`. Cleared at the
+    /// end of each `parse_element_to_node_ctx` call (the drain matches
+    /// the round-221 .. round-261 flows).
+    pub pending_dominant_baseline: Option<String>,
     /// Round 118 — "next element is a `<use>` instance root" flag.
     /// SVG 1.1 §11.5: "setting display: none on a `<path>` element will
     /// prevent that element from getting rendered directly onto the
@@ -2070,6 +2286,8 @@ impl ParseContext {
             pending_pointer_events: None,
             cursors: Vec::new(),
             pending_cursor: None,
+            dominant_baselines: Vec::new(),
+            pending_dominant_baseline: None,
         }
     }
 
@@ -2280,6 +2498,27 @@ impl ParseContext {
             path: self.current_path.clone(),
             cursor,
         });
+    }
+
+    /// Round 291 — record an author `dominant-baseline` attribute
+    /// against the current scene-graph path (SVG 1.1 §10.9.2). Same
+    /// `track_id_paths` gate as the other side-channel recorders. The
+    /// encoder re-emits the matching shape / `<g>` with
+    /// `dominant-baseline="..."` on round-trip. Unlike the §13.9 /
+    /// §13.10.x hints, `dominant-baseline` is NOT inherited, so the
+    /// per-element reset in [`PaintState::merged_with_mctx`] ensures the
+    /// resolved value stops at the carrier element; the lexical
+    /// side-channel still preserves the source attribute on its own
+    /// emit slot (mirrors the round-257 `overflow` recorder).
+    pub fn record_dominant_baseline(&mut self, dominant_baseline: String) {
+        if !self.track_id_paths {
+            return;
+        }
+        self.dominant_baselines
+            .push(crate::preserved::DominantBaselineBinding {
+                path: self.current_path.clone(),
+                dominant_baseline,
+            });
     }
 
     /// Round 115 — record an `<a>` hyperlink binding at the current
@@ -3223,6 +3462,16 @@ pub fn parse_element_to_node_ctx(
             // cascaded descendant.
             let saved_pending_cursor = ctx.pending_cursor.take();
             let group_cursor = capture_cursor_attr(el);
+            // Round 291 — capture any `dominant-baseline=` carried on the
+            // `<g>` so a hand-authored attribute survives round-trip.
+            // The property is NOT inherited per §10.9.2, but the
+            // round-trip carrier is purely lexical so a
+            // `<g dominant-baseline="hanging">` round-trips on its own
+            // emit slot regardless of whether the cascade would have
+            // pushed the value to descendants (it doesn't). Mirrors the
+            // round-257 `overflow` capture.
+            let saved_pending_dominant_baseline = ctx.pending_dominant_baseline.take();
+            let group_dominant_baseline = capture_dominant_baseline_attr(el);
             let transform = match attr(el, "transform") {
                 Some(v) => parse_transform(v)?,
                 None => Transform2D::identity(),
@@ -3290,6 +3539,10 @@ pub fn parse_element_to_node_ctx(
             // Round 261 — same restore-then-layer flow for the
             // `cursor` carrier.
             ctx.pending_cursor = group_cursor.or(saved_pending_cursor);
+            // Round 291 — same restore-then-layer flow for the
+            // `dominant-baseline` carrier.
+            ctx.pending_dominant_baseline =
+                group_dominant_baseline.or(saved_pending_dominant_baseline);
             Some(Node::Group(group))
         }
         // Round 115 — SVG 2 §16.5 `<a>` hyperlink. The `<a>` element is
@@ -3639,6 +3892,16 @@ pub fn parse_element_to_node_ctx(
             // the §16.8.2 list example). Absent / `inherit` / invalid
             // payloads skip recording.
             ctx.pending_cursor = capture_cursor_attr(el);
+            // Round 291 — SVG 1.1 §10.9.2 `dominant-baseline` round-trip
+            // capture. Same flow as the round-257 `overflow` capture
+            // above: the cascade has already resolved the property onto
+            // `state.dominant_baseline` (after the §10.9.2
+            // non-inheritance reset), but the round-trip carrier records
+            // the source-literal so a `parse → write` cycle re-emits the
+            // author's keyword verbatim (canonicalised to the §10.9.2
+            // all-lowercase / hyphenated spelling). Absent / `inherit` /
+            // unrecognised tokens skip recording.
+            ctx.pending_dominant_baseline = capture_dominant_baseline_attr(el);
             // Round 205 — SVG 2 §13.8 `paint-order`. The round-1
             // `PathNode { fill, stroke }` shape always paints fill
             // BEFORE stroke (the §13.8 `normal` order); when the
@@ -3850,6 +4113,15 @@ pub fn parse_element_to_node_ctx(
     // fallback walk) is interactive-UA work.
     if let Some(c) = ctx.pending_cursor.take() {
         ctx.record_cursor(c);
+    }
+    // Round 291 — drain the shape / `<g>` branch's pending
+    // `dominant-baseline` (if any) and record it at the same outer-most
+    // emit site the other lexical recorders use. The encoder re-emits
+    // the source attribute on the matching shape / `<g>` on round-trip;
+    // the actual scaled-baseline-table construction + glyph positioning
+    // (§10.9.2) live in `oxideav-scribe` / `oxideav-raster`.
+    if let Some(db) = ctx.pending_dominant_baseline.take() {
+        ctx.record_dominant_baseline(db);
     }
     Ok(Some(wrapped))
 }
@@ -4172,6 +4444,38 @@ fn capture_cursor_attr(el: &Element) -> Option<String> {
     }
     let c = CursorValue::parse_custom(trimmed)?;
     Some(c.as_canonical_string())
+}
+
+/// Round 291 — extract a canonicalised `dominant-baseline` attribute
+/// from `el` for round-trip preservation. Returns `Some(canonical)`
+/// when the attribute resolves to one of the twelve §10.9.2 keywords
+/// (`auto | use-script | no-change | reset-size | ideographic |
+/// alphabetic | hanging | mathematical | central | middle |
+/// text-after-edge | text-before-edge`); returns `None` for an absent
+/// attribute, an `inherit` keyword, or an unrecognised token (the
+/// cascade keeps the inherited — or, since `dominant-baseline` is not
+/// inherited, the per-element-reset initial — value in those cases, so
+/// the round-trip carrier matches the parse-time fallback).
+///
+/// Canonical form is the §10.9.2 spelling (all lowercase, hyphenated
+/// for the multi-word keywords) — source `HANGING` / `TEXT-AFTER-EDGE`
+/// round-trip as `hanging` / `text-after-edge`.
+///
+/// Like the round-221 / round-247 / round-257 helpers, an explicit
+/// author `dominant-baseline="auto"` IS recorded — even though `auto`
+/// is the §10.9.2 initial value, an explicit author write carries
+/// intent (e.g. an inheritance reset on a child of a
+/// `<text dominant-baseline="hanging">`). The absent-attribute case is
+/// still skipped so an initial-value document doesn't bloat the output
+/// with redundant `dominant-baseline="auto"` on every element.
+fn capture_dominant_baseline_attr(el: &Element) -> Option<String> {
+    let raw = attr(el, "dominant-baseline")?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("inherit") {
+        return None;
+    }
+    let db = DominantBaseline::parse_keyword(trimmed)?;
+    Some(db.as_canonical_str().to_string())
 }
 
 /// Round 21 — return the child-index sub-path from `root` down to the

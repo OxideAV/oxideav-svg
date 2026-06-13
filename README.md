@@ -153,6 +153,74 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   Bézier from `keySplines`; resolved with Newton-Raphson on the x
   curve. Missing / malformed `keySplines` falls back to linear.
 
+## Round 291 additions
+
+- **SVG 1.1 §10.9.2 `dominant-baseline` property**
+  (`auto | use-script | no-change | reset-size | ideographic |
+  alphabetic | hanging | mathematical | central | middle |
+  text-after-edge | text-before-edge`) on text content elements
+  (`<text>` / `<tspan>` / `<tref>` / `<altGlyph>` / `<textPath>`).
+  - New [`crate::element::DominantBaseline`] enum carried on
+    [`crate::element::PaintState`]. Initial value
+    [`DominantBaseline::Auto`]; the property is **NOT inherited** per
+    the §10.9.2 attribute table, so
+    [`crate::element::PaintState::merged_with_mctx`] resets it to the
+    initial value before applying the element's own attribute
+    (matching the round-118 `display` / round-209 `vector-effect` /
+    round-257 `overflow` non-inheritance resets — distinct from the
+    inherited §13.x rendering hints). The §10.9.2 prose that a child
+    run's `auto` "remains the same as the parent text content element"
+    is a *baseline-table* layout computation, not a property-value
+    inheritance — so the property value itself is non-inherited.
+    Resolves through presentation attributes, inline `style="..."`,
+    and `<style>`-block rules via the existing round-4 cascade.
+    Case-insensitive keyword matching; `inherit` / unknown tokens keep
+    the post-reset value.
+  - **Round-trip preservation.** New
+    [`crate::preserved::DominantBaselineBinding`] +
+    [`crate::preserved::PreservedExtras::dominant_baselines`]
+    side-channel captures the canonicalised keyword at the topmost
+    emit slot for each shape / `<g>` carrying a recognised
+    `dominant-baseline=` attribute. The carrier is purely lexical (the
+    cascade does not inherit the value), so a hand-authored
+    `<text dominant-baseline="hanging">` survives a
+    `parse_svg_with_extras → write_svg_with_extras` cycle on the same
+    element. The encoder re-emits `dominant-baseline=` on the matching
+    shape / `<g>` on round-trip.
+  - **Explicit initial value `auto` is preserved.** Mirrors the
+    round-221 / round-247 / round-257 explicit-initial-value policy —
+    an explicit author `dominant-baseline="auto"` carries intent (e.g.
+    an inheritance reset on a child of a
+    `<text dominant-baseline="hanging">`); the absent-attribute case is
+    still skipped so an initial-value document doesn't bloat with
+    redundant `dominant-baseline="auto"` on every element.
+  - **Canonical lowercase / hyphenated emission.** §10.9.2 spells
+    every keyword all-lowercase (hyphenated for the multi-word
+    `use-script` / `no-change` / `reset-size` / `text-after-edge` /
+    `text-before-edge`); source `HANGING` / `TEXT-AFTER-EDGE`
+    round-trip as `hanging` / `text-after-edge`.
+  - The actual scaled-baseline-table construction + glyph positioning
+    (§10.9.2 baseline-identifier / baseline-table / baseline-table
+    font-size resolution) happen in `oxideav-scribe` / `oxideav-raster`;
+    this round delivers parse + non-inherited cascade + round-trip
+    preservation. A downstream layout engine reads the resolved value
+    off the carried `PaintState` or off the per-element
+    `DominantBaselineBinding`.
+  - 22 integration tests in `tests/round291_dominant_baseline.rs` cover
+    the default value, the no-attribute baseline (no binding), each of
+    the twelve §10.9.2 keywords recorded with canonical spelling,
+    case-insensitive matching, explicit-`auto` recording, `inherit`
+    skipping, unknown-token tolerance, empty-value skipping,
+    presentation-attribute / `style="…"` / `<style>`-block cascade
+    resolution, non-inheritance through a parent `PaintState`, child
+    attribute wins after the per-element reset, round-trip emission on
+    `<g>` and on a bare `<rect>`, double round-trip convergence,
+    source-case canonicalisation through round-trip, `parse_svg` (no
+    extras) still loading, group-records-once-not-per-child,
+    per-child-override records-separately, and coexistence with the
+    §3.11 `overflow` / §13.10.3 `text-rendering` hints on the same
+    group element.
+
 ## Round 283 additions
 
 - **Pixel-level `<feDropShadow>` evaluation** — the crate's first

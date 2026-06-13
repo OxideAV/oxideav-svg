@@ -339,6 +339,20 @@ pub struct PreservedExtras {
     /// the actual cursor display is interactive-UA work (a windowing
     /// host embedding `oxideav-pipeline`).
     pub cursors: Vec<CursorBinding>,
+    /// Round 291 — SVG 1.1 §10.9.2 `dominant-baseline` source-text
+    /// bindings, recorded per emitted shape / `<g>` so the encoder can
+    /// re-emit `dominant-baseline="..."` on the matching element on
+    /// round-trip. Mirrors the round-257 `overflow` carrier — the
+    /// property is NOT inherited per §10.9.2, but the binding is purely
+    /// lexical so the round-trip preserves exactly where the author
+    /// wrote the attribute (the topmost emit site for the element).
+    /// Populated only by [`crate::decoder::parse_svg_with_extras`].
+    ///
+    /// §10.9.2 selects the scaled-baseline-table that positions the
+    /// glyphs of a text content element; the actual baseline-table
+    /// construction + glyph positioning live in `oxideav-scribe` /
+    /// `oxideav-raster`.
+    pub dominant_baselines: Vec<DominantBaselineBinding>,
 }
 
 /// One captured animation child of a known-id parent element.
@@ -450,6 +464,7 @@ impl PreservedExtras {
             && self.overflows.is_empty()
             && self.pointer_eventss.is_empty()
             && self.cursors.is_empty()
+            && self.dominant_baselines.is_empty()
     }
 }
 
@@ -610,6 +625,35 @@ pub struct OverflowBinding {
     /// absent-attribute case so an initial-value document doesn't
     /// bloat with redundant `overflow="visible"` on every element.
     pub overflow: String,
+}
+
+/// Round 291 — one (scene-graph tree-path, author `dominant-baseline`
+/// keyword) pair. Mirrors [`OverflowBinding`] — the scene graph does
+/// not yet expose a typed baseline-table (`oxideav-scribe` /
+/// `oxideav-raster` own the §10.9.2 scaled-baseline-table construction
+/// and glyph positioning), so the binding's job is purely to
+/// round-trip the source attribute so a `parse → write` cycle
+/// preserves the author's request verbatim.
+///
+/// SVG 1.1 §10.9.2 spells every keyword all-lowercase (hyphenated for
+/// the multi-word `use-script` / `no-change` / `reset-size` /
+/// `text-after-edge` / `text-before-edge`). The capture helper
+/// canonicalises case-insensitively, so source `HANGING` /
+/// `TEXT-AFTER-EDGE` round-trip as `hanging` / `text-after-edge`.
+#[derive(Clone, Debug)]
+pub struct DominantBaselineBinding {
+    /// Tree-path through the scene graph; matches the layout of
+    /// [`IdScenePath::path`].
+    pub path: Vec<usize>,
+    /// Author-supplied keyword string canonicalised to the §10.9.2
+    /// spelling. The binding records explicit `auto` (the §10.9.2
+    /// initial value) when an author writes it — matching the
+    /// round-221 / round-247 / round-257 "explicit initial value
+    /// carries intent" policy (e.g. an inheritance reset on a child of
+    /// a `<text dominant-baseline="hanging">`) — but skips the
+    /// absent-attribute case so an initial-value document doesn't bloat
+    /// with redundant `dominant-baseline="auto"` on every element.
+    pub dominant_baseline: String,
 }
 
 /// Round 260 — one (scene-graph tree-path, author `pointer-events`
