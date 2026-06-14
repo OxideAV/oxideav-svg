@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 302** — pixel-level evaluation of `<feColorMatrix>` in
+  [`crate::filter_eval`] (Filter Effects Module Level 1 §9.6). The
+  parser already reduces every type variant to a flat row-major 4×5
+  RGBA-bias matrix; the evaluator applies
+  `[R' G' B' A' 1]ᵀ = M · [R G B A 1]ᵀ` per output channel. Per §9.6
+  the calculation runs on **non-premultiplied** colour, so
+  [`crate::filter_eval::color_matrix`] un-premultiplies each
+  [`crate::filter_eval::FilterImage`] pixel, applies the matrix,
+  clamps each result to `[0, 1]`, and re-premultiplies for storage.
+  New [`crate::filter_eval::evaluate_color_matrix_node`] decodes an
+  8-bit sRGB buffer into the node's resolved
+  `color-interpolation-filters` working space (§10), evaluates, and
+  re-encodes; non-`ColorMatrix` nodes are declined. 6 unit tests pin
+  the identity no-op, cross-channel swap + bias, per-channel clamp,
+  the luminanceToAlpha template, and the node decode/decline paths.
 - **Round 295** — pixel-level evaluation of `<feComposite>` in
   [`crate::filter_eval`] (Filter Effects Module Level 1 §16 / SVG 1.1
   §15.12), for the two operators the staged specifications define

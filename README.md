@@ -221,6 +221,28 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
     §3.11 `overflow` / §13.10.3 `text-rendering` hints on the same
     group element.
 
+## Round 302 additions
+
+- **Pixel-level `<feColorMatrix>` evaluation** — the fourth filter
+  primitive given an in-crate evaluator, in `crate::filter_eval`
+  (Filter Effects Module Level 1 §9.6). The parser already reduces
+  `matrix` / `saturate` / `hueRotate` / `luminanceToAlpha` to a flat
+  row-major 4×5 RGBA-bias matrix `M`; the evaluator applies
+  `[R' G' B' A' 1]ᵀ = M · [R G B A 1]ᵀ` per output channel
+  (`c' = m0·R + m1·G + m2·B + m3·A + m4`).
+  - §9.6 mandates the maths run on **non-premultiplied** colour, so
+    `color_matrix(src, &matrix)` un-premultiplies each `FilterImage`
+    pixel, applies the matrix, clamps each result to `[0, 1]`, then
+    re-premultiplies for storage. Transparent pixels (no defined
+    colour) feed zeros to the matrix.
+  - `evaluate_color_matrix_node` decodes an 8-bit sRGB buffer into the
+    node's resolved `color-interpolation-filters` space (§10), runs
+    the matrix, and re-encodes; it declines non-`ColorMatrix` nodes so
+    the caller can route elsewhere.
+  - 6 unit tests pin the identity no-op, cross-channel swap + bias on
+    non-premultiplied values, per-channel `[0, 1]` clamp, the
+    luminanceToAlpha template row, and the node decode/decline paths.
+
 ## Round 295 additions
 
 - **Pixel-level `<feComposite>` evaluation** — the second filter

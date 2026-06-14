@@ -63,6 +63,73 @@ use crate::filter::{
     ColorInterpolationFilters, CompositeOperator, FilterPrimitive, FilterPrimitiveNode, FloodColor,
 };
 
+/// `<feColorMatrix>` per Filter Effects §9.6 — the matrix transform
+///
+/// ```text
+/// [R' G' B' A' 1]ᵀ = M · [R G B A 1]ᵀ
+/// ```
+///
+/// where `M` is the row-major 4×5 `matrix` (the `<feColorMatrix>` parser
+/// already reduces `saturate` / `hueRotate` / `luminanceToAlpha` to this
+/// form), applied per output channel as
+/// `c' = m[0]·R + m[1]·G + m[2]·B + m[3]·A + m[4]`.
+///
+/// §9.6 is explicit that "the calculations are performed on
+/// **non-premultiplied** color values": this routine un-premultiplies
+/// each [`FilterImage`] pixel, applies the matrix, clamps each result to
+/// `[0, 1]`, and re-premultiplies for storage. The colour channels are
+/// already in the [`FilterImage`]'s working colour space (§10), which is
+/// where the matrix coefficients act.
+pub fn color_matrix(src: &FilterImage, matrix: &[f32; 20]) -> FilterImage {
+    let mut out = FilterImage::new(src.width, src.height);
+    for (dst, s) in out.data.chunks_exact_mut(4).zip(src.data.chunks_exact(4)) {
+        // Un-premultiply to recover the non-premultiplied operand §9.6
+        // requires; a transparent pixel has no defined colour, so feed
+        // the matrix straight zeros there.
+        let a = s[3];
+        let unp = if a > 0.0 {
+            [s[0] / a, s[1] / a, s[2] / a, a]
+        } else {
+            [0.0, 0.0, 0.0, 0.0]
+        };
+        // [R' G' B' A'] = M · [R G B A 1]; each row is 5 coefficients.
+        let mut res = [0.0f32; 4];
+        for (row, r) in res.iter_mut().enumerate() {
+            let m = &matrix[row * 5..row * 5 + 5];
+            *r = (m[0] * unp[0] + m[1] * unp[1] + m[2] * unp[2] + m[3] * unp[3] + m[4])
+                .clamp(0.0, 1.0);
+        }
+        // Re-premultiply by the transformed alpha for storage.
+        let ra = res[3];
+        dst[0] = res[0] * ra;
+        dst[1] = res[1] * ra;
+        dst[2] = res[2] * ra;
+        dst[3] = ra;
+    }
+    out
+}
+
+/// Evaluate a parsed [`FilterPrimitiveNode`] holding a
+/// [`FilterPrimitive::ColorMatrix`] over an 8-bit non-premultiplied
+/// sRGB-encoded RGBA buffer, in the node's resolved
+/// `color-interpolation-filters` working space (§10).
+///
+/// Returns `None` when the node is not a colour matrix or when
+/// `source_rgba8.len() != width * height * 4`.
+pub fn evaluate_color_matrix_node(
+    node: &FilterPrimitiveNode,
+    source_rgba8: &[u8],
+    width: usize,
+    height: usize,
+) -> Option<Vec<u8>> {
+    let FilterPrimitive::ColorMatrix { matrix, .. } = &node.primitive else {
+        return None;
+    };
+    let space = node.color_interpolation_filters;
+    let src = FilterImage::from_rgba8(width, height, source_rgba8, space)?;
+    Some(color_matrix(&src, matrix).to_rgba8(space))
+}
+
 /// An RGBA pixel buffer used as a filter-primitive operand.
 ///
 /// Pixels are stored row-major as **premultiplied** `f32` RGBA in the
@@ -894,5 +961,135 @@ mod tests {
             },
         };
         assert!(evaluate_composite_node(&node, &[0; 4], &[0; 4], 1, 1).is_none());
+    }
+
+    // §9.6 identity matrix is a no-op (the 4×5 identity reproduces the
+    // input non-premultiplied channels and alpha exactly).
+    #[test]
+    fn color_matrix_identity_is_input() {
+        #[rustfmt::skip]
+        let id = [
+            1.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 1.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 1.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 1.0, 0.0,
+        ];
+        let mut img = FilterImage::new(2, 1);
+        // Premultiplied: [0.5,0.25,0.125,0.5] is colour [1,0.5,0.25] @ a=0.5.
+        img.set_pixel(0, 0, [0.5, 0.25, 0.125, 0.5]);
+        img.set_pixel(1, 0, [0.0, 0.0, 0.0, 0.0]);
+        let out = color_matrix(&img, &id);
+        let p = out.pixel(0, 0);
+        for (o, e) in p.iter().zip([0.5, 0.25, 0.125, 0.5]) {
+            assert!((o - e).abs() < 1e-6, "{o} vs {e}");
+        }
+        assert_eq!(out.pixel(1, 0), [0.0; 4]);
+    }
+
+    // §9.6 calculations are on non-premultiplied colour. A row-0 bias of
+    // 0.5 on an opaque pixel sets R' to clamp(R + 0.5); the swap rows
+    // exercise the cross-channel coefficients on un-premultiplied values.
+    #[test]
+    fn color_matrix_swap_and_bias_non_premultiplied() {
+        // Swap R↔B, pass G and A, add 0.25 bias to G.
+        #[rustfmt::skip]
+        let m = [
+            0.0, 0.0, 1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0, 0.0, 0.25,
+            1.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 1.0, 0.0,
+        ];
+        let mut img = FilterImage::new(1, 1);
+        // Non-premult colour [0.2,0.4,0.6] at alpha 0.5 → premult halved.
+        img.set_pixel(0, 0, [0.1, 0.2, 0.3, 0.5]);
+        let out = color_matrix(&img, &m);
+        // R'=B=0.6, G'=G+0.25=0.65, B'=R=0.2, A'=0.5 (all non-premult);
+        // stored premultiplied by A'=0.5.
+        let p = out.pixel(0, 0);
+        for (o, e) in p.iter().zip([0.6 * 0.5, 0.65 * 0.5, 0.2 * 0.5, 0.5]) {
+            assert!((o - e).abs() < 1e-6, "{o} vs {e}");
+        }
+    }
+
+    // §9.6 clamps each transformed channel to [0, 1] before storage.
+    #[test]
+    fn color_matrix_clamps_channels() {
+        #[rustfmt::skip]
+        let m = [
+            2.0, 0.0, 0.0, 0.0, 0.0,   // R' = 2·R → clamps to 1
+            0.0, 1.0, 0.0, 0.0, -1.0,  // G' = G − 1 → clamps to 0
+            0.0, 0.0, 1.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 1.0, 0.0,
+        ];
+        let mut img = FilterImage::new(1, 1);
+        // Opaque non-premult colour [0.8, 0.2, 0.0].
+        img.set_pixel(0, 0, [0.8, 0.2, 0.0, 1.0]);
+        let out = color_matrix(&img, &m);
+        let p = out.pixel(0, 0);
+        assert!((p[0] - 1.0).abs() < 1e-6, "R' {}", p[0]);
+        assert!((p[1] - 0.0).abs() < 1e-6, "G' {}", p[1]);
+        assert!((p[2] - 0.0).abs() < 1e-6, "B' {}", p[2]);
+        assert!((p[3] - 1.0).abs() < 1e-6, "A' {}", p[3]);
+    }
+
+    // luminanceToAlpha reduction (§9.6 fixed template, coefficients
+    // 0.2126 / 0.7152 / 0.0722 in the matrix's 4th row, zero colour) maps
+    // colour to a grey alpha and clears RGB.
+    #[test]
+    fn color_matrix_luminance_to_alpha_template() {
+        #[rustfmt::skip]
+        let m = [
+            0.0,    0.0,    0.0,    0.0, 0.0,
+            0.0,    0.0,    0.0,    0.0, 0.0,
+            0.0,    0.0,    0.0,    0.0, 0.0,
+            0.2126, 0.7152, 0.0722, 0.0, 0.0,
+        ];
+        let mut img = FilterImage::new(1, 1);
+        // Opaque white non-premult [1,1,1].
+        img.set_pixel(0, 0, [1.0, 1.0, 1.0, 1.0]);
+        let out = color_matrix(&img, &m);
+        let p = out.pixel(0, 0);
+        // A' = sum of coefficients ≈ 1.0; RGB' all 0; premult → 0.
+        assert!((p[3] - 1.0).abs() < 1e-4, "A' {}", p[3]);
+        assert_eq!(&p[..3], &[0.0, 0.0, 0.0]);
+    }
+
+    // Node entry point: identity matrix in the sRGB working space returns
+    // the input bytes unchanged (no linearisation, no colour shift).
+    #[test]
+    fn evaluate_color_matrix_node_identity_srgb() {
+        #[rustfmt::skip]
+        let matrix = [
+            1.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 1.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 1.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 1.0, 0.0,
+        ];
+        let node = FilterPrimitiveNode {
+            region: Default::default(),
+            result: None,
+            color_interpolation_filters: ColorInterpolationFilters::Srgb,
+            primitive: FilterPrimitive::ColorMatrix {
+                input: crate::filter::FilterInput::SourceGraphic,
+                matrix,
+            },
+        };
+        let src = [0x40, 0x80, 0xC0, 0xFF];
+        let out = evaluate_color_matrix_node(&node, &src, 1, 1).unwrap();
+        assert_eq!(out, src);
+    }
+
+    #[test]
+    fn evaluate_color_matrix_node_declines_other_primitive() {
+        let node = FilterPrimitiveNode {
+            region: Default::default(),
+            result: None,
+            color_interpolation_filters: ColorInterpolationFilters::Srgb,
+            primitive: FilterPrimitive::Flood {
+                flood_color: FloodColor::default(),
+                flood_opacity: 1.0,
+            },
+        };
+        assert!(evaluate_color_matrix_node(&node, &[0; 4], 1, 1).is_none());
     }
 }
