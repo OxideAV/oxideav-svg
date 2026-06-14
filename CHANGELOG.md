@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   §15.12), for the two operators the staged specifications define
   **inline**:
   - **`over`** — the Porter-Duff `over`, given directly by SVG 1.1
-    §15.10 ("'normal' blend mode is equivalent to `operator="over"`"):
+    §15.9 ("'normal' blend mode is equivalent to `operator="over"`"):
     premultiplied `cr = (1 − qa)·cb + ca` per colour channel and
     `qr = 1 − (1 − qa)·(1 − qb)` for the result opacity, with image A
     the source (`in`) and image B the destination (`in2`).

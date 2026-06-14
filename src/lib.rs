@@ -401,7 +401,7 @@
 //!   `color-interpolation-filters` working space. Round 295 adds
 //!   `<feComposite>` ([`crate::filter_eval::composite`]) for the two
 //!   operators the staged specs define inline — Porter-Duff `over`
-//!   (SVG 1.1 §15.10/§15.12) and the `arithmetic`
+//!   (SVG 1.1 §15.9/§15.12) and the `arithmetic`
 //!   `k1·i1·i2 + k2·i1 + k3·i2 + k4` (Filter Effects §16 / SVG 1.1
 //!   §15.12); the `in`/`out`/`atop`/`xor` factor bodies live in the
 //!   un-staged `[PORTERDUFF]` reference and are left to the rasteriser.

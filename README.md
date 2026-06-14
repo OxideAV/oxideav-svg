@@ -227,7 +227,7 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
   primitive given an in-crate evaluator, in `crate::filter_eval`
   (Filter Effects Module Level 1 §16 / SVG 1.1 §15.12). Covers the two
   operators the staged specs define **inline**:
-  - **`over`** — Porter-Duff `over`, which SVG 1.1 §15.10 gives
+  - **`over`** — Porter-Duff `over`, which SVG 1.1 §15.9 gives
     directly via the `normal` blend-mode equivalence: premultiplied
     `cr = (1 − qa)·cb + ca` per colour channel, `qr = 1 − (1 − qa)·
     (1 − qb)`, with `in` as image A (source) and `in2` as image B

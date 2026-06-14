@@ -343,7 +343,7 @@ pub fn offset(src: &FilterImage, dx: f32, dy: f32) -> FilterImage {
 /// are evaluated here:
 ///
 /// * [`CompositeOperator::Over`] — the Porter-Duff `over`. SVG 1.1
-///   §15.10 states "'normal' blend mode is equivalent to
+///   §15.9 states "'normal' blend mode is equivalent to
 ///   `operator="over"`", and gives the premultiplied `normal`/`over`
 ///   formulae directly: `qr = 1 − (1 − qa)·(1 − qb)` for the result
 ///   opacity and `cr = (1 − qa)·cb + ca` for each premultiplied colour
@@ -377,7 +377,7 @@ pub fn composite(
                 [0.0; 4]
             };
             let px = match op {
-                // SVG 1.1 §15.10: cr = (1 − qa)·cb + ca per channel,
+                // SVG 1.1 §15.9: cr = (1 − qa)·cb + ca per channel,
                 // qr = 1 − (1 − qa)·(1 − qb). With premultiplied storage
                 // the colour and alpha rows are the same expression, so
                 // the four-component map covers both (the alpha row is
@@ -746,7 +746,7 @@ mod tests {
         assert!(FilterImage::from_rgba8(2, 2, &[0; 15], ColorInterpolationFilters::Srgb).is_none());
     }
 
-    // §15.10/§15.12 over: opaque source fully replaces the destination
+    // §15.9/§15.12 over: opaque source fully replaces the destination
     // (qr = 1, cr = ca since 1 − qa = 0).
     #[test]
     fn composite_over_opaque_source_replaces() {
