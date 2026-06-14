@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 308** — pixel-level evaluation of `<feFlood>` in
+  [`crate::filter_eval`] (Filter Effects Module Level 1 §9.13): "creates
+  a rectangle filled with the color and opacity values from properties
+  `flood-color` and `flood-opacity`. The rectangle is as large as the
+  filter primitive subregion." New [`crate::filter_eval::flood`] fills
+  the whole `width × height` subregion with one uniform pixel — the
+  §9.13.1 `flood-color` decoded into the node's resolved
+  `color-interpolation-filters` working space (§10), at the alpha
+  `flood-color.a × flood-opacity` (the colour's own alpha channel
+  multiplied with the §9.13.2 `flood-opacity`), stored premultiplied per
+  the [`crate::filter_eval::FilterImage`] convention. New
+  [`crate::filter_eval::evaluate_flood_node`] drives a parsed `Flood`
+  node end-to-end over a subregion size (the primitive has no pixel
+  input) and re-encodes to an 8-bit non-premultiplied sRGB RGBA buffer;
+  non-`Flood` nodes are declined. 8 unit tests pin the opaque-white
+  fill, alpha-only opacity scaling, the sRGB colour round-trip, the
+  linearRGB endpoint invariance, transparent-colour / zero-opacity
+  transparent-black, the default opaque-black node, and the decline
+  path. The `<feFlood>` primitive was already parsed (round 7); this
+  round gives it a node-level evaluator entry point, joining
+  `feColorMatrix` / `feComposite` / `feDropShadow`.
 - **Round 302** — pixel-level evaluation of `<feColorMatrix>` in
   [`crate::filter_eval`] (Filter Effects Module Level 1 §9.6). The
   parser already reduces every type variant to a flat row-major 4×5

@@ -395,6 +395,78 @@ pub fn offset(src: &FilterImage, dx: f32, dy: f32) -> FilterImage {
     out
 }
 
+/// `<feFlood>` per Filter Effects §9.13 — "creates a rectangle filled
+/// with the color and opacity values from properties `flood-color` and
+/// `flood-opacity`. The rectangle is as large as the filter primitive
+/// subregion established by the `feFlood` element."
+///
+/// The whole `width × height` buffer (the resolved subregion the caller
+/// passes) is set to one uniform pixel: the §9.13.1 `flood-color`
+/// decoded into the `space` working colour space, at the alpha
+/// `flood-color.a × flood-opacity` (the colour's own alpha channel
+/// multiplied with the §9.13.2 `flood-opacity`, matching the
+/// drop-shadow flood step). Storage is premultiplied
+/// ([`FilterImage`] convention), so each colour channel is
+/// `decoded-colour × alpha`.
+///
+/// `flood_opacity` is clamped to `[0, 1]` (the parser already clamps,
+/// but the builder is defensive for direct callers).
+pub fn flood(
+    width: usize,
+    height: usize,
+    flood_color: FloodColor,
+    flood_opacity: f32,
+    space: ColorInterpolationFilters,
+) -> FilterImage {
+    let a = (flood_color.a as f32 / 255.0) * flood_opacity.clamp(0.0, 1.0);
+    let linear = working_space_is_linear(space);
+    let decode = |c: u8| {
+        let v = c as f32 / 255.0;
+        if linear {
+            srgb_to_linear(v)
+        } else {
+            v
+        }
+    };
+    // Premultiplied: colour channel = decoded-colour × alpha.
+    let px = [
+        decode(flood_color.r) * a,
+        decode(flood_color.g) * a,
+        decode(flood_color.b) * a,
+        a,
+    ];
+    let mut out = FilterImage::new(width, height);
+    for chunk in out.data.chunks_exact_mut(4) {
+        chunk.copy_from_slice(&px);
+    }
+    out
+}
+
+/// Evaluate a parsed [`FilterPrimitiveNode`] holding a
+/// [`FilterPrimitive::Flood`] over the `width × height` subregion, in
+/// the node's resolved `color-interpolation-filters` working space.
+///
+/// `<feFlood>` has no pixel input — the subregion size is the only
+/// geometry — so this evaluator takes just the dimensions and returns
+/// the §9.13 uniform-fill buffer as an 8-bit non-premultiplied
+/// sRGB-encoded RGBA image. Returns `None` when the node is not a
+/// flood.
+pub fn evaluate_flood_node(
+    node: &FilterPrimitiveNode,
+    width: usize,
+    height: usize,
+) -> Option<Vec<u8>> {
+    let FilterPrimitive::Flood {
+        flood_color,
+        flood_opacity,
+    } = &node.primitive
+    else {
+        return None;
+    };
+    let space = node.color_interpolation_filters;
+    Some(flood(width, height, *flood_color, *flood_opacity, space).to_rgba8(space))
+}
+
 /// `<feComposite>` per Filter Effects §16 / SVG 1.1 §15.12 — the
 /// pixel-wise combination of two operands `i1` (`in`) and `i2` (`in2`).
 ///
@@ -1091,5 +1163,132 @@ mod tests {
             },
         };
         assert!(evaluate_color_matrix_node(&node, &[0; 4], 1, 1).is_none());
+    }
+
+    // §9.13 — opaque white flood, sRGB working space, opacity 1: every
+    // pixel is opaque white; decode/encode are no-ops in sRGB.
+    #[test]
+    fn flood_opaque_white_srgb_fills_whole_buffer() {
+        let fc = FloodColor {
+            r: 255,
+            g: 255,
+            b: 255,
+            a: 255,
+        };
+        let img = flood(2, 3, fc, 1.0, ColorInterpolationFilters::Srgb);
+        assert_eq!(img.width(), 2);
+        assert_eq!(img.height(), 3);
+        let out = img.to_rgba8(ColorInterpolationFilters::Srgb);
+        assert_eq!(out.len(), 2 * 3 * 4);
+        for px in out.chunks_exact(4) {
+            assert_eq!(px, [255, 255, 255, 255]);
+        }
+    }
+
+    // §9.13.2 — flood-opacity 0.5 halves the alpha; the un-premultiplied
+    // colour is unchanged (white stays white). 0.5 × 255 = 127.5 → 128.
+    #[test]
+    fn flood_opacity_scales_alpha_only() {
+        let fc = FloodColor {
+            r: 255,
+            g: 255,
+            b: 255,
+            a: 255,
+        };
+        let out = flood(1, 1, fc, 0.5, ColorInterpolationFilters::Srgb)
+            .to_rgba8(ColorInterpolationFilters::Srgb);
+        assert_eq!(out, [255, 255, 255, 128]);
+    }
+
+    // §9.13.1 — a coloured flood round-trips its sRGB bytes in the sRGB
+    // working space (no linearisation): green #008000 → [0, 128, 0, 255].
+    #[test]
+    fn flood_colour_srgb_roundtrips() {
+        let fc = FloodColor {
+            r: 0,
+            g: 128,
+            b: 0,
+            a: 255,
+        };
+        let out = flood(1, 1, fc, 1.0, ColorInterpolationFilters::Srgb)
+            .to_rgba8(ColorInterpolationFilters::Srgb);
+        assert_eq!(out, [0, 128, 0, 255]);
+    }
+
+    // §10 — in the linearRGB working space the colour is linearised on
+    // decode and re-encoded on output. The 0/255 endpoints are transfer
+    // fixed points, so an opaque red flood survives the round-trip.
+    #[test]
+    fn flood_endpoints_invariant_in_linear_space() {
+        let fc = FloodColor {
+            r: 255,
+            g: 0,
+            b: 0,
+            a: 255,
+        };
+        let out = flood(1, 1, fc, 1.0, ColorInterpolationFilters::LinearRgb)
+            .to_rgba8(ColorInterpolationFilters::LinearRgb);
+        assert_eq!(out, [255, 0, 0, 255]);
+    }
+
+    // A flood with a fully transparent flood-color (or opacity 0) is
+    // transparent black after un-premultiplication.
+    #[test]
+    fn flood_transparent_colour_is_transparent_black() {
+        let fc = FloodColor {
+            r: 200,
+            g: 100,
+            b: 50,
+            a: 0,
+        };
+        let out = flood(1, 1, fc, 1.0, ColorInterpolationFilters::Srgb)
+            .to_rgba8(ColorInterpolationFilters::Srgb);
+        assert_eq!(out, [0, 0, 0, 0]);
+        // opacity 0 with an opaque colour is equivalent.
+        let fc2 = FloodColor {
+            r: 200,
+            g: 100,
+            b: 50,
+            a: 255,
+        };
+        let out2 = flood(1, 1, fc2, 0.0, ColorInterpolationFilters::Srgb)
+            .to_rgba8(ColorInterpolationFilters::Srgb);
+        assert_eq!(out2, [0, 0, 0, 0]);
+    }
+
+    // The node-level evaluator drives the default flood (opaque black,
+    // opacity 1) end-to-end over an arbitrary subregion size.
+    #[test]
+    fn evaluate_flood_node_default_opaque_black() {
+        let node = FilterPrimitiveNode {
+            region: Default::default(),
+            result: None,
+            color_interpolation_filters: ColorInterpolationFilters::Srgb,
+            primitive: FilterPrimitive::Flood {
+                flood_color: FloodColor::default(),
+                flood_opacity: 1.0,
+            },
+        };
+        let out = evaluate_flood_node(&node, 2, 2).unwrap();
+        assert_eq!(out.len(), 2 * 2 * 4);
+        for px in out.chunks_exact(4) {
+            assert_eq!(px, [0, 0, 0, 255]);
+        }
+    }
+
+    // The flood evaluator declines a non-flood node so the caller can
+    // route elsewhere (mirrors the colour-matrix / composite decline).
+    #[test]
+    fn evaluate_flood_node_declines_other_primitive() {
+        let node = FilterPrimitiveNode {
+            region: Default::default(),
+            result: None,
+            color_interpolation_filters: ColorInterpolationFilters::Srgb,
+            primitive: FilterPrimitive::ColorMatrix {
+                input: crate::filter::FilterInput::SourceGraphic,
+                matrix: [0.0; 20],
+            },
+        };
+        assert!(evaluate_flood_node(&node, 1, 1).is_none());
     }
 }

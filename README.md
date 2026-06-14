@@ -221,6 +221,35 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
     §3.11 `overflow` / §13.10.3 `text-rendering` hints on the same
     group element.
 
+## Round 308 additions
+
+- **Pixel-level `<feFlood>` evaluation** — a fifth filter primitive
+  given an in-crate node-level evaluator, in `crate::filter_eval`
+  (Filter Effects Module Level 1 §9.13). §9.13 defines `<feFlood>` as
+  "a rectangle filled with the color and opacity values from properties
+  `flood-color` and `flood-opacity`", "as large as the filter primitive
+  subregion".
+  - `flood(width, height, flood_color, flood_opacity, space)` fills the
+    whole subregion with one uniform pixel: the §9.13.1 `flood-color`
+    decoded into the resolved `color-interpolation-filters` working
+    space (§10), at the alpha `flood-color.a × flood-opacity` (the
+    colour's own alpha channel multiplied with the §9.13.2
+    `flood-opacity`, matching the drop-shadow flood step). Storage is
+    premultiplied per the `FilterImage` convention, so each colour
+    channel is `decoded-colour × alpha`.
+  - `evaluate_flood_node` drives a parsed `FilterPrimitive::Flood` node
+    end-to-end over a subregion size — the primitive has no pixel input,
+    so the dimensions are the only geometry — and re-encodes to an
+    8-bit non-premultiplied sRGB RGBA buffer; non-`Flood` nodes are
+    declined so the caller can route elsewhere.
+  - 8 unit tests pin the opaque-white whole-buffer fill, alpha-only
+    opacity scaling (`0.5 × 255 → 128`), the sRGB colour round-trip,
+    the linearRGB endpoint invariance, transparent-colour /
+    zero-opacity transparent-black, the default opaque-black node, and
+    the decline path. The `<feFlood>` primitive was already parsed
+    (round 7); this round adds its node-level evaluator entry point
+    alongside `feColorMatrix` / `feComposite` / `feDropShadow`.
+
 ## Round 302 additions
 
 - **Pixel-level `<feColorMatrix>` evaluation** — the fourth filter
