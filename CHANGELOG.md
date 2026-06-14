@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Round 295** — pixel-level evaluation of `<feComposite>` in
+  [`crate::filter_eval`] (Filter Effects Module Level 1 §16 / SVG 1.1
+  §15.12), for the two operators the staged specifications define
+  **inline**:
+  - **`over`** — the Porter-Duff `over`, given directly by SVG 1.1
+    §15.10 ("'normal' blend mode is equivalent to `operator="over"`"):
+    premultiplied `cr = (1 − qa)·cb + ca` per colour channel and
+    `qr = 1 − (1 − qa)·(1 − qb)` for the result opacity, with image A
+    the source (`in`) and image B the destination (`in2`).
+  - **`arithmetic`** — the component-wise
+    `result = k1·i1·i2 + k2·i1 + k3·i2 + k4`, clamped to `[0, 1]`,
+    applied to every channel (alpha included) on the premultiplied
+    operands; `k1..k4` default to `0`.
+  - New [`crate::filter_eval::composite`] (two [`FilterImage`]
+    operands → one) and the node entry point
+    [`crate::filter_eval::evaluate_composite_node`], which decodes two
+    8-bit sRGB RGBA buffers into the node's resolved
+    `color-interpolation-filters` working space, evaluates, and
+    re-encodes. The node entry point **declines** (`None`) the
+    `in`/`out`/`atop`/`xor` operators whose formula bodies live in the
+    un-staged `[PORTERDUFF]` / `[COMPOSITING-1]` companion spec, so the
+    graph-level rasteriser can own those.
+  - 10 new unit tests covering opaque/transparent/partial-alpha `over`,
+    the arithmetic add / product / clamp terms, the un-staged-operator
+    pass-through, and both node-entry paths.
+
 - **Round 291** — SVG 1.1 §10.9.2 `dominant-baseline` property
   (`auto | use-script | no-change | reset-size | ideographic |
   alphabetic | hanging | mathematical | central | middle |

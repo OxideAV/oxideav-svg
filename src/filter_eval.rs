@@ -59,7 +59,9 @@
 //! that per §9.12 that same input feeds *both* the alpha→blur chain
 //! and the topmost merge node.
 
-use crate::filter::{ColorInterpolationFilters, FilterPrimitive, FilterPrimitiveNode, FloodColor};
+use crate::filter::{
+    ColorInterpolationFilters, CompositeOperator, FilterPrimitive, FilterPrimitiveNode, FloodColor,
+};
 
 /// An RGBA pixel buffer used as a filter-primitive operand.
 ///
@@ -324,6 +326,129 @@ pub fn offset(src: &FilterImage, dx: f32, dy: f32) -> FilterImage {
         }
     }
     out
+}
+
+/// `<feComposite>` per Filter Effects §16 / SVG 1.1 §15.12 — the
+/// pixel-wise combination of two operands `i1` (`in`) and `i2` (`in2`).
+///
+/// `i1` is the **source** and `i2` the **destination** (SVG 1.1 §15.12:
+/// "with `in` representing the source and `in2` representing the
+/// destination"). Both operands must share the same dimensions; `i2` is
+/// truncated/zero-extended to `i1`'s size and the result has `i1`'s
+/// dimensions.
+///
+/// ## Operators
+///
+/// Only the two operators the staged specifications define **inline**
+/// are evaluated here:
+///
+/// * [`CompositeOperator::Over`] — the Porter-Duff `over`. SVG 1.1
+///   §15.10 states "'normal' blend mode is equivalent to
+///   `operator="over"`", and gives the premultiplied `normal`/`over`
+///   formulae directly: `qr = 1 − (1 − qa)·(1 − qb)` for the result
+///   opacity and `cr = (1 − qa)·cb + ca` for each premultiplied colour
+///   channel, where image A is the source (`i1`) and image B is the
+///   destination (`i2`).
+/// * [`CompositeOperator::Arithmetic`] — the component-wise
+///   `result = k1·i1·i2 + k2·i1 + k3·i2 + k4`, clamped to `[0, 1]`,
+///   given inline in both Filter Effects §16 and SVG 1.1 §15.12 (with
+///   `k1..k4` defaulting to `0`). Per the spec the arithmetic operator
+///   is applied to every channel including alpha, on the premultiplied
+///   operands, then clamped.
+///
+/// The remaining Porter-Duff operators (`in`, `out`, `atop`, `xor`,
+/// `lighter`) have their formula bodies in the referenced
+/// `[PORTERDUFF]` / `[COMPOSITING-1]` companion specification, which is
+/// not staged under `docs/`; [`composite`] leaves those operands
+/// unevaluated (returns `i1` unchanged) rather than guess the factors.
+pub fn composite(
+    i1: &FilterImage,
+    i2: &FilterImage,
+    op: CompositeOperator,
+    k: [f32; 4],
+) -> FilterImage {
+    let mut out = FilterImage::new(i1.width, i1.height);
+    for y in 0..i1.height {
+        for x in 0..i1.width {
+            let a = i1.pixel(x, y);
+            let b = if x < i2.width && y < i2.height {
+                i2.pixel(x, y)
+            } else {
+                [0.0; 4]
+            };
+            let px = match op {
+                // SVG 1.1 §15.10: cr = (1 − qa)·cb + ca per channel,
+                // qr = 1 − (1 − qa)·(1 − qb). With premultiplied storage
+                // the colour and alpha rows are the same expression, so
+                // the four-component map covers both (the alpha row is
+                // 1 − (1 − qa)·(1 − qb) = (1 − qa)·qb + qa).
+                CompositeOperator::Over => {
+                    let inv_qa = 1.0 - a[3];
+                    [
+                        (1.0 - a[3]) * b[0] + a[0],
+                        (1.0 - a[3]) * b[1] + a[1],
+                        (1.0 - a[3]) * b[2] + a[2],
+                        inv_qa * b[3] + a[3],
+                    ]
+                }
+                // §16 / §15.12: result = k1·i1·i2 + k2·i1 + k3·i2 + k4,
+                // clamped to [0, 1], applied per channel (alpha included).
+                CompositeOperator::Arithmetic => {
+                    let mut r = [0.0f32; 4];
+                    for c in 0..4 {
+                        r[c] =
+                            (k[0] * a[c] * b[c] + k[1] * a[c] + k[2] * b[c] + k[3]).clamp(0.0, 1.0);
+                    }
+                    r
+                }
+                // in / out / atop / xor / lighter: formula bodies live in
+                // the un-staged [PORTERDUFF] reference — left unevaluated.
+                _ => a,
+            };
+            out.set_pixel(x, y, px);
+        }
+    }
+    out
+}
+
+/// Evaluate a parsed [`FilterPrimitiveNode`] holding a
+/// [`FilterPrimitive::Composite`] over two 8-bit non-premultiplied
+/// sRGB-encoded RGBA buffers (`i1` ← `in`, `i2` ← `in2`), in the node's
+/// resolved `color-interpolation-filters` working space.
+///
+/// Both buffers must be `width × height × 4`. Returns `None` when the
+/// node is not a composite, when a buffer length is wrong, or when the
+/// operator is one of the un-staged Porter-Duff factors
+/// (`in`/`out`/`atop`/`xor`) — callers can then fall back to the
+/// graph-level rasteriser for those.
+pub fn evaluate_composite_node(
+    node: &FilterPrimitiveNode,
+    in1_rgba8: &[u8],
+    in2_rgba8: &[u8],
+    width: usize,
+    height: usize,
+) -> Option<Vec<u8>> {
+    let FilterPrimitive::Composite {
+        operator,
+        k1,
+        k2,
+        k3,
+        k4,
+        ..
+    } = &node.primitive
+    else {
+        return None;
+    };
+    if !matches!(
+        operator,
+        CompositeOperator::Over | CompositeOperator::Arithmetic
+    ) {
+        return None;
+    }
+    let space = node.color_interpolation_filters;
+    let i1 = FilterImage::from_rgba8(width, height, in1_rgba8, space)?;
+    let i2 = FilterImage::from_rgba8(width, height, in2_rgba8, space)?;
+    Some(composite(&i1, &i2, *operator, [*k1, *k2, *k3, *k4]).to_rgba8(space))
 }
 
 /// The `<feDropShadow>` attribute set consumed by [`drop_shadow`].
@@ -619,5 +744,155 @@ mod tests {
     #[test]
     fn from_rgba8_rejects_bad_length() {
         assert!(FilterImage::from_rgba8(2, 2, &[0; 15], ColorInterpolationFilters::Srgb).is_none());
+    }
+
+    // §15.10/§15.12 over: opaque source fully replaces the destination
+    // (qr = 1, cr = ca since 1 − qa = 0).
+    #[test]
+    fn composite_over_opaque_source_replaces() {
+        let mut a = FilterImage::new(1, 1);
+        a.set_pixel(0, 0, [0.3, 0.4, 0.5, 1.0]);
+        let mut b = FilterImage::new(1, 1);
+        b.set_pixel(0, 0, [0.9, 0.9, 0.9, 1.0]);
+        let out = composite(&a, &b, CompositeOperator::Over, [0.0; 4]);
+        assert_eq!(out.pixel(0, 0), [0.3, 0.4, 0.5, 1.0]);
+    }
+
+    // over: transparent source leaves the destination untouched
+    // (1 − qa = 1, ca = 0 → cr = cb, qr = qb).
+    #[test]
+    fn composite_over_transparent_source_is_destination() {
+        let a = FilterImage::new(1, 1); // transparent black
+        let mut b = FilterImage::new(1, 1);
+        b.set_pixel(0, 0, [0.2, 0.4, 0.6, 0.8]);
+        let out = composite(&a, &b, CompositeOperator::Over, [0.0; 4]);
+        let p = out.pixel(0, 0);
+        for (o, e) in p.iter().zip([0.2, 0.4, 0.6, 0.8]) {
+            assert!((o - e).abs() < 1e-6, "{o} vs {e}");
+        }
+    }
+
+    // over: half-alpha source over opaque-white destination.
+    // qa = 0.5, premult ca = [0.5,0,0,0.5]; cb = [1,1,1,1], qb = 1.
+    // cr = (1−0.5)·cb + ca = [1.0, 0.5, 0.5, 1.0]; qr = 1.
+    #[test]
+    fn composite_over_partial_alpha_blend() {
+        let mut a = FilterImage::new(1, 1);
+        a.set_pixel(0, 0, [0.5, 0.0, 0.0, 0.5]);
+        let mut b = FilterImage::new(1, 1);
+        b.set_pixel(0, 0, [1.0, 1.0, 1.0, 1.0]);
+        let out = composite(&a, &b, CompositeOperator::Over, [0.0; 4]);
+        let p = out.pixel(0, 0);
+        for (o, e) in p.iter().zip([1.0, 0.5, 0.5, 1.0]) {
+            assert!((o - e).abs() < 1e-6, "{o} vs {e}");
+        }
+    }
+
+    // §16/§15.12 arithmetic: result = k1·i1·i2 + k2·i1 + k3·i2 + k4.
+    // k = (0,1,1,0) is the additive "lighter"-style sum i1 + i2.
+    #[test]
+    fn composite_arithmetic_add() {
+        let mut a = FilterImage::new(1, 1);
+        a.set_pixel(0, 0, [0.2, 0.0, 0.0, 0.2]);
+        let mut b = FilterImage::new(1, 1);
+        b.set_pixel(0, 0, [0.3, 0.0, 0.0, 0.3]);
+        let out = composite(&a, &b, CompositeOperator::Arithmetic, [0.0, 1.0, 1.0, 0.0]);
+        let p = out.pixel(0, 0);
+        for (o, e) in p.iter().zip([0.5, 0.0, 0.0, 0.5]) {
+            assert!((o - e).abs() < 1e-6, "{o} vs {e}");
+        }
+    }
+
+    // arithmetic clamps the per-channel result to [0, 1].
+    #[test]
+    fn composite_arithmetic_clamps() {
+        let mut a = FilterImage::new(1, 1);
+        a.set_pixel(0, 0, [0.8, 0.0, 0.0, 0.8]);
+        let mut b = FilterImage::new(1, 1);
+        b.set_pixel(0, 0, [0.8, 0.0, 0.0, 0.8]);
+        // k4 bias pushes channels above 1 (clamp) and the green
+        // channel below 0 via negative k4 elsewhere is covered by the
+        // clamp branch too.
+        let out = composite(&a, &b, CompositeOperator::Arithmetic, [0.0, 1.0, 1.0, 0.5]);
+        assert_eq!(out.pixel(0, 0)[0], 1.0);
+        // k2·i1 + k4 on the (zero) green channel = 0 + 0.5 = 0.5.
+        assert!((out.pixel(0, 0)[1] - 0.5).abs() < 1e-6);
+    }
+
+    // k1·i1·i2 product term: i1 = i2 = 1 (alpha) → k1·1·1 = k1.
+    #[test]
+    fn composite_arithmetic_product_term() {
+        let mut a = FilterImage::new(1, 1);
+        a.set_pixel(0, 0, [0.0, 0.0, 0.0, 1.0]);
+        let mut b = FilterImage::new(1, 1);
+        b.set_pixel(0, 0, [0.0, 0.0, 0.0, 1.0]);
+        let out = composite(&a, &b, CompositeOperator::Arithmetic, [0.5, 0.0, 0.0, 0.0]);
+        assert!((out.pixel(0, 0)[3] - 0.5).abs() < 1e-6);
+    }
+
+    // Un-staged Porter-Duff operators pass i1 through unchanged.
+    #[test]
+    fn composite_unstaged_operator_returns_source() {
+        let mut a = FilterImage::new(1, 1);
+        a.set_pixel(0, 0, [0.1, 0.2, 0.3, 0.4]);
+        let mut b = FilterImage::new(1, 1);
+        b.set_pixel(0, 0, [0.9, 0.9, 0.9, 0.9]);
+        for op in [
+            CompositeOperator::In,
+            CompositeOperator::Out,
+            CompositeOperator::Atop,
+            CompositeOperator::Xor,
+        ] {
+            assert_eq!(composite(&a, &b, op, [0.0; 4]), a, "{op:?}");
+        }
+    }
+
+    // Node entry point: arithmetic add of two opaque sRGB greys in the
+    // sRGB working space (no linearisation) sums the premultiplied
+    // channels. 0x40 + 0x40 = 0x80.
+    #[test]
+    fn evaluate_composite_node_arithmetic_srgb() {
+        let node = FilterPrimitiveNode {
+            region: Default::default(),
+            result: None,
+            color_interpolation_filters: ColorInterpolationFilters::Srgb,
+            primitive: FilterPrimitive::Composite {
+                input: crate::filter::FilterInput::SourceGraphic,
+                input2: crate::filter::FilterInput::SourceGraphic,
+                operator: CompositeOperator::Arithmetic,
+                k1: 0.0,
+                k2: 1.0,
+                k3: 1.0,
+                k4: 0.0,
+            },
+        };
+        let i1 = [0x40, 0x40, 0x40, 0xFF];
+        let i2 = [0x40, 0x40, 0x40, 0xFF];
+        let out = evaluate_composite_node(&node, &i1, &i2, 1, 1).unwrap();
+        // Premult sum: 0x40/255 + 0x40/255 = 0x80/255 → 0x80; alpha
+        // 1 + 1 clamps to 1 → 0xFF.
+        assert_eq!(&out[..3], &[0x80, 0x80, 0x80]);
+        assert_eq!(out[3], 0xFF);
+    }
+
+    // Node entry point declines the un-staged operators so the caller
+    // can fall back to the graph-level rasteriser.
+    #[test]
+    fn evaluate_composite_node_declines_unstaged() {
+        let node = FilterPrimitiveNode {
+            region: Default::default(),
+            result: None,
+            color_interpolation_filters: ColorInterpolationFilters::Srgb,
+            primitive: FilterPrimitive::Composite {
+                input: crate::filter::FilterInput::SourceGraphic,
+                input2: crate::filter::FilterInput::SourceGraphic,
+                operator: CompositeOperator::In,
+                k1: 0.0,
+                k2: 0.0,
+                k3: 0.0,
+                k4: 0.0,
+            },
+        };
+        assert!(evaluate_composite_node(&node, &[0; 4], &[0; 4], 1, 1).is_none());
     }
 }

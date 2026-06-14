@@ -221,6 +221,30 @@ relevant XML subset is small enough for a hand-rolled SAX parser.
     §3.11 `overflow` / §13.10.3 `text-rendering` hints on the same
     group element.
 
+## Round 295 additions
+
+- **Pixel-level `<feComposite>` evaluation** — the second filter
+  primitive given an in-crate evaluator, in `crate::filter_eval`
+  (Filter Effects Module Level 1 §16 / SVG 1.1 §15.12). Covers the two
+  operators the staged specs define **inline**:
+  - **`over`** — Porter-Duff `over`, which SVG 1.1 §15.10 gives
+    directly via the `normal` blend-mode equivalence: premultiplied
+    `cr = (1 − qa)·cb + ca` per colour channel, `qr = 1 − (1 − qa)·
+    (1 − qb)`, with `in` as image A (source) and `in2` as image B
+    (destination);
+  - **`arithmetic`** — `result = k1·i1·i2 + k2·i1 + k3·i2 + k4`,
+    clamped to `[0, 1]`, per channel (alpha included), `k1..k4`
+    default `0`;
+  - `composite(i1, i2, op, k)` operates on two premultiplied
+    `FilterImage` operands; `evaluate_composite_node` decodes two
+    8-bit sRGB buffers into the node's resolved
+    `color-interpolation-filters` space, evaluates, re-encodes. Both
+    **decline** `in`/`out`/`atop`/`xor` (formula bodies in the
+    un-staged `[PORTERDUFF]` reference) so the rasteriser owns them.
+  - 10 unit tests in `filter_eval` pin opaque/transparent/partial-alpha
+    `over`, the arithmetic add/product/clamp terms, and the
+    operator-decline paths.
+
 ## Round 283 additions
 
 - **Pixel-level `<feDropShadow>` evaluation** — the crate's first

@@ -398,7 +398,13 @@
 //!   Filter Effects §9.12 equivalent composite) is evaluated in-crate
 //!   by [`crate::filter_eval`] over [`crate::filter_eval::FilterImage`]
 //!   pixel buffers, honouring the resolved
-//!   `color-interpolation-filters` working space.
+//!   `color-interpolation-filters` working space. Round 295 adds
+//!   `<feComposite>` ([`crate::filter_eval::composite`]) for the two
+//!   operators the staged specs define inline — Porter-Duff `over`
+//!   (SVG 1.1 §15.10/§15.12) and the `arithmetic`
+//!   `k1·i1·i2 + k2·i1 + k3·i2 + k4` (Filter Effects §16 / SVG 1.1
+//!   §15.12); the `in`/`out`/`atop`/`xor` factor bodies live in the
+//!   un-staged `[PORTERDUFF]` reference and are left to the rasteriser.
 //! * `marker-start` / `marker-mid` / `marker-end` *rendering* — painting
 //!   the marker graphics at shape vertices with `orient` rotation +
 //!   `markerUnits` scaling (SVG 2 §13.7.4) needs a `Marker` construct in
