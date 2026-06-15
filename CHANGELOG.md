@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/OxideAV/oxideav-svg/compare/v0.1.6...v0.2.0) - 2026-06-15
+
+### Added
+
+- round 260 — SVG 2 §15.6 pointer-events property + inherited cascade + round-trip
+- round 257 — SVG 2 §3.11 overflow property + non-inherited cascade + round-trip
+- round 252 — SVG 2 §13.9 color-interpolation property + inherited cascade + round-trip
+- round 247 — SVG 2 §13.10.1 color-rendering property + inherited cascade + round-trip
+- round 235 — SVG 2 §13.10.4 image-rendering property + inherited cascade + round-trip
+- round 228 — SVG 2 §13.10.3 text-rendering property + inherited cascade + round-trip
+- round 221 — SVG 2 §13.10.2 shape-rendering property + inherited cascade + round-trip
+- round 215 — SVG 1.1 §14.3.5 clip-rule property + scope-restricted cascade
+
+### Other
+
+- pixel-level <feFlood> evaluation (Filter Effects §9.13)
+- pixel-level <feColorMatrix> evaluation (Filter Effects L1 §9.6)
+- round 295 — correct feBlend citation §15.10 → §15.9
+- round 295 — pixel-level feComposite (over + arithmetic) in filter_eval
+- round 291 — SVG 1.1 §10.9.2 dominant-baseline property (parse + non-inherited cascade + round-trip)
+- round 283: pixel-level feDropShadow evaluation per Filter Effects §9.12 equivalent composite
+- complete SVG 1.1 §15.3 <filter> attribute set — filterRes + xlink:href chain inheritance
+- capture <filter> filterUnits/primitiveUnits/color-interpolation-filters
+- Round 261: SVG 1.1 §16.8.2 cursor property — parse + inherited cascade + round-trip
+- neutralise pre-existing authoring-tool attribution in <metadata> comment
+- drop release-plz.toml — use release-plz defaults across the workspace
+- *(svg)* reorder CHANGELOG — round 215 entry above 0.1.6 section
+
 ### Added
 
 - **Round 308** — pixel-level evaluation of `<feFlood>` in
