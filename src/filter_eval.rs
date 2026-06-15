@@ -60,7 +60,8 @@
 //! and the topmost merge node.
 
 use crate::filter::{
-    ColorInterpolationFilters, CompositeOperator, FilterPrimitive, FilterPrimitiveNode, FloodColor,
+    ColorInterpolationFilters, CompositeOperator, EdgeMode, FilterPrimitive, FilterPrimitiveNode,
+    FloodColor,
 };
 
 /// `<feColorMatrix>` per Filter Effects §9.6 — the matrix transform
@@ -285,10 +286,50 @@ fn box_size(s: f32) -> u32 {
     (s * 3.0 * (2.0 * std::f32::consts::PI).sqrt() / 4.0 + 0.5).floor() as u32
 }
 
-/// One box-blur pass along one axis: `out[i] = mean(in[i+lo ..= i+hi])`
-/// with the §9.14 initial `edgeMode` of `none` (out-of-image samples
-/// are transparent black).
-fn box_blur_axis(src: &FilterImage, lo: isize, hi: isize, horizontal: bool) -> FilterImage {
+/// Resolve a sample coordinate `c` against an axis of `len` pixels under
+/// the §9.14 `edgeMode` policy, returning the in-image index to read, or
+/// `None` when the sample should contribute transparent black.
+///
+/// * [`EdgeMode::None`] — out-of-range samples read as zero (§9.14:
+///   "the input image is extended with pixel values of zero for R, G, B
+///   and A"). This is the §9.14 *initial* value of `edgeMode`.
+/// * [`EdgeMode::Duplicate`] — clamp to the nearest border pixel (§9.14:
+///   "extended along each of its borders … by duplicating the color
+///   values at the given edge").
+/// * [`EdgeMode::Wrap`] — toroidal sampling (§9.14: "extended by taking
+///   the color values from the opposite edge"). Uses Euclidean modulo so
+///   negative coordinates wrap to the high edge.
+fn edge_sample(c: isize, len: usize, mode: EdgeMode) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let n = len as isize;
+    match mode {
+        EdgeMode::None => {
+            if c >= 0 && c < n {
+                Some(c as usize)
+            } else {
+                None
+            }
+        }
+        EdgeMode::Duplicate => Some(c.clamp(0, n - 1) as usize),
+        EdgeMode::Wrap => Some(c.rem_euclid(n) as usize),
+    }
+}
+
+/// One box-blur pass along one axis: `out[i] = mean(in[i+lo ..= i+hi])`,
+/// extending the input at the image border per the §9.14 `edgeMode`
+/// ([`edge_sample`]). With [`EdgeMode::None`] (the §9.14 initial value)
+/// out-of-image samples are transparent black; `duplicate` clamps to the
+/// edge pixel and `wrap` reads from the opposite edge, so neither mode
+/// loses alpha mass at the border.
+fn box_blur_axis(
+    src: &FilterImage,
+    lo: isize,
+    hi: isize,
+    horizontal: bool,
+    mode: EdgeMode,
+) -> FilterImage {
     let n = (hi - lo + 1) as f32;
     let mut out = FilterImage::new(src.width, src.height);
     for y in 0..src.height {
@@ -296,12 +337,12 @@ fn box_blur_axis(src: &FilterImage, lo: isize, hi: isize, horizontal: bool) -> F
             let mut acc = [0.0f32; 4];
             for t in lo..=hi {
                 let (sx, sy) = if horizontal {
-                    (x as isize + t, y as isize)
+                    (edge_sample(x as isize + t, src.width, mode), Some(y))
                 } else {
-                    (x as isize, y as isize + t)
+                    (Some(x), edge_sample(y as isize + t, src.height, mode))
                 };
-                if sx >= 0 && (sx as usize) < src.width && sy >= 0 && (sy as usize) < src.height {
-                    let p = src.pixel(sx as usize, sy as usize);
+                if let (Some(sx), Some(sy)) = (sx, sy) {
+                    let p = src.pixel(sx, sy);
                     for (a, v) in acc.iter_mut().zip(p) {
                         *a += v;
                     }
@@ -326,9 +367,16 @@ fn box_blur_axis(src: &FilterImage, lo: isize, hi: isize, horizontal: bool) -> F
 ///
 /// Per §9.14 a negative `stdDeviation` disables the primitive (the
 /// result is the input image), while a zero on only one axis blurs the
-/// other axis alone. Edge handling is the §9.14 initial `edgeMode`
-/// `none` (zero extension).
-pub fn gaussian_blur(src: &FilterImage, std_dev_x: f32, std_dev_y: f32) -> FilterImage {
+/// other axis alone. `edge_mode` selects the border policy (§9.14): the
+/// initial value is [`EdgeMode::None`] (zero extension), with
+/// `duplicate` clamping to the edge pixel and `wrap` reading from the
+/// opposite edge.
+pub fn gaussian_blur_edge(
+    src: &FilterImage,
+    std_dev_x: f32,
+    std_dev_y: f32,
+    edge_mode: EdgeMode,
+) -> FilterImage {
     let mut img = src.clone();
     if std_dev_x < 0.0 || std_dev_y < 0.0 {
         return img;
@@ -341,16 +389,24 @@ pub fn gaussian_blur(src: &FilterImage, std_dev_x: f32, std_dev_y: f32) -> Filte
         if d % 2 == 1 {
             let r = (d - 1) / 2;
             for _ in 0..3 {
-                img = box_blur_axis(&img, -r, r, horizontal);
+                img = box_blur_axis(&img, -r, r, horizontal, edge_mode);
             }
         } else {
             let h = d / 2;
-            img = box_blur_axis(&img, -h, h - 1, horizontal);
-            img = box_blur_axis(&img, -h + 1, h, horizontal);
-            img = box_blur_axis(&img, -h, h, horizontal);
+            img = box_blur_axis(&img, -h, h - 1, horizontal, edge_mode);
+            img = box_blur_axis(&img, -h + 1, h, horizontal, edge_mode);
+            img = box_blur_axis(&img, -h, h, horizontal, edge_mode);
         }
     }
     img
+}
+
+/// `<feGaussianBlur>` with the §9.14 initial `edgeMode` of `none` (zero
+/// extension). A thin wrapper over [`gaussian_blur_edge`] kept for the
+/// `<feDropShadow>` chain, whose §9.12 equivalent composite is defined
+/// with the initial `edgeMode`.
+pub fn gaussian_blur(src: &FilterImage, std_dev_x: f32, std_dev_y: f32) -> FilterImage {
+    gaussian_blur_edge(src, std_dev_x, std_dev_y, EdgeMode::None)
 }
 
 /// `<feOffset>` per Filter Effects §9.18:
@@ -738,9 +794,120 @@ pub fn evaluate_drop_shadow_node(
     Some(drop_shadow(&src, &params, space).to_rgba8(space))
 }
 
+/// `<feMerge>` per Filter Effects §9.16 — "composites input image layers
+/// on top of each other using the `over` operator with Input1
+/// (corresponding to the first `feMergeNode` child element) on the bottom
+/// and the last specified input, InputN … on top."
+///
+/// The §9.16 result is the left fold of the Porter-Duff `over` operator
+/// over the operands bottom-to-top: starting from the first layer as the
+/// destination, each later layer is composited *over* the running
+/// accumulator with [`composite`]`(top, acc, Over, …)` (the §15.9 `over`
+/// where the source operand is the upper layer). The associativity §9.16
+/// notes is exactly what lets the n layers collapse into this single
+/// fold.
+///
+/// All operands must share the same dimensions; mismatched layers are
+/// zero-extended / truncated to `width × height` by [`composite`]. An
+/// empty `layers` list yields a transparent-black `width × height`
+/// buffer (no input to render). The operands are already in the working
+/// colour space (§10); `over` is colour-space-agnostic premultiplied
+/// arithmetic.
+pub fn merge(layers: &[FilterImage], width: usize, height: usize) -> FilterImage {
+    let mut acc = FilterImage::new(width, height);
+    for layer in layers {
+        // §9.16: the later layer is the upper (source) operand of `over`,
+        // the running accumulator is the lower (destination).
+        acc = composite(layer, &acc, CompositeOperator::Over, [0.0; 4]);
+    }
+    acc
+}
+
+/// Evaluate a parsed [`FilterPrimitiveNode`] holding a
+/// [`FilterPrimitive::Merge`] over its already-resolved input layers, in
+/// the node's resolved `color-interpolation-filters` working space (§10).
+///
+/// `inputs_rgba8` supplies one 8-bit non-premultiplied sRGB-encoded RGBA
+/// buffer per `<feMergeNode>`, in document order (first node = bottom
+/// layer, last = top), each `width × height × 4`. Returns `None` when the
+/// node is not a merge, when the supplied buffer count does not match the
+/// node's `feMergeNode` count, or when any buffer length is wrong.
+pub fn evaluate_merge_node(
+    node: &FilterPrimitiveNode,
+    inputs_rgba8: &[&[u8]],
+    width: usize,
+    height: usize,
+) -> Option<Vec<u8>> {
+    let FilterPrimitive::Merge { inputs } = &node.primitive else {
+        return None;
+    };
+    if inputs.len() != inputs_rgba8.len() {
+        return None;
+    }
+    let space = node.color_interpolation_filters;
+    let mut layers = Vec::with_capacity(inputs_rgba8.len());
+    for buf in inputs_rgba8 {
+        layers.push(FilterImage::from_rgba8(width, height, buf, space)?);
+    }
+    Some(merge(&layers, width, height).to_rgba8(space))
+}
+
+/// Evaluate a parsed [`FilterPrimitiveNode`] holding a
+/// [`FilterPrimitive::Offset`] over an 8-bit non-premultiplied
+/// sRGB-encoded RGBA buffer, in the node's resolved
+/// `color-interpolation-filters` working space (§10).
+///
+/// Applies the §9.18 shift `out(x, y) = in(x − dx, y − dy)` via
+/// [`offset`] (fractional offsets bilinear-interpolated). Returns `None`
+/// when the node is not an offset or when
+/// `source_rgba8.len() != width * height * 4`.
+pub fn evaluate_offset_node(
+    node: &FilterPrimitiveNode,
+    source_rgba8: &[u8],
+    width: usize,
+    height: usize,
+) -> Option<Vec<u8>> {
+    let FilterPrimitive::Offset { dx, dy, .. } = &node.primitive else {
+        return None;
+    };
+    let space = node.color_interpolation_filters;
+    let src = FilterImage::from_rgba8(width, height, source_rgba8, space)?;
+    Some(offset(&src, *dx, *dy).to_rgba8(space))
+}
+
+/// Evaluate a parsed [`FilterPrimitiveNode`] holding a
+/// [`FilterPrimitive::GaussianBlur`] over an 8-bit non-premultiplied
+/// sRGB-encoded RGBA buffer, in the node's resolved
+/// `color-interpolation-filters` working space (§10).
+///
+/// Runs the §9.14 three-box-blur approximation ([`gaussian_blur_edge`])
+/// with the node's parsed `edgeMode`. Returns `None` when the node is
+/// not a Gaussian blur or when `source_rgba8.len() != width * height *
+/// 4`.
+pub fn evaluate_gaussian_blur_node(
+    node: &FilterPrimitiveNode,
+    source_rgba8: &[u8],
+    width: usize,
+    height: usize,
+) -> Option<Vec<u8>> {
+    let FilterPrimitive::GaussianBlur {
+        std_deviation_x,
+        std_deviation_y,
+        edge_mode,
+        ..
+    } = &node.primitive
+    else {
+        return None;
+    };
+    let space = node.color_interpolation_filters;
+    let src = FilterImage::from_rgba8(width, height, source_rgba8, space)?;
+    Some(gaussian_blur_edge(&src, *std_deviation_x, *std_deviation_y, *edge_mode).to_rgba8(space))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::filter::FilterInput;
 
     // §9.14 — d = floor(s * 3 * sqrt(2π) / 4 + 0.5).
     #[test]
@@ -1290,5 +1457,258 @@ mod tests {
             },
         };
         assert!(evaluate_flood_node(&node, 1, 1).is_none());
+    }
+
+    // §9.14 edgeMode `duplicate`: a uniform opaque field stays uniform —
+    // border pixels read the duplicated edge value, so no alpha is lost
+    // to the border (unlike `none`, which darkens the edge).
+    #[test]
+    fn blur_duplicate_preserves_uniform_field() {
+        let mut img = FilterImage::new(5, 5);
+        for y in 0..5 {
+            for x in 0..5 {
+                img.set_pixel(x, y, [0.0, 0.0, 0.0, 1.0]);
+            }
+        }
+        let out = gaussian_blur_edge(&img, 2.0, 2.0, EdgeMode::Duplicate);
+        for y in 0..5 {
+            for x in 0..5 {
+                assert!(
+                    (out.pixel(x, y)[3] - 1.0).abs() < 1e-5,
+                    "({x},{y}) = {}",
+                    out.pixel(x, y)[3]
+                );
+            }
+        }
+    }
+
+    // `none` on the same uniform field loses mass at the border — the
+    // corner is the darkest, the centre the brightest. This is the
+    // distinguishing behaviour from `duplicate`.
+    #[test]
+    fn blur_none_darkens_border() {
+        let mut img = FilterImage::new(5, 5);
+        for y in 0..5 {
+            for x in 0..5 {
+                img.set_pixel(x, y, [0.0, 0.0, 0.0, 1.0]);
+            }
+        }
+        let out = gaussian_blur_edge(&img, 2.0, 2.0, EdgeMode::None);
+        assert!(out.pixel(0, 0)[3] < out.pixel(2, 2)[3]);
+        assert!(out.pixel(2, 2)[3] <= 1.0);
+    }
+
+    // §9.14 edgeMode `wrap`: a single lit column blurred horizontally
+    // with wrap leaks mass across the left/right seam, so the opposite
+    // edge column gains alpha that `none` would have dropped.
+    #[test]
+    fn blur_wrap_leaks_across_seam() {
+        let mut img = FilterImage::new(5, 1);
+        img.set_pixel(0, 0, [0.0, 0.0, 0.0, 1.0]); // left-edge impulse
+        let wrapped = gaussian_blur_edge(&img, 0.8, 0.0, EdgeMode::Wrap);
+        let clamped = gaussian_blur_edge(&img, 0.8, 0.0, EdgeMode::None);
+        // The d=2 kernel reaches two pixels each side; under wrap the
+        // right edge (x=4) sees the impulse's left tail.
+        assert!(wrapped.pixel(4, 0)[3] > 0.0);
+        assert_eq!(clamped.pixel(4, 0)[3], 0.0);
+    }
+
+    // edge_sample unit coverage for the three modes at both borders.
+    #[test]
+    fn edge_sample_modes() {
+        assert_eq!(edge_sample(-1, 4, EdgeMode::None), None);
+        assert_eq!(edge_sample(4, 4, EdgeMode::None), None);
+        assert_eq!(edge_sample(2, 4, EdgeMode::None), Some(2));
+        assert_eq!(edge_sample(-3, 4, EdgeMode::Duplicate), Some(0));
+        assert_eq!(edge_sample(9, 4, EdgeMode::Duplicate), Some(3));
+        assert_eq!(edge_sample(-1, 4, EdgeMode::Wrap), Some(3));
+        assert_eq!(edge_sample(5, 4, EdgeMode::Wrap), Some(1));
+        assert_eq!(edge_sample(0, 0, EdgeMode::Duplicate), None);
+    }
+
+    // §9.16 merge: empty layer list is a transparent-black buffer.
+    #[test]
+    fn merge_empty_is_transparent_black() {
+        let out = merge(&[], 2, 2);
+        assert_eq!(out.width(), 2);
+        assert_eq!(out.height(), 2);
+        for y in 0..2 {
+            for x in 0..2 {
+                assert_eq!(out.pixel(x, y), [0.0; 4]);
+            }
+        }
+    }
+
+    // §9.16: one layer merges to itself (over transparent black).
+    #[test]
+    fn merge_single_layer_is_identity() {
+        let mut a = FilterImage::new(1, 1);
+        a.set_pixel(0, 0, [0.2, 0.4, 0.6, 0.8]);
+        let out = merge(std::slice::from_ref(&a), 1, 1);
+        let p = out.pixel(0, 0);
+        for (o, e) in p.iter().zip([0.2, 0.4, 0.6, 0.8]) {
+            assert!((o - e).abs() < 1e-6, "{o} vs {e}");
+        }
+    }
+
+    // §9.16: last node on top — an opaque top layer fully hides the
+    // bottom layer (over with qa=1 → result is the source).
+    #[test]
+    fn merge_opaque_top_hides_bottom() {
+        let mut bottom = FilterImage::new(1, 1);
+        bottom.set_pixel(0, 0, [0.9, 0.0, 0.0, 1.0]);
+        let mut top = FilterImage::new(1, 1);
+        top.set_pixel(0, 0, [0.0, 0.0, 0.5, 1.0]);
+        // [bottom, top]: top is last → on top.
+        let out = merge(&[bottom, top], 1, 1);
+        assert_eq!(out.pixel(0, 0), [0.0, 0.0, 0.5, 1.0]);
+    }
+
+    // §9.16 ordering matters: swapping which layer is last flips which
+    // colour shows through for two opaque layers.
+    #[test]
+    fn merge_order_determines_topmost() {
+        let mut red = FilterImage::new(1, 1);
+        red.set_pixel(0, 0, [0.8, 0.0, 0.0, 1.0]);
+        let mut blue = FilterImage::new(1, 1);
+        blue.set_pixel(0, 0, [0.0, 0.0, 0.8, 1.0]);
+        let red_top = merge(&[blue.clone(), red.clone()], 1, 1);
+        let blue_top = merge(&[red, blue], 1, 1);
+        assert_eq!(red_top.pixel(0, 0), [0.8, 0.0, 0.0, 1.0]);
+        assert_eq!(blue_top.pixel(0, 0), [0.0, 0.0, 0.8, 1.0]);
+    }
+
+    // §9.16: half-alpha top over opaque bottom blends per `over`.
+    // top premult [0.5,0,0,0.5], bottom [0,0,1,1]:
+    // cr = (1−0.5)·cb + ca = [0.5, 0, 0.5, 1.0]; qr = 1.
+    #[test]
+    fn merge_partial_alpha_blends() {
+        let mut bottom = FilterImage::new(1, 1);
+        bottom.set_pixel(0, 0, [0.0, 0.0, 1.0, 1.0]);
+        let mut top = FilterImage::new(1, 1);
+        top.set_pixel(0, 0, [0.5, 0.0, 0.0, 0.5]);
+        let out = merge(&[bottom, top], 1, 1);
+        let p = out.pixel(0, 0);
+        for (o, e) in p.iter().zip([0.5, 0.0, 0.5, 1.0]) {
+            assert!((o - e).abs() < 1e-6, "{o} vs {e}");
+        }
+    }
+
+    fn node(primitive: FilterPrimitive) -> FilterPrimitiveNode {
+        FilterPrimitiveNode {
+            region: Default::default(),
+            result: None,
+            color_interpolation_filters: ColorInterpolationFilters::Srgb,
+            primitive,
+        }
+    }
+
+    // Node entry point for merge: two opaque sRGB layers, last on top.
+    #[test]
+    fn evaluate_merge_node_two_layers() {
+        let n = node(FilterPrimitive::Merge {
+            inputs: vec![FilterInput::SourceGraphic, FilterInput::SourceGraphic],
+        });
+        let bottom = [0xFF, 0x00, 0x00, 0xFF];
+        let top = [0x00, 0x00, 0xFF, 0xFF];
+        let out = evaluate_merge_node(&n, &[&bottom, &top], 1, 1).unwrap();
+        assert_eq!(out, [0x00, 0x00, 0xFF, 0xFF]);
+    }
+
+    // Node entry point declines when the supplied buffer count does not
+    // match the feMergeNode count.
+    #[test]
+    fn evaluate_merge_node_count_mismatch_declines() {
+        let n = node(FilterPrimitive::Merge {
+            inputs: vec![FilterInput::SourceGraphic, FilterInput::SourceGraphic],
+        });
+        let only = [0u8; 4];
+        assert!(evaluate_merge_node(&n, &[&only], 1, 1).is_none());
+    }
+
+    #[test]
+    fn evaluate_merge_node_declines_other_primitive() {
+        let n = node(FilterPrimitive::Flood {
+            flood_color: FloodColor::default(),
+            flood_opacity: 1.0,
+        });
+        assert!(evaluate_merge_node(&n, &[], 1, 1).is_none());
+    }
+
+    // Node entry point for offset: integer shift moves the lit pixel.
+    #[test]
+    fn evaluate_offset_node_shifts() {
+        let n = node(FilterPrimitive::Offset {
+            input: FilterInput::SourceGraphic,
+            dx: 1.0,
+            dy: 0.0,
+        });
+        // 2×1 sRGB: lit pixel at x=0.
+        let src = [0x10, 0x20, 0x30, 0xFF, 0x00, 0x00, 0x00, 0x00];
+        let out = evaluate_offset_node(&n, &src, 2, 1).unwrap();
+        // Shifts right by 1 → x=1 carries the colour, x=0 transparent.
+        assert_eq!(&out[..4], &[0x00, 0x00, 0x00, 0x00]);
+        assert_eq!(&out[4..], &[0x10, 0x20, 0x30, 0xFF]);
+    }
+
+    #[test]
+    fn evaluate_offset_node_declines_other_primitive() {
+        let n = node(FilterPrimitive::Flood {
+            flood_color: FloodColor::default(),
+            flood_opacity: 1.0,
+        });
+        assert!(evaluate_offset_node(&n, &[0; 4], 1, 1).is_none());
+    }
+
+    // Node entry point for Gaussian blur: zero stdDeviation is a no-op.
+    #[test]
+    fn evaluate_gaussian_blur_node_zero_is_identity() {
+        let n = node(FilterPrimitive::GaussianBlur {
+            input: FilterInput::SourceGraphic,
+            std_deviation_x: 0.0,
+            std_deviation_y: 0.0,
+            edge_mode: EdgeMode::None,
+        });
+        let src = [0x40, 0x80, 0xC0, 0xFF];
+        let out = evaluate_gaussian_blur_node(&n, &src, 1, 1).unwrap();
+        assert_eq!(out, src);
+    }
+
+    // Node entry point honours the parsed edgeMode: a 1×1 opaque pixel
+    // blurred with `duplicate` stays opaque (the border duplicates), but
+    // with `none` it loses alpha to the (zero) surround.
+    #[test]
+    fn evaluate_gaussian_blur_node_edge_mode_honoured() {
+        let src = [0x00, 0x00, 0x00, 0xFF];
+        let dup = node(FilterPrimitive::GaussianBlur {
+            input: FilterInput::SourceGraphic,
+            std_deviation_x: 2.0,
+            std_deviation_y: 2.0,
+            edge_mode: EdgeMode::Duplicate,
+        });
+        let out_dup = evaluate_gaussian_blur_node(&dup, &src, 1, 1).unwrap();
+        // Single-pixel field under duplicate: every sample is the pixel
+        // itself → unchanged opaque.
+        assert_eq!(out_dup, [0x00, 0x00, 0x00, 0xFF]);
+
+        let none = node(FilterPrimitive::GaussianBlur {
+            input: FilterInput::SourceGraphic,
+            std_deviation_x: 2.0,
+            std_deviation_y: 2.0,
+            edge_mode: EdgeMode::None,
+        });
+        let out_none = evaluate_gaussian_blur_node(&none, &src, 1, 1).unwrap();
+        // Under `none` the lone pixel's mass spreads into the zero
+        // surround that a 1×1 buffer cannot hold → alpha drops below 255.
+        assert!(out_none[3] < 0xFF, "alpha {} not reduced", out_none[3]);
+    }
+
+    #[test]
+    fn evaluate_gaussian_blur_node_declines_other_primitive() {
+        let n = node(FilterPrimitive::Flood {
+            flood_color: FloodColor::default(),
+            flood_opacity: 1.0,
+        });
+        assert!(evaluate_gaussian_blur_node(&n, &[0; 4], 1, 1).is_none());
     }
 }

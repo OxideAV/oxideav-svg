@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- round 318 — pixel-level `<feMerge>`, `<feOffset>`, and
+  `<feGaussianBlur>` node evaluators in [`crate::filter_eval`] (Filter
+  Effects Module Level 1 §9.16 / §9.18 / §9.14). `feMerge` composites its
+  `<feMergeNode>` layers bottom-to-top with the §9.16 `over` operator
+  (`merge` + `evaluate_merge_node`). `feGaussianBlur` now honours all
+  three §9.14 `edgeMode` values — `none` (the spec initial value, zero
+  extension), `duplicate` (clamp to the edge pixel) and `wrap` (toroidal
+  sampling) — via the new edge-aware `gaussian_blur_edge` /
+  `evaluate_gaussian_blur_node`; the existing `none`-only `gaussian_blur`
+  is retained for the `<feDropShadow>` §9.12 equivalent composite.
+  `feOffset` gains a node entry point (`evaluate_offset_node`) over the
+  already-implemented §9.18 bilinear shift. 20 new unit tests cover the
+  three edge modes, the merge z-order/blend semantics, and each node
+  evaluator's decline path.
+
 ## [0.1.7](https://github.com/OxideAV/oxideav-svg/compare/v0.1.6...v0.1.7) - 2026-06-15
 
 ### Added

@@ -34,8 +34,10 @@ the IR cannot model directly via a `PreservedExtras` side-channel.
   a typed `FilterGraph`, with the `<filter>` element's
   coordinate-system / colour-space / `filterRes` / href-inheritance
   attributes captured. In-crate pixel-level evaluators exist for
-  `feDropShadow`, `feComposite`, `feColorMatrix`, and `feFlood`; the
-  general filter pixel pipeline is `oxideav-raster` work.
+  `feDropShadow`, `feComposite`, `feColorMatrix`, `feFlood`,
+  `feGaussianBlur` (all three `edgeMode`s — `none` / `duplicate` /
+  `wrap`), `feOffset`, and `feMerge` (the §9.16 bottom-to-top `over`
+  stack); the general filter pixel pipeline is `oxideav-raster` work.
 * **Markers** — `<marker>` definitions parse into a typed `MarkerDef`
   and round-trip; vertex placement / `orient` rendering is deferred to a
   core `Marker` node.
