@@ -60,8 +60,8 @@
 //! and the topmost merge node.
 
 use crate::filter::{
-    ColorInterpolationFilters, CompositeOperator, EdgeMode, FilterPrimitive, FilterPrimitiveNode,
-    FloodColor,
+    BlendMode, ColorInterpolationFilters, CompositeOperator, EdgeMode, FilterPrimitive,
+    FilterPrimitiveNode, FloodColor,
 };
 
 /// `<feColorMatrix>` per Filter Effects §9.6 — the matrix transform
@@ -644,6 +644,138 @@ pub fn evaluate_composite_node(
     let i1 = FilterImage::from_rgba8(width, height, in1_rgba8, space)?;
     let i2 = FilterImage::from_rgba8(width, height, in2_rgba8, space)?;
     Some(composite(&i1, &i2, *operator, [*k1, *k2, *k3, *k4]).to_rgba8(space))
+}
+
+/// `<feBlend>` per Filter Effects §9.5 / SVG 1.1 §15.9 — a pixel-wise
+/// combination of two operands where `i1` (`in`) is image **A** (the
+/// source `Cs`) and `i2` (`in2`) is image **B** (the backdrop `Cb`).
+///
+/// The result opacity is the same for every mode (SVG 1.1 §15.9):
+///
+/// ```text
+/// qr = 1 − (1 − qa)·(1 − qb)
+/// ```
+///
+/// and the premultiplied result colour `cr` per channel is, with
+/// `ca` / `cb` the premultiplied source / backdrop colour and
+/// `qa` / `qb` their opacities (SVG 1.1 §15.9 blending-mode table):
+///
+/// * [`BlendMode::Normal`] — `cr = (1 − qa)·cb + ca`. Identical to the
+///   Porter-Duff `over` (`in` over `in2`); §15.9 states `normal` "is
+///   equivalent to `operator="over"` on the `feComposite` primitive".
+/// * [`BlendMode::Multiply`] — `cr = (1 − qa)·cb + (1 − qb)·ca + ca·cb`.
+/// * [`BlendMode::Screen`] — `cr = cb + ca − ca·cb`.
+/// * [`BlendMode::Darken`] —
+///   `cr = min((1 − qa)·cb + ca, (1 − qb)·ca + cb)`.
+/// * [`BlendMode::Lighten`] —
+///   `cr = max((1 − qa)·cb + ca, (1 − qb)·ca + cb)`.
+///
+/// All five formulae operate directly on the premultiplied storage of
+/// [`FilterImage`]; the colour rows use the four-component expression
+/// above per channel and the alpha row is the common `qr` (which for
+/// the `normal` mode equals `(1 − qa)·qb + qa`, and is supplied
+/// explicitly for the others so the colour-only `min`/`max` of `darken`
+/// / `lighten` do not leak into the alpha channel).
+///
+/// `i2` is truncated / zero-extended to `i1`'s dimensions and the result
+/// has `i1`'s dimensions, matching [`composite`].
+///
+/// The remaining eleven `<blend-mode>` values (`overlay`,
+/// `color-dodge`, `color-burn`, `hard-light`, `soft-light`,
+/// `difference`, `exclusion`, `hue`, `saturation`, `color`,
+/// `luminosity`) have their mixing formulae in the `[COMPOSITING-1]`
+/// companion specification, which is not staged under `docs/`; [`blend`]
+/// leaves those operands unevaluated (returns `i1` unchanged) rather
+/// than guess the factors.
+pub fn blend(i1: &FilterImage, i2: &FilterImage, mode: BlendMode) -> FilterImage {
+    let mut out = FilterImage::new(i1.width, i1.height);
+    for y in 0..i1.height {
+        for x in 0..i1.width {
+            let a = i1.pixel(x, y);
+            let b = if x < i2.width && y < i2.height {
+                i2.pixel(x, y)
+            } else {
+                [0.0; 4]
+            };
+            let (qa, qb) = (a[3], b[3]);
+            // §15.9: qr = 1 − (1 − qa)·(1 − qb), shared by every mode.
+            let qr = 1.0 - (1.0 - qa) * (1.0 - qb);
+            let px = match mode {
+                // cr = (1 − qa)·cb + ca per channel — the Porter-Duff
+                // `over`. The colour rows and the alpha row coincide
+                // because (1 − qa)·qb + qa = qr.
+                BlendMode::Normal => [
+                    (1.0 - qa) * b[0] + a[0],
+                    (1.0 - qa) * b[1] + a[1],
+                    (1.0 - qa) * b[2] + a[2],
+                    qr,
+                ],
+                // cr = (1 − qa)·cb + (1 − qb)·ca + ca·cb.
+                BlendMode::Multiply => {
+                    let f = |ca: f32, cb: f32| (1.0 - qa) * cb + (1.0 - qb) * ca + ca * cb;
+                    [f(a[0], b[0]), f(a[1], b[1]), f(a[2], b[2]), qr]
+                }
+                // cr = cb + ca − ca·cb.
+                BlendMode::Screen => {
+                    let f = |ca: f32, cb: f32| cb + ca - ca * cb;
+                    [f(a[0], b[0]), f(a[1], b[1]), f(a[2], b[2]), qr]
+                }
+                // cr = min((1 − qa)·cb + ca, (1 − qb)·ca + cb).
+                BlendMode::Darken => {
+                    let f = |ca: f32, cb: f32| ((1.0 - qa) * cb + ca).min((1.0 - qb) * ca + cb);
+                    [f(a[0], b[0]), f(a[1], b[1]), f(a[2], b[2]), qr]
+                }
+                // cr = max((1 − qa)·cb + ca, (1 − qb)·ca + cb).
+                BlendMode::Lighten => {
+                    let f = |ca: f32, cb: f32| ((1.0 - qa) * cb + ca).max((1.0 - qb) * ca + cb);
+                    [f(a[0], b[0]), f(a[1], b[1]), f(a[2], b[2]), qr]
+                }
+                // overlay / color-dodge / color-burn / hard-light /
+                // soft-light / difference / exclusion / hue / saturation
+                // / color / luminosity: formulae live in the un-staged
+                // [COMPOSITING-1] reference — left unevaluated.
+                _ => a,
+            };
+            out.set_pixel(x, y, px);
+        }
+    }
+    out
+}
+
+/// Evaluate a parsed [`FilterPrimitiveNode`] holding a
+/// [`FilterPrimitive::Blend`] over two 8-bit non-premultiplied
+/// sRGB-encoded RGBA buffers (`i1` ← `in`, `i2` ← `in2`), in the node's
+/// resolved `color-interpolation-filters` working space.
+///
+/// Both buffers must be `width × height × 4`. Returns `None` when the
+/// node is not a blend, when a buffer length is wrong, or when the mode
+/// is one of the un-staged `[COMPOSITING-1]` modes
+/// (`overlay`/`color-dodge`/…/`luminosity`) — callers can then fall
+/// back to the graph-level rasteriser for those.
+pub fn evaluate_blend_node(
+    node: &FilterPrimitiveNode,
+    in1_rgba8: &[u8],
+    in2_rgba8: &[u8],
+    width: usize,
+    height: usize,
+) -> Option<Vec<u8>> {
+    let FilterPrimitive::Blend { mode, .. } = &node.primitive else {
+        return None;
+    };
+    if !matches!(
+        mode,
+        BlendMode::Normal
+            | BlendMode::Multiply
+            | BlendMode::Screen
+            | BlendMode::Darken
+            | BlendMode::Lighten
+    ) {
+        return None;
+    }
+    let space = node.color_interpolation_filters;
+    let i1 = FilterImage::from_rgba8(width, height, in1_rgba8, space)?;
+    let i2 = FilterImage::from_rgba8(width, height, in2_rgba8, space)?;
+    Some(blend(&i1, &i2, *mode).to_rgba8(space))
 }
 
 /// The `<feDropShadow>` attribute set consumed by [`drop_shadow`].
@@ -1710,5 +1842,143 @@ mod tests {
             flood_opacity: 1.0,
         });
         assert!(evaluate_gaussian_blur_node(&n, &[0; 4], 1, 1).is_none());
+    }
+
+    // §15.9 `normal` is identical to the Porter-Duff `over`: an opaque
+    // source (qa = 1) fully replaces the backdrop (cr = ca, qr = 1).
+    #[test]
+    fn blend_normal_matches_over() {
+        let mut a = FilterImage::new(1, 1);
+        a.set_pixel(0, 0, [0.3, 0.4, 0.5, 1.0]);
+        let mut b = FilterImage::new(1, 1);
+        b.set_pixel(0, 0, [0.9, 0.9, 0.9, 1.0]);
+        let blended = blend(&a, &b, BlendMode::Normal);
+        let over = composite(&a, &b, CompositeOperator::Over, [0.0; 4]);
+        assert_eq!(blended.pixel(0, 0), over.pixel(0, 0));
+        assert_eq!(blended.pixel(0, 0), [0.3, 0.4, 0.5, 1.0]);
+    }
+
+    // §15.9 multiply of two opaque pixels: with qa = qb = 1 the two
+    // (1 − q)·c terms vanish, so cr = ca·cb per channel and qr = 1.
+    #[test]
+    fn blend_multiply_opaque_is_product() {
+        let mut a = FilterImage::new(1, 1);
+        a.set_pixel(0, 0, [0.5, 0.8, 1.0, 1.0]);
+        let mut b = FilterImage::new(1, 1);
+        b.set_pixel(0, 0, [0.4, 0.5, 0.2, 1.0]);
+        let out = blend(&a, &b, BlendMode::Multiply);
+        let p = out.pixel(0, 0);
+        assert!((p[0] - 0.5 * 0.4).abs() < 1e-6, "{}", p[0]);
+        assert!((p[1] - 0.8 * 0.5).abs() < 1e-6, "{}", p[1]);
+        assert!((p[2] - 1.0 * 0.2).abs() < 1e-6, "{}", p[2]);
+        assert_eq!(p[3], 1.0);
+    }
+
+    // §15.9 screen of two opaque pixels: cr = cb + ca − ca·cb. White on
+    // anything is white; black is the identity.
+    #[test]
+    fn blend_screen_opaque() {
+        let mut white = FilterImage::new(1, 1);
+        white.set_pixel(0, 0, [1.0, 1.0, 1.0, 1.0]);
+        let mut grey = FilterImage::new(1, 1);
+        grey.set_pixel(0, 0, [0.4, 0.4, 0.4, 1.0]);
+        // White screened over grey → white.
+        let w = blend(&white, &grey, BlendMode::Screen).pixel(0, 0);
+        assert_eq!(&w[..3], &[1.0, 1.0, 1.0]);
+        // Black is the screen identity → backdrop unchanged.
+        let mut black = FilterImage::new(1, 1);
+        black.set_pixel(0, 0, [0.0, 0.0, 0.0, 1.0]);
+        let g = blend(&black, &grey, BlendMode::Screen).pixel(0, 0);
+        for &c in g.iter().take(3) {
+            assert!((c - 0.4).abs() < 1e-6, "{c}");
+        }
+    }
+
+    // §15.9 darken/lighten of two opaque pixels reduce to the per-channel
+    // min/max of the two colours (with qa = qb = 1 the boundary terms are
+    // (1 − q)·c = 0, leaving min(ca, cb) and max(ca, cb)).
+    #[test]
+    fn blend_darken_lighten_opaque_min_max() {
+        let mut a = FilterImage::new(1, 1);
+        a.set_pixel(0, 0, [0.2, 0.7, 0.5, 1.0]);
+        let mut b = FilterImage::new(1, 1);
+        b.set_pixel(0, 0, [0.6, 0.3, 0.5, 1.0]);
+        let dark = blend(&a, &b, BlendMode::Darken).pixel(0, 0);
+        assert_eq!(&dark[..3], &[0.2, 0.3, 0.5]);
+        let light = blend(&a, &b, BlendMode::Lighten).pixel(0, 0);
+        assert_eq!(&light[..3], &[0.6, 0.7, 0.5]);
+        assert_eq!(dark[3], 1.0);
+        assert_eq!(light[3], 1.0);
+    }
+
+    // The shared opacity rule qr = 1 − (1 − qa)·(1 − qb) holds for every
+    // staged mode (half-transparent over half-transparent → 0.75).
+    #[test]
+    fn blend_result_opacity_is_shared() {
+        let mut a = FilterImage::new(1, 1);
+        a.set_pixel(0, 0, [0.0, 0.0, 0.0, 0.5]);
+        let mut b = FilterImage::new(1, 1);
+        b.set_pixel(0, 0, [0.0, 0.0, 0.0, 0.5]);
+        for mode in [
+            BlendMode::Normal,
+            BlendMode::Multiply,
+            BlendMode::Screen,
+            BlendMode::Darken,
+            BlendMode::Lighten,
+        ] {
+            let q = blend(&a, &b, mode).pixel(0, 0)[3];
+            assert!((q - 0.75).abs() < 1e-6, "{mode:?}: {q}");
+        }
+    }
+
+    // `in2` smaller than `in` zero-extends to transparent black, and the
+    // result keeps `in`'s dimensions (matching `composite`).
+    #[test]
+    fn blend_in2_zero_extends() {
+        let mut a = FilterImage::new(2, 1);
+        a.set_pixel(0, 0, [0.3, 0.3, 0.3, 1.0]);
+        a.set_pixel(1, 0, [0.7, 0.7, 0.7, 1.0]);
+        let b = FilterImage::new(1, 1); // transparent black, narrower
+        let out = blend(&a, &b, BlendMode::Normal);
+        assert_eq!(out.width(), 2);
+        // Over transparent black both source pixels pass through unchanged.
+        assert_eq!(out.pixel(0, 0), [0.3, 0.3, 0.3, 1.0]);
+        assert_eq!(out.pixel(1, 0), [0.7, 0.7, 0.7, 1.0]);
+    }
+
+    // Node entry point: `normal` over an opaque sRGB pair reproduces the
+    // source (qa = 1).
+    #[test]
+    fn evaluate_blend_node_normal_srgb() {
+        let n = node(FilterPrimitive::Blend {
+            input: FilterInput::SourceGraphic,
+            input2: FilterInput::SourceGraphic,
+            mode: BlendMode::Normal,
+        });
+        let i1 = [0x40, 0x80, 0xC0, 0xFF];
+        let i2 = [0x10, 0x20, 0x30, 0xFF];
+        let out = evaluate_blend_node(&n, &i1, &i2, 1, 1).unwrap();
+        assert_eq!(out, i1);
+    }
+
+    // Node entry point declines the un-staged [COMPOSITING-1] modes so
+    // the caller can fall back to the graph-level rasteriser.
+    #[test]
+    fn evaluate_blend_node_declines_unstaged() {
+        let n = node(FilterPrimitive::Blend {
+            input: FilterInput::SourceGraphic,
+            input2: FilterInput::SourceGraphic,
+            mode: BlendMode::Overlay,
+        });
+        assert!(evaluate_blend_node(&n, &[0; 4], &[0; 4], 1, 1).is_none());
+    }
+
+    #[test]
+    fn evaluate_blend_node_declines_other_primitive() {
+        let n = node(FilterPrimitive::Flood {
+            flood_color: FloodColor::default(),
+            flood_opacity: 1.0,
+        });
+        assert!(evaluate_blend_node(&n, &[0; 4], &[0; 4], 1, 1).is_none());
     }
 }

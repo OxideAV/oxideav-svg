@@ -36,8 +36,11 @@ the IR cannot model directly via a `PreservedExtras` side-channel.
   attributes captured. In-crate pixel-level evaluators exist for
   `feDropShadow`, `feComposite`, `feColorMatrix`, `feFlood`,
   `feGaussianBlur` (all three `edgeMode`s — `none` / `duplicate` /
-  `wrap`), `feOffset`, and `feMerge` (the §9.16 bottom-to-top `over`
-  stack); the general filter pixel pipeline is `oxideav-raster` work.
+  `wrap`), `feOffset`, `feMerge` (the §9.16 bottom-to-top `over`
+  stack), and `feBlend` (the five SVG 1.1 §15.9 modes — `normal` /
+  `multiply` / `screen` / `darken` / `lighten`; the other eleven
+  `<blend-mode>` values defer to the un-staged `[COMPOSITING-1]`
+  formulae); the general filter pixel pipeline is `oxideav-raster` work.
 * **Markers** — `<marker>` definitions parse into a typed `MarkerDef`
   and round-trip; vertex placement / `orient` rendering is deferred to a
   core `Marker` node.

@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- round 323 — pixel-level `<feBlend>` node evaluator in
+  [`crate::filter_eval`] (`blend` + `evaluate_blend_node`). Implements
+  the five blend modes SVG 1.1 §15.9 / Filter Effects §9.5 define inline
+  — `normal`, `multiply`, `screen`, `darken`, `lighten` — over the
+  premultiplied [`crate::filter_eval::FilterImage`] storage, with `in`
+  the source image A (`Cs`), `in2` the backdrop image B (`Cb`), shared
+  result opacity `qr = 1 − (1 − qa)·(1 − qb)`, and the resolved
+  `color-interpolation-filters` working space. The remaining eleven
+  `<blend-mode>` values (`overlay`, `color-dodge`, `color-burn`,
+  `hard-light`, `soft-light`, `difference`, `exclusion`, `hue`,
+  `saturation`, `color`, `luminosity`) defer to the un-staged
+  `[COMPOSITING-1]` mixing formulae and are declined for the
+  graph-level rasteriser. 9 new unit tests cover each mode's algebra,
+  the shared opacity rule, `in2` zero-extension, the node entry point,
+  and its decline paths.
 - round 318 — pixel-level `<feMerge>`, `<feOffset>`, and
   `<feGaussianBlur>` node evaluators in [`crate::filter_eval`] (Filter
   Effects Module Level 1 §9.16 / §9.18 / §9.14). `feMerge` composites its

@@ -405,6 +405,12 @@
 //!   `k1·i1·i2 + k2·i1 + k3·i2 + k4` (Filter Effects §16 / SVG 1.1
 //!   §15.12); the `in`/`out`/`atop`/`xor` factor bodies live in the
 //!   un-staged `[PORTERDUFF]` reference and are left to the rasteriser.
+//!   Round 323 adds `<feBlend>` ([`crate::filter_eval::blend`]) for the
+//!   five blend modes SVG 1.1 §15.9 defines inline — `normal`,
+//!   `multiply`, `screen`, `darken`, `lighten` (on premultiplied colour,
+//!   `qr = 1 − (1 − qa)·(1 − qb)`); the other eleven `<blend-mode>`
+//!   values defer to the un-staged `[COMPOSITING-1]` mixing formulae and
+//!   are left to the rasteriser.
 //! * `marker-start` / `marker-mid` / `marker-end` *rendering* — painting
 //!   the marker graphics at shape vertices with `orient` rotation +
 //!   `markerUnits` scaling (SVG 2 §13.7.4) needs a `Marker` construct in
