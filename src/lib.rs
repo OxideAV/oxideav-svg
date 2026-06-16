@@ -410,7 +410,11 @@
 //!   `multiply`, `screen`, `darken`, `lighten` (on premultiplied colour,
 //!   `qr = 1 − (1 − qa)·(1 − qb)`); the other eleven `<blend-mode>`
 //!   values defer to the un-staged `[COMPOSITING-1]` mixing formulae and
-//!   are left to the rasteriser.
+//!   are left to the rasteriser. Round 327 adds `<feComponentTransfer>`
+//!   ([`crate::filter_eval::component_transfer`]) — the §9.7 per-channel
+//!   remap `R' = feFuncR(R)`, … with the `identity` / `table` / `discrete`
+//!   / `linear` / `gamma` transfer functions defined inline (computed on
+//!   non-premultiplied colour, then re-premultiplied for storage).
 //! * `marker-start` / `marker-mid` / `marker-end` *rendering* — painting
 //!   the marker graphics at shape vertices with `orient` rotation +
 //!   `markerUnits` scaling (SVG 2 §13.7.4) needs a `Marker` construct in

@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- round 327 — pixel-level `<feComponentTransfer>` node evaluator in
+  [`crate::filter_eval`] (`component_transfer` +
+  `evaluate_component_transfer_node`). Implements the Filter Effects
+  Module Level 1 §9.7 per-channel remap `R' = feFuncR(R)`,
+  `G' = feFuncG(G)`, `B' = feFuncB(B)`, `A' = feFuncA(A)` over the
+  premultiplied [`crate::filter_eval::FilterImage`] storage. Each
+  `<feFunc*>` transfer function is evaluated on non-premultiplied colour
+  per the spec and re-premultiplied for storage; all five inline-defined
+  types are honoured — `identity` (`C' = C`), `table` (piecewise-linear
+  interpolation between the `n + 1` `tableValues`, `C = 1 → vn`),
+  `discrete` (`n`-step `C' = v_floor(C·n)`, `C = 1 → v(n−1)`), `linear`
+  (`C' = slope·C + intercept`), and `gamma`
+  (`C' = amplitude·pow(C, exponent) + offset`) — with results clamped to
+  `[0, 1]` in the resolved `color-interpolation-filters` working space.
+  11 new unit tests cover each transfer-function formula, the table /
+  discrete degenerate (empty / single-value) cases, the
+  non-premultiplied round-trip, the transparent-pixel path, the node
+  entry point (identity + discrete threshold), and its decline path.
 - round 323 — pixel-level `<feBlend>` node evaluator in
   [`crate::filter_eval`] (`blend` + `evaluate_blend_node`). Implements
   the five blend modes SVG 1.1 §15.9 / Filter Effects §9.5 define inline

@@ -61,7 +61,7 @@
 
 use crate::filter::{
     BlendMode, ColorInterpolationFilters, CompositeOperator, EdgeMode, FilterPrimitive,
-    FilterPrimitiveNode, FloodColor,
+    FilterPrimitiveNode, FloodColor, TransferFunction,
 };
 
 /// `<feColorMatrix>` per Filter Effects §9.6 — the matrix transform
@@ -1036,6 +1036,141 @@ pub fn evaluate_gaussian_blur_node(
     Some(gaussian_blur_edge(&src, *std_deviation_x, *std_deviation_y, *edge_mode).to_rgba8(space))
 }
 
+/// Apply one [`TransferFunction`] to a single non-premultiplied colour
+/// component `c ∈ [0, 1]` per Filter Effects §9.7 (the transfer-function
+/// element definitions). `C` is the input component, `C'` the remapped
+/// component; both in the closed interval `[0, 1]`.
+///
+/// * `identity` — `C' = C`.
+/// * `table` — the `n + 1` entries `v0..vn` bound `n` evenly-sized
+///   interpolation regions. For `C < 1`, find `k` with
+///   `k/n ≤ C < (k+1)/n`; then `C' = vk + (C − k/n)·n·(v(k+1) − vk)`.
+///   For `C = 1`, `C' = vn`. An empty list (or a single value) collapses
+///   to the identity / constant the spec mandates.
+/// * `discrete` — the `n` entries `v0..v(n−1)` form an `n`-step function.
+///   For `C < 1`, `C' = vk` with `k = floor(C·n)`; for `C = 1`,
+///   `C' = v(n−1)`.
+/// * `linear` — `C' = slope·C + intercept`.
+/// * `gamma` — `C' = amplitude·pow(C, exponent) + offset`.
+///
+/// The result is clamped to `[0, 1]` (the spec defines the working
+/// component range as the closed unit interval); `tableValues` entries
+/// themselves are used verbatim by the interpolation before that clamp.
+fn apply_transfer(func: &TransferFunction, c: f32) -> f32 {
+    let mapped = match func {
+        TransferFunction::Identity => c,
+        TransferFunction::Table { values } => match values.len() {
+            // "An empty list results in an identity transfer function."
+            0 => c,
+            // A single value gives n = 0 regions; the formula is undefined
+            // there, so the lone sample is the constant output.
+            1 => values[0],
+            len => {
+                let n = len - 1;
+                if c >= 1.0 {
+                    values[n]
+                } else {
+                    // k/n ≤ C < (k+1)/n  ⇒  k = floor(C·n), bounded to n−1.
+                    let k = ((c * n as f32).floor() as usize).min(n - 1);
+                    let vk = values[k];
+                    let vk1 = values[k + 1];
+                    vk + (c - k as f32 / n as f32) * n as f32 * (vk1 - vk)
+                }
+            }
+        },
+        TransferFunction::Discrete { values } => match values.len() {
+            0 => c,
+            len => {
+                let n = len;
+                if c >= 1.0 {
+                    values[n - 1]
+                } else {
+                    // k = floor(C·n), bounded to n−1 for C just below 1.
+                    let k = ((c * n as f32).floor() as usize).min(n - 1);
+                    values[k]
+                }
+            }
+        },
+        TransferFunction::Linear { slope, intercept } => slope * c + intercept,
+        TransferFunction::Gamma {
+            amplitude,
+            exponent,
+            offset,
+        } => amplitude * c.max(0.0).powf(*exponent) + offset,
+    };
+    mapped.clamp(0.0, 1.0)
+}
+
+/// `<feComponentTransfer>` per Filter Effects §9.7 — per-channel
+/// remapping `R' = feFuncR(R)`, `G' = feFuncG(G)`, `B' = feFuncB(B)`,
+/// `A' = feFuncA(A)` for every pixel ([`apply_transfer`] supplies the
+/// per-component map).
+///
+/// §9.7 is explicit that "the calculations are performed on
+/// **non-premultiplied** color values", so this routine un-premultiplies
+/// each [`FilterImage`] pixel, applies the four transfer functions, and
+/// re-premultiplies by the transformed alpha for storage. The colour
+/// channels are already in the [`FilterImage`]'s working colour space
+/// (§10), where the per-channel functions act.
+pub fn component_transfer(
+    src: &FilterImage,
+    red: &TransferFunction,
+    green: &TransferFunction,
+    blue: &TransferFunction,
+    alpha: &TransferFunction,
+) -> FilterImage {
+    let mut out = FilterImage::new(src.width, src.height);
+    for (dst, s) in out.data.chunks_exact_mut(4).zip(src.data.chunks_exact(4)) {
+        // Un-premultiply to recover the non-premultiplied operand §9.7
+        // requires; a transparent pixel has no defined colour, so feed
+        // zeros through the colour functions there.
+        let a = s[3];
+        let unp = if a > 0.0 {
+            [s[0] / a, s[1] / a, s[2] / a, a]
+        } else {
+            [0.0, 0.0, 0.0, 0.0]
+        };
+        let r = apply_transfer(red, unp[0]);
+        let g = apply_transfer(green, unp[1]);
+        let b = apply_transfer(blue, unp[2]);
+        let na = apply_transfer(alpha, unp[3]);
+        // Re-premultiply by the transformed alpha for storage.
+        dst[0] = r * na;
+        dst[1] = g * na;
+        dst[2] = b * na;
+        dst[3] = na;
+    }
+    out
+}
+
+/// Evaluate a parsed [`FilterPrimitiveNode`] holding a
+/// [`FilterPrimitive::ComponentTransfer`] over an 8-bit non-premultiplied
+/// sRGB-encoded RGBA buffer, in the node's resolved
+/// `color-interpolation-filters` working space (§10).
+///
+/// Returns `None` when the node is not a component transfer or when
+/// `source_rgba8.len() != width * height * 4`.
+pub fn evaluate_component_transfer_node(
+    node: &FilterPrimitiveNode,
+    source_rgba8: &[u8],
+    width: usize,
+    height: usize,
+) -> Option<Vec<u8>> {
+    let FilterPrimitive::ComponentTransfer {
+        red,
+        green,
+        blue,
+        alpha,
+        ..
+    } = &node.primitive
+    else {
+        return None;
+    };
+    let space = node.color_interpolation_filters;
+    let src = FilterImage::from_rgba8(width, height, source_rgba8, space)?;
+    Some(component_transfer(&src, red, green, blue, alpha).to_rgba8(space))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1462,6 +1597,208 @@ mod tests {
             },
         };
         assert!(evaluate_color_matrix_node(&node, &[0; 4], 1, 1).is_none());
+    }
+
+    // --- §9.7 feComponentTransfer ---------------------------------------
+
+    // identity transfer is the pass-through C' = C.
+    #[test]
+    fn transfer_identity_passes_through() {
+        for i in 0..=20u32 {
+            let c = i as f32 / 20.0;
+            assert_eq!(apply_transfer(&TransferFunction::Identity, c), c);
+        }
+    }
+
+    // linear C' = slope·C + intercept, then clamp to [0, 1].
+    #[test]
+    fn transfer_linear() {
+        let f = TransferFunction::Linear {
+            slope: 2.0,
+            intercept: -0.5,
+        };
+        // 0.25 → 2·0.25 − 0.5 = 0.0; 0.5 → 0.5; 0.75 → 1.0.
+        assert!((apply_transfer(&f, 0.25) - 0.0).abs() < 1e-6);
+        assert!((apply_transfer(&f, 0.5) - 0.5).abs() < 1e-6);
+        assert!((apply_transfer(&f, 0.75) - 1.0).abs() < 1e-6);
+        // Below/above the unit interval clamp.
+        assert_eq!(apply_transfer(&f, 0.0), 0.0);
+        assert_eq!(apply_transfer(&f, 1.0), 1.0);
+    }
+
+    // gamma C' = amplitude·pow(C, exponent) + offset.
+    #[test]
+    fn transfer_gamma() {
+        let f = TransferFunction::Gamma {
+            amplitude: 1.0,
+            exponent: 2.0,
+            offset: 0.0,
+        };
+        assert!((apply_transfer(&f, 0.5) - 0.25).abs() < 1e-6);
+        assert!((apply_transfer(&f, 1.0) - 1.0).abs() < 1e-6);
+        assert_eq!(apply_transfer(&f, 0.0), 0.0);
+    }
+
+    // table: v0..vn bound n regions, with linear interpolation; C=1 → vn.
+    #[test]
+    fn transfer_table_interpolates() {
+        // values = [0, 1] → n=1 region: C' = C across the whole range.
+        let f = TransferFunction::Table {
+            values: vec![0.0, 1.0],
+        };
+        for i in 0..=10u32 {
+            let c = i as f32 / 10.0;
+            assert!((apply_transfer(&f, c) - c).abs() < 1e-6, "c={c}");
+        }
+        // values = [0, 0.5, 1] → n=2 regions of width 0.5.
+        // C=0.25 sits in region 0: v0 + (0.25)·2·(0.5−0) = 0.25.
+        // C=0.75 sits in region 1: v1 + (0.75−0.5)·2·(1−0.5) = 0.75.
+        let g = TransferFunction::Table {
+            values: vec![0.0, 0.5, 1.0],
+        };
+        assert!((apply_transfer(&g, 0.25) - 0.25).abs() < 1e-6);
+        assert!((apply_transfer(&g, 0.75) - 0.75).abs() < 1e-6);
+        // C=1 → vn.
+        assert!((apply_transfer(&g, 1.0) - 1.0).abs() < 1e-6);
+        // A non-monotone table interpolates literally: [1, 0] at C=0.5 → 0.5.
+        let h = TransferFunction::Table {
+            values: vec![1.0, 0.0],
+        };
+        assert!((apply_transfer(&h, 0.5) - 0.5).abs() < 1e-6);
+    }
+
+    // table edge cases: empty list = identity; single value = constant.
+    #[test]
+    fn transfer_table_degenerate() {
+        let empty = TransferFunction::Table { values: vec![] };
+        assert_eq!(apply_transfer(&empty, 0.3), 0.3);
+        let one = TransferFunction::Table { values: vec![0.4] };
+        assert_eq!(apply_transfer(&one, 0.0), 0.4);
+        assert_eq!(apply_transfer(&one, 1.0), 0.4);
+    }
+
+    // discrete: n steps; C' = v_floor(C·n); C=1 → v(n−1).
+    #[test]
+    fn transfer_discrete_steps() {
+        let f = TransferFunction::Discrete {
+            values: vec![0.0, 0.25, 0.5, 1.0],
+        };
+        // n=4 → step boundaries at 0.25, 0.5, 0.75.
+        assert_eq!(apply_transfer(&f, 0.0), 0.0);
+        assert_eq!(apply_transfer(&f, 0.2), 0.0);
+        assert_eq!(apply_transfer(&f, 0.25), 0.25);
+        assert_eq!(apply_transfer(&f, 0.49), 0.25);
+        assert_eq!(apply_transfer(&f, 0.5), 0.5);
+        assert_eq!(apply_transfer(&f, 0.74), 0.5);
+        assert_eq!(apply_transfer(&f, 0.75), 1.0);
+        // C=1 → v(n−1).
+        assert_eq!(apply_transfer(&f, 1.0), 1.0);
+        // empty discrete = identity.
+        let e = TransferFunction::Discrete { values: vec![] };
+        assert_eq!(apply_transfer(&e, 0.6), 0.6);
+    }
+
+    // §9.7 operates on non-premultiplied values: a half-transparent pixel's
+    // colour is recovered, transferred, and re-premultiplied.
+    #[test]
+    fn component_transfer_unpremultiplies() {
+        // premultiplied input: colour 0.5 at alpha 0.5 → stored 0.25.
+        let mut img = FilterImage::new(1, 1);
+        img.set_pixel(0, 0, [0.25, 0.25, 0.25, 0.5]);
+        // linear slope 2 maps the un-premultiplied 0.5 → 1.0 on each colour
+        // channel; alpha identity keeps 0.5. Re-premultiplied: 1.0·0.5 = 0.5.
+        let double = TransferFunction::Linear {
+            slope: 2.0,
+            intercept: 0.0,
+        };
+        let out = component_transfer(&img, &double, &double, &double, &TransferFunction::Identity);
+        let p = out.pixel(0, 0);
+        assert!((p[0] - 0.5).abs() < 1e-6, "{:?}", p);
+        assert!((p[1] - 0.5).abs() < 1e-6);
+        assert!((p[2] - 0.5).abs() < 1e-6);
+        assert!((p[3] - 0.5).abs() < 1e-6);
+    }
+
+    // Fully transparent pixel: no defined colour, alpha transfer still runs.
+    #[test]
+    fn component_transfer_transparent_pixel() {
+        let mut img = FilterImage::new(1, 1);
+        img.set_pixel(0, 0, [0.0, 0.0, 0.0, 0.0]);
+        // alpha linear 0 → 1 leaves alpha 0 (0·1 + 0 = 0); colour stays 0.
+        let zero_a = TransferFunction::Linear {
+            slope: 1.0,
+            intercept: 0.0,
+        };
+        let out = component_transfer(
+            &img,
+            &TransferFunction::Identity,
+            &TransferFunction::Identity,
+            &TransferFunction::Identity,
+            &zero_a,
+        );
+        assert_eq!(out.pixel(0, 0), [0.0, 0.0, 0.0, 0.0]);
+    }
+
+    // Node entry point: all-identity transfer in sRGB returns bytes intact.
+    #[test]
+    fn evaluate_component_transfer_node_identity_srgb() {
+        let node = FilterPrimitiveNode {
+            region: Default::default(),
+            result: None,
+            color_interpolation_filters: ColorInterpolationFilters::Srgb,
+            primitive: FilterPrimitive::ComponentTransfer {
+                input: crate::filter::FilterInput::SourceGraphic,
+                red: TransferFunction::Identity,
+                green: TransferFunction::Identity,
+                blue: TransferFunction::Identity,
+                alpha: TransferFunction::Identity,
+            },
+        };
+        let src = [0x40, 0x80, 0xC0, 0xFF];
+        let out = evaluate_component_transfer_node(&node, &src, 1, 1).unwrap();
+        assert_eq!(out, src);
+    }
+
+    // Node entry point: opaque pixel, discrete threshold on the red channel
+    // (binary 0/1) in sRGB working space.
+    #[test]
+    fn evaluate_component_transfer_node_discrete_threshold_srgb() {
+        let threshold = TransferFunction::Discrete {
+            values: vec![0.0, 1.0],
+        };
+        let node = FilterPrimitiveNode {
+            region: Default::default(),
+            result: None,
+            color_interpolation_filters: ColorInterpolationFilters::Srgb,
+            primitive: FilterPrimitive::ComponentTransfer {
+                input: crate::filter::FilterInput::SourceGraphic,
+                red: threshold,
+                green: TransferFunction::Identity,
+                blue: TransferFunction::Identity,
+                alpha: TransferFunction::Identity,
+            },
+        };
+        // red 0x40 (0.25) < 0.5 → step 0 → 0; red 0xC0 (0.75) ≥ 0.5 → 1 → 255.
+        let dark =
+            evaluate_component_transfer_node(&node, &[0x40, 0x80, 0xC0, 0xFF], 1, 1).unwrap();
+        assert_eq!(dark[0], 0x00);
+        let bright =
+            evaluate_component_transfer_node(&node, &[0xC0, 0x80, 0xC0, 0xFF], 1, 1).unwrap();
+        assert_eq!(bright[0], 0xFF);
+    }
+
+    #[test]
+    fn evaluate_component_transfer_node_declines_other_primitive() {
+        let node = FilterPrimitiveNode {
+            region: Default::default(),
+            result: None,
+            color_interpolation_filters: ColorInterpolationFilters::Srgb,
+            primitive: FilterPrimitive::Flood {
+                flood_color: FloodColor::default(),
+                flood_opacity: 1.0,
+            },
+        };
+        assert!(evaluate_component_transfer_node(&node, &[0; 4], 1, 1).is_none());
     }
 
     // §9.13 — opaque white flood, sRGB working space, opacity 1: every
