@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- round 330 — pixel-level `<feMorphology>` node evaluator in
+  [`crate::filter_eval`] (`morphology` + `evaluate_morphology_node`).
+  Implements the Filter Effects Module Level 1 §9.17 morphological
+  operator over the premultiplied
+  [`crate::filter_eval::FilterImage`] storage: `dilate` takes the
+  component-wise maximum and `erode` the component-wise minimum of the
+  R,G,B,A values in the kernel rectangle (§9.17 width `2·radius_x`,
+  height `2·radius_y`), realised as the symmetric inclusive integer
+  window `[x − rx, x + rx] × [y − ry, y + ry]` clamped to the image
+  (§9.17 attaches no `edgeMode`). Independent x/y radii are honoured, a
+  negative or zero radius short-circuits to the identity (result =
+  input), and operating on premultiplied values preserves the
+  `Rᵖ, Gᵖ, Bᵖ ≤ Aᵖ` invariant the spec guarantees.
+
 - round 327 — pixel-level `<feComponentTransfer>` node evaluator in
   [`crate::filter_eval`] (`component_transfer` +
   `evaluate_component_transfer_node`). Implements the Filter Effects

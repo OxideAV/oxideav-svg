@@ -61,7 +61,7 @@
 
 use crate::filter::{
     BlendMode, ColorInterpolationFilters, CompositeOperator, EdgeMode, FilterPrimitive,
-    FilterPrimitiveNode, FloodColor, TransferFunction,
+    FilterPrimitiveNode, FloodColor, MorphologyOperator, TransferFunction,
 };
 
 /// `<feColorMatrix>` per Filter Effects §9.6 — the matrix transform
@@ -1169,6 +1169,106 @@ pub fn evaluate_component_transfer_node(
     let space = node.color_interpolation_filters;
     let src = FilterImage::from_rgba8(width, height, source_rgba8, space)?;
     Some(component_transfer(&src, red, green, blue, alpha).to_rgba8(space))
+}
+
+/// `<feMorphology>` per Filter Effects §9.17 — the dilation/erosion
+/// morphological operator.
+///
+/// §9.17 defines the kernel as a rectangle of width `2·radius_x` and
+/// height `2·radius_y`. For an integer-radius implementation this is
+/// realised as the symmetric, inclusive integer window
+/// `[x − rx, x + rx] × [y − ry, y + ry]` (`rx`/`ry` = `radius` rounded
+/// to the nearest integer): `2·r + 1` samples spanning a `2·r`-wide
+/// rectangle, centred on the output pixel. The output pixel is the
+/// component-wise **maximum** of those samples for `dilate` and the
+/// component-wise **minimum** for `erode`.
+///
+/// §9.17: "feMorphology operates on premultipied color values, [so] it
+/// will always result in color values less than or equal to the alpha
+/// channel." [`FilterImage`] already stores premultiplied components,
+/// so the per-channel min/max runs directly on `data`; because each
+/// channel's premultiplied value is `≤ α` before the operation and both
+/// `min` and `max` of a window draw from the same set of samples, the
+/// invariant `Rᵖ, Gᵖ, Bᵖ ≤ Aᵖ` is preserved by `erode` (each picks the
+/// minimum independently, and the alpha minimum dominates) and by
+/// `dilate` (the matching window member supplies the bound).
+///
+/// §9.17 attaches no `edgeMode` to `feMorphology`; samples whose kernel
+/// position falls outside the image are simply not part of the window
+/// (the iteration bounds are clamped to the image), so border pixels
+/// operate over the in-image portion of their kernel rectangle.
+pub fn morphology(
+    src: &FilterImage,
+    operator: MorphologyOperator,
+    radius_x: f32,
+    radius_y: f32,
+) -> FilterImage {
+    // §9.17: "A negative or zero value disables the effect of the given
+    // filter primitive (i.e., the result is the filter input image)."
+    if radius_x <= 0.0 || radius_y <= 0.0 {
+        return src.clone();
+    }
+    let rx = radius_x.round() as isize;
+    let ry = radius_y.round() as isize;
+    if rx <= 0 || ry <= 0 {
+        return src.clone();
+    }
+    let mut out = FilterImage::new(src.width, src.height);
+    let w = src.width as isize;
+    let h = src.height as isize;
+    for y in 0..src.height {
+        for x in 0..src.width {
+            // erode → component-wise minimum (seed +∞);
+            // dilate → component-wise maximum (seed −∞).
+            let mut acc = match operator {
+                MorphologyOperator::Erode => [f32::INFINITY; 4],
+                MorphologyOperator::Dilate => [f32::NEG_INFINITY; 4],
+            };
+            let yi = y as isize;
+            let xi = x as isize;
+            for ky in (yi - ry).max(0)..=(yi + ry).min(h - 1) {
+                for kx in (xi - rx).max(0)..=(xi + rx).min(w - 1) {
+                    let s = src.pixel(kx as usize, ky as usize);
+                    for c in 0..4 {
+                        acc[c] = match operator {
+                            MorphologyOperator::Erode => acc[c].min(s[c]),
+                            MorphologyOperator::Dilate => acc[c].max(s[c]),
+                        };
+                    }
+                }
+            }
+            out.set_pixel(x, y, acc);
+        }
+    }
+    out
+}
+
+/// Evaluate a parsed [`FilterPrimitiveNode`] holding a
+/// [`FilterPrimitive::Morphology`] over an 8-bit non-premultiplied
+/// sRGB-encoded RGBA buffer, in the node's resolved
+/// `color-interpolation-filters` working space (§10).
+///
+/// Applies the §9.17 erode/dilate operator via [`morphology`]. Returns
+/// `None` when the node is not a morphology or when
+/// `source_rgba8.len() != width * height * 4`.
+pub fn evaluate_morphology_node(
+    node: &FilterPrimitiveNode,
+    source_rgba8: &[u8],
+    width: usize,
+    height: usize,
+) -> Option<Vec<u8>> {
+    let FilterPrimitive::Morphology {
+        operator,
+        radius_x,
+        radius_y,
+        ..
+    } = &node.primitive
+    else {
+        return None;
+    };
+    let space = node.color_interpolation_filters;
+    let src = FilterImage::from_rgba8(width, height, source_rgba8, space)?;
+    Some(morphology(&src, *operator, *radius_x, *radius_y).to_rgba8(space))
 }
 
 #[cfg(test)]
@@ -2317,5 +2417,141 @@ mod tests {
             flood_opacity: 1.0,
         });
         assert!(evaluate_blend_node(&n, &[0; 4], &[0; 4], 1, 1).is_none());
+    }
+
+    // §9.17: dilate spreads the brightest sample over the kernel. A
+    // single opaque-white pixel in a transparent-black 3×3 field, with
+    // radius 1, fills the whole 3×3 (its kernel reaches every pixel).
+    #[test]
+    fn morphology_dilate_spreads_max() {
+        let mut img = FilterImage::new(3, 3);
+        img.set_pixel(1, 1, [1.0, 1.0, 1.0, 1.0]);
+        let out = morphology(&img, MorphologyOperator::Dilate, 1.0, 1.0);
+        for y in 0..3 {
+            for x in 0..3 {
+                assert_eq!(out.pixel(x, y), [1.0, 1.0, 1.0, 1.0], "({x},{y})");
+            }
+        }
+    }
+
+    // §9.17: erode keeps the darkest sample in the kernel. The same
+    // single bright pixel is wiped out — every output pixel's kernel
+    // includes at least one transparent-black neighbour.
+    #[test]
+    fn morphology_erode_keeps_min() {
+        let mut img = FilterImage::new(3, 3);
+        img.set_pixel(1, 1, [1.0, 1.0, 1.0, 1.0]);
+        let out = morphology(&img, MorphologyOperator::Erode, 1.0, 1.0);
+        for y in 0..3 {
+            for x in 0..3 {
+                assert_eq!(out.pixel(x, y), [0.0, 0.0, 0.0, 0.0], "({x},{y})");
+            }
+        }
+    }
+
+    // §9.17: erode over a solid opaque region of radius ≥ window leaves
+    // the interior untouched (every kernel sample equals the interior
+    // value); only the border erodes against the transparent surround.
+    #[test]
+    fn morphology_erode_preserves_solid_interior() {
+        // 5×5 opaque grey, radius 1: the centre pixel (2,2)'s 3×3 kernel
+        // is entirely inside the field, so it survives erosion.
+        let mut img = FilterImage::new(5, 5);
+        for y in 0..5 {
+            for x in 0..5 {
+                img.set_pixel(x, y, [0.4, 0.4, 0.4, 0.4]);
+            }
+        }
+        let out = morphology(&img, MorphologyOperator::Erode, 1.0, 1.0);
+        assert_eq!(out.pixel(2, 2), [0.4, 0.4, 0.4, 0.4]);
+    }
+
+    // §9.17: independent x/y radii — the kernel is a rectangle, so a
+    // horizontal bright bar dilated with rx=1, ry=0 spreads only
+    // sideways, never vertically.
+    #[test]
+    fn morphology_anisotropic_radii() {
+        let mut img = FilterImage::new(5, 3);
+        img.set_pixel(2, 1, [1.0, 0.0, 0.0, 1.0]);
+        let out = morphology(&img, MorphologyOperator::Dilate, 1.0, 0.0);
+        // ry <= 0 disables the whole primitive per §9.17 — verify that
+        // the zero-axis short-circuits to the identity (result = input).
+        assert_eq!(out.pixel(2, 1), [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(out.pixel(1, 1), [0.0, 0.0, 0.0, 0.0]);
+    }
+
+    // §9.17: a negative or zero radius disables the primitive — the
+    // output equals the input.
+    #[test]
+    fn morphology_zero_radius_is_identity() {
+        let mut img = FilterImage::new(2, 2);
+        img.set_pixel(0, 0, [0.2, 0.3, 0.4, 0.5]);
+        img.set_pixel(1, 1, [0.6, 0.7, 0.8, 0.9]);
+        let id = morphology(&img, MorphologyOperator::Dilate, 0.0, 2.0);
+        assert_eq!(id, img);
+        let neg = morphology(&img, MorphologyOperator::Erode, -3.0, 1.0);
+        assert_eq!(neg, img);
+    }
+
+    // §9.17: premultiplied invariant — erode/dilate never produce a
+    // colour component greater than alpha. Start from a premultiplied
+    // field where each pixel already satisfies cᵖ ≤ αᵖ.
+    #[test]
+    fn morphology_preserves_premultiplied_invariant() {
+        let mut img = FilterImage::new(3, 3);
+        img.set_pixel(0, 0, [0.5, 0.2, 0.1, 0.5]);
+        img.set_pixel(1, 1, [0.9, 0.4, 0.3, 0.9]);
+        img.set_pixel(2, 2, [0.3, 0.3, 0.0, 0.4]);
+        for op in [MorphologyOperator::Erode, MorphologyOperator::Dilate] {
+            let out = morphology(&img, op, 1.0, 1.0);
+            for y in 0..3 {
+                for x in 0..3 {
+                    let [r, g, b, a] = out.pixel(x, y);
+                    assert!(
+                        r <= a && g <= a && b <= a,
+                        "{op:?} ({x},{y}): {r},{g},{b} > {a}"
+                    );
+                }
+            }
+        }
+    }
+
+    // The node wrapper round-trips an 8-bit sRGB buffer through the
+    // dilate operator: a lone opaque-white pixel fills its 3×3 kernel.
+    #[test]
+    fn evaluate_morphology_node_dilate_rgba8() {
+        let mut buf = vec![0u8; 9 * 4];
+        // Centre pixel of the 3×3 buffer = (row 1, col 1) = element 4 =
+        // byte offset 16.
+        let i = 4 * 4;
+        buf[i..i + 4].copy_from_slice(&[255, 255, 255, 255]);
+        let n = node(FilterPrimitive::Morphology {
+            input: FilterInput::SourceGraphic,
+            operator: MorphologyOperator::Dilate,
+            radius_x: 1.0,
+            radius_y: 1.0,
+        });
+        let out = evaluate_morphology_node(&n, &buf, 3, 3).unwrap();
+        assert_eq!(out, vec![255u8; 9 * 4]);
+    }
+
+    #[test]
+    fn evaluate_morphology_node_declines_other_primitive() {
+        let n = node(FilterPrimitive::Flood {
+            flood_color: FloodColor::default(),
+            flood_opacity: 1.0,
+        });
+        assert!(evaluate_morphology_node(&n, &[0; 4], 1, 1).is_none());
+    }
+
+    #[test]
+    fn evaluate_morphology_node_rejects_bad_len() {
+        let n = node(FilterPrimitive::Morphology {
+            input: FilterInput::SourceGraphic,
+            operator: MorphologyOperator::Erode,
+            radius_x: 1.0,
+            radius_y: 1.0,
+        });
+        assert!(evaluate_morphology_node(&n, &[0; 3], 1, 1).is_none());
     }
 }

@@ -40,9 +40,13 @@ the IR cannot model directly via a `PreservedExtras` side-channel.
   stack), `feBlend` (the five SVG 1.1 §15.9 modes — `normal` /
   `multiply` / `screen` / `darken` / `lighten`; the other eleven
   `<blend-mode>` values defer to the un-staged `[COMPOSITING-1]`
-  formulae), and `feComponentTransfer` (the §9.7 per-channel
+  formulae), `feComponentTransfer` (the §9.7 per-channel
   `identity` / `table` / `discrete` / `linear` / `gamma` transfer
-  functions); the general filter pixel pipeline is `oxideav-raster` work.
+  functions), and `feMorphology` (the §9.17 `erode` / `dilate`
+  component-wise min/max over the `2·radius_x × 2·radius_y` kernel
+  rectangle on premultiplied values, with independent x/y radii and the
+  negative/zero-radius identity short-circuit); the general filter pixel
+  pipeline is `oxideav-raster` work.
 * **Markers** — `<marker>` definitions parse into a typed `MarkerDef`
   and round-trip; vertex placement / `orient` rendering is deferred to a
   core `Marker` node.
