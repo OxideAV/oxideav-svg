@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- round 336 — pixel-level `<feConvolveMatrix>` node evaluator in
+  [`crate::filter_eval`] (`convolve_matrix` +
+  `evaluate_convolve_matrix_node`). Implements the Filter Effects
+  Module Level 1 §9.9 2-D linear convolution over the
+  [`crate::filter_eval::FilterImage`] storage: the kernel is applied
+  180°-rotated relative to the image (`kernelMatrix[orderX-J-1,
+  orderY-I-1]`) per the spec's convolution-theory convention, with
+  `divisor` / `bias` / `targetX` / `targetY` placement and all three
+  `edgeMode`s (`duplicate` — the §9.9 initial — / `wrap` / `none`). An
+  explicit invalid `divisor="0"` falls back to the §9.9.4 kernel-sum
+  default (or `1` when that sum is zero). Both `preserveAlpha` modes are
+  honoured: `false` (the initial) convolves all four channels on
+  premultiplied data with `bias·ALPHA` using the convolved alpha;
+  `true` temporarily un-premultiplies the colour channels, convolves
+  them only (with `ALPHA = SOURCE`), and passes the source alpha through
+  unchanged. A kernel whose length disagrees with `orderX·orderY` is a
+  no-op. 9 new tests (7 core + 2 node wrappers).
+
 - round 330 — pixel-level `<feMorphology>` node evaluator in
   [`crate::filter_eval`] (`morphology` + `evaluate_morphology_node`).
   Implements the Filter Effects Module Level 1 §9.17 morphological

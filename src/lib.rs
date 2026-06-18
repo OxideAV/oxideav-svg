@@ -414,7 +414,14 @@
 //!   ([`crate::filter_eval::component_transfer`]) — the §9.7 per-channel
 //!   remap `R' = feFuncR(R)`, … with the `identity` / `table` / `discrete`
 //!   / `linear` / `gamma` transfer functions defined inline (computed on
-//!   non-premultiplied colour, then re-premultiplied for storage).
+//!   non-premultiplied colour, then re-premultiplied for storage). Round
+//!   336 adds `<feConvolveMatrix>`
+//!   ([`crate::filter_eval::convolve_matrix`]) — the §9.9 2-D linear
+//!   convolution with the 180°-rotated `kernelMatrix`, `divisor` / `bias`
+//!   / `targetX` / `targetY` placement, all three `edgeMode`s, and both
+//!   `preserveAlpha` modes (premultiplied all-channel convolution when
+//!   `false`, un-premultiplied colour-only with the alpha passed through
+//!   when `true`).
 //! * `marker-start` / `marker-mid` / `marker-end` *rendering* — painting
 //!   the marker graphics at shape vertices with `orient` rotation +
 //!   `markerUnits` scaling (SVG 2 §13.7.4) needs a `Marker` construct in

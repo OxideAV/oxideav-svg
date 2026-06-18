@@ -60,8 +60,8 @@
 //! and the topmost merge node.
 
 use crate::filter::{
-    BlendMode, ColorInterpolationFilters, CompositeOperator, EdgeMode, FilterPrimitive,
-    FilterPrimitiveNode, FloodColor, MorphologyOperator, TransferFunction,
+    BlendMode, ColorInterpolationFilters, CompositeOperator, ConvolveEdgeMode, EdgeMode,
+    FilterPrimitive, FilterPrimitiveNode, FloodColor, MorphologyOperator, TransferFunction,
 };
 
 /// `<feColorMatrix>` per Filter Effects §9.6 — the matrix transform
@@ -1269,6 +1269,237 @@ pub fn evaluate_morphology_node(
     let space = node.color_interpolation_filters;
     let src = FilterImage::from_rgba8(width, height, source_rgba8, space)?;
     Some(morphology(&src, *operator, *radius_x, *radius_y).to_rgba8(space))
+}
+
+/// Resolve a sample coordinate `c` against an axis of `len` pixels under
+/// the §9.9 `<feConvolveMatrix>` `edgeMode` policy, returning the
+/// in-image index to read, or `None` when the sample contributes
+/// transparent black.
+///
+/// * [`ConvolveEdgeMode::Duplicate`] — the §9.9 *initial* value: the
+///   input image is extended along each border by duplicating the edge
+///   pixel (clamp).
+/// * [`ConvolveEdgeMode::Wrap`] — toroidal: the input is extended by
+///   taking values from the opposite edge (Euclidean modulo so negative
+///   coordinates wrap to the high edge).
+/// * [`ConvolveEdgeMode::None`] — the input is extended with transparent
+///   black (R, G, B, A all zero) beyond its borders.
+fn convolve_edge_sample(c: isize, len: usize, mode: ConvolveEdgeMode) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let n = len as isize;
+    match mode {
+        ConvolveEdgeMode::Duplicate => Some(c.clamp(0, n - 1) as usize),
+        ConvolveEdgeMode::Wrap => Some(c.rem_euclid(n) as usize),
+        ConvolveEdgeMode::None => {
+            if c >= 0 && c < n {
+                Some(c as usize)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// `<feConvolveMatrix>` per Filter Effects §9.9 — a 2-D linear
+/// convolution of the input with an `order_x × order_y` kernel.
+///
+/// The normative §9.9 formula for each colour component is
+///
+/// ```text
+///                 ( orderY-1 orderX-1
+/// COLOR[X,Y] = (  (   Σ        Σ      SOURCE[X-targetX+J, Y-targetY+I]
+///                 (    I=0      J=0
+///                                  · kernelMatrix[orderX-J-1, orderY-I-1]
+///              ) / divisor ) + bias · ALPHA[X,Y]
+/// ```
+///
+/// The kernel is indexed `[orderX-J-1, orderY-I-1]`, i.e. **rotated 180°**
+/// relative to the source/destination images, matching the convolution
+/// (rather than correlation) convention the spec calls out. `kernel`
+/// here is supplied in row-major reading order (the on-wire
+/// `kernelMatrix` order), so element `[col, row]` lives at
+/// `kernel[row * order_x + col]`.
+///
+/// `preserve_alpha` selects the §9.9.7 mode:
+///
+/// * `false` (the initial value) — the convolution applies to **all
+///   channels including alpha**, and per the §9 preamble
+///   ("all image filters operate on premultiplied RGBA samples") the
+///   maths runs on **premultiplied** components. `ALPHA[X,Y]` in the
+///   `bias` term is the *convolved* alpha (alpha is itself the result of
+///   the same kernel sum / divisor), and each colour channel adds
+///   `bias · ALPHA[X,Y]`.
+/// * `true` — the convolution applies to the **colour channels only**.
+///   The input is temporarily **un-premultiplied**, the kernel is applied
+///   to the three colour channels (each adding `bias · ALPHA[X,Y]` with
+///   `ALPHA[X,Y] = SOURCE[X,Y]` per §9.9.7, i.e. the pixel's own alpha),
+///   and the alpha channel passes through unchanged before being
+///   re-premultiplied for storage.
+///
+/// A `divisor` of `0` is replaced by the §9.9.4 fallback (the sum of the
+/// kernel, or `1` when that sum is also zero) — an explicit
+/// `divisor="0"` is invalid and the spec mandates the default in its
+/// place. Out-of-image samples follow `edge_mode`
+/// ([`convolve_edge_sample`]); the result of every component is clamped
+/// to `[0, 1]`.
+///
+/// Returns `src.clone()` unchanged when the kernel length does not match
+/// `order_x · order_y` (a malformed primitive is a no-op per §9.9).
+#[allow(clippy::too_many_arguments)]
+pub fn convolve_matrix(
+    src: &FilterImage,
+    order_x: u32,
+    order_y: u32,
+    kernel: &[f32],
+    divisor: f32,
+    bias: f32,
+    target_x: i32,
+    target_y: i32,
+    edge_mode: ConvolveEdgeMode,
+    preserve_alpha: bool,
+) -> FilterImage {
+    let ox = order_x as usize;
+    let oy = order_y as usize;
+    if ox == 0 || oy == 0 || kernel.len() != ox * oy {
+        return src.clone();
+    }
+    // §9.9.4: a zero divisor is invalid; fall back to the sum of the
+    // kernel, or 1 when that sum is zero.
+    let divisor = if divisor == 0.0 {
+        let sum: f32 = kernel.iter().sum();
+        if sum == 0.0 {
+            1.0
+        } else {
+            sum
+        }
+    } else {
+        divisor
+    };
+
+    let w = src.width;
+    let h = src.height;
+    let mut out = FilterImage::new(w, h);
+
+    for y in 0..h {
+        for x in 0..w {
+            // Accumulate the rotated-kernel sum for each channel. With
+            // preserve_alpha the colour samples are un-premultiplied
+            // first; otherwise the premultiplied components are used
+            // directly.
+            let mut acc = [0.0f32; 4];
+            for i in 0..oy {
+                for j in 0..ox {
+                    // SOURCE[X - targetX + J, Y - targetY + I].
+                    let sx = x as isize - target_x as isize + j as isize;
+                    let sy = y as isize - target_y as isize + i as isize;
+                    let k = kernel[(oy - i - 1) * ox + (ox - j - 1)];
+                    let sample = match (
+                        convolve_edge_sample(sx, w, edge_mode),
+                        convolve_edge_sample(sy, h, edge_mode),
+                    ) {
+                        (Some(px), Some(py)) => unpremul_if(src.pixel(px, py), preserve_alpha),
+                        // Out-of-image under edgeMode=none reads as
+                        // transparent black.
+                        _ => [0.0; 4],
+                    };
+                    for c in 0..4 {
+                        acc[c] += k * sample[c];
+                    }
+                }
+            }
+
+            let pixel = src.pixel(x, y);
+            if preserve_alpha {
+                // §9.9.7 true: colours convolved un-premultiplied, alpha
+                // passes through. ALPHA[X,Y] = SOURCE[X,Y] (this pixel's
+                // own alpha). Re-premultiply for storage.
+                let alpha = pixel[3];
+                let mut rgba = [0.0f32; 4];
+                for c in 0..3 {
+                    rgba[c] = (acc[c] / divisor + bias * alpha).clamp(0.0, 1.0) * alpha;
+                }
+                rgba[3] = alpha;
+                out.set_pixel(x, y, rgba);
+            } else {
+                // §9.9.7 false: all four channels convolved on
+                // premultiplied data; ALPHA[X,Y] is the convolved alpha.
+                let conv_alpha = (acc[3] / divisor).clamp(0.0, 1.0);
+                let mut rgba = [0.0f32; 4];
+                for c in 0..3 {
+                    rgba[c] = (acc[c] / divisor + bias * conv_alpha).clamp(0.0, 1.0);
+                }
+                rgba[3] = conv_alpha;
+                out.set_pixel(x, y, rgba);
+            }
+        }
+    }
+    out
+}
+
+/// Un-premultiply a stored premultiplied RGBA sample back to
+/// straight-alpha colour when `unpremul` is set (the §9.9.7
+/// `preserveAlpha="true"` path); otherwise return the premultiplied
+/// sample verbatim. Transparent pixels map their colour to zero.
+fn unpremul_if(p: [f32; 4], unpremul: bool) -> [f32; 4] {
+    if !unpremul {
+        return p;
+    }
+    let a = p[3];
+    if a > 0.0 {
+        [p[0] / a, p[1] / a, p[2] / a, a]
+    } else {
+        [0.0, 0.0, 0.0, a]
+    }
+}
+
+/// Evaluate a parsed [`FilterPrimitiveNode`] holding a
+/// [`FilterPrimitive::ConvolveMatrix`] over an 8-bit non-premultiplied
+/// sRGB-encoded RGBA buffer, in the node's resolved
+/// `color-interpolation-filters` working space (§10).
+///
+/// Applies the §9.9 convolution via [`convolve_matrix`]. Returns `None`
+/// when the node is not a convolve-matrix or when
+/// `source_rgba8.len() != width * height * 4`.
+pub fn evaluate_convolve_matrix_node(
+    node: &FilterPrimitiveNode,
+    source_rgba8: &[u8],
+    width: usize,
+    height: usize,
+) -> Option<Vec<u8>> {
+    let FilterPrimitive::ConvolveMatrix {
+        order_x,
+        order_y,
+        kernel_matrix,
+        divisor,
+        bias,
+        target_x,
+        target_y,
+        edge_mode,
+        preserve_alpha,
+        ..
+    } = &node.primitive
+    else {
+        return None;
+    };
+    let space = node.color_interpolation_filters;
+    let src = FilterImage::from_rgba8(width, height, source_rgba8, space)?;
+    Some(
+        convolve_matrix(
+            &src,
+            *order_x,
+            *order_y,
+            kernel_matrix,
+            *divisor,
+            *bias,
+            *target_x,
+            *target_y,
+            *edge_mode,
+            *preserve_alpha,
+        )
+        .to_rgba8(space),
+    )
 }
 
 #[cfg(test)]
@@ -2553,5 +2784,260 @@ mod tests {
             radius_y: 1.0,
         });
         assert!(evaluate_morphology_node(&n, &[0; 3], 1, 1).is_none());
+    }
+
+    // §9.9: the identity kernel (single 1 at the centre, divisor 1) is a
+    // no-op regardless of preserveAlpha — every pixel passes through.
+    #[test]
+    fn convolve_identity_is_passthrough() {
+        let mut img = FilterImage::new(3, 3);
+        img.set_pixel(1, 1, [0.4, 0.2, 0.1, 0.5]);
+        img.set_pixel(0, 0, [0.0, 0.0, 0.0, 1.0]);
+        for preserve in [false, true] {
+            let out = convolve_matrix(
+                &img,
+                3,
+                3,
+                &[0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+                1.0,
+                0.0,
+                1,
+                1,
+                ConvolveEdgeMode::Duplicate,
+                preserve,
+            );
+            for y in 0..3 {
+                for x in 0..3 {
+                    let (o, e) = (out.pixel(x, y), img.pixel(x, y));
+                    for c in 0..4 {
+                        assert!(
+                            (o[c] - e[c]).abs() < 1e-6,
+                            "preserve={preserve} ({x},{y})c{c}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // §9.9: a uniform 3×3 box kernel with divisor 9 averages the
+    // neighbourhood. On a flat opaque field every output equals the input
+    // (edgeMode=duplicate keeps the border average flat).
+    #[test]
+    fn convolve_box_average_flat_field() {
+        let mut img = FilterImage::new(4, 4);
+        for y in 0..4 {
+            for x in 0..4 {
+                img.set_pixel(x, y, [0.6, 0.6, 0.6, 1.0]);
+            }
+        }
+        let out = convolve_matrix(
+            &img,
+            3,
+            3,
+            &[1.0; 9],
+            9.0,
+            0.0,
+            1,
+            1,
+            ConvolveEdgeMode::Duplicate,
+            false,
+        );
+        for y in 0..4 {
+            for x in 0..4 {
+                let p = out.pixel(x, y);
+                for (c, e) in p.iter().zip([0.6, 0.6, 0.6, 1.0]) {
+                    assert!((c - e).abs() < 1e-6, "({x},{y}) {c} vs {e}");
+                }
+            }
+        }
+    }
+
+    // §9.9: kernel 180° rotation. With a kernel that is 1 only at column
+    // 0 / row 0 (top-left), targetX=targetY=0, the rotated index reads
+    // SOURCE[X+ (orderX-1), Y+(orderY-1)] — i.e. the bottom-right
+    // neighbour shifts up-left by (orderX-1, orderY-1). A single bright
+    // pixel therefore lands at (x-2, y-2) for a 3×3 kernel.
+    #[test]
+    fn convolve_kernel_rotation_shift() {
+        let mut img = FilterImage::new(5, 5);
+        img.set_pixel(4, 4, [0.0, 0.0, 0.0, 1.0]);
+        // kernelMatrix row-major: 1 at [col=0,row=0], else 0.
+        let mut k = [0.0f32; 9];
+        k[0] = 1.0;
+        let out = convolve_matrix(
+            &img,
+            3,
+            3,
+            &k,
+            1.0,
+            0.0,
+            0,
+            0,
+            ConvolveEdgeMode::None,
+            false,
+        );
+        // out[x,y] = SOURCE[x - 0 + 2, y - 0 + 2] · 1 = SOURCE[x+2, y+2].
+        // So the bright (4,4) appears at (2,2).
+        assert!((out.pixel(2, 2)[3] - 1.0).abs() < 1e-6);
+        assert_eq!(out.pixel(4, 4)[3], 0.0);
+    }
+
+    // §9.9.4: an explicit divisor="0" is invalid; the evaluator falls
+    // back to the sum of the kernel. A box kernel sums to 9, so the
+    // result matches the divisor=9 average.
+    #[test]
+    fn convolve_zero_divisor_falls_back_to_kernel_sum() {
+        let mut img = FilterImage::new(3, 3);
+        for y in 0..3 {
+            for x in 0..3 {
+                img.set_pixel(x, y, [0.3, 0.0, 0.0, 0.5]);
+            }
+        }
+        let out = convolve_matrix(
+            &img,
+            3,
+            3,
+            &[1.0; 9],
+            0.0, // invalid → fall back to sum (9)
+            0.0,
+            1,
+            1,
+            ConvolveEdgeMode::Duplicate,
+            false,
+        );
+        let p = out.pixel(1, 1);
+        assert!((p[0] - 0.3).abs() < 1e-6, "{p:?}");
+        assert!((p[3] - 0.5).abs() < 1e-6, "{p:?}");
+    }
+
+    // §9.9.7 preserveAlpha=true: the alpha channel is untouched. With a
+    // box-blur colour kernel over a field of constant straight-alpha
+    // colour, every output keeps the input alpha while the colour stays
+    // flat. Verify alpha is verbatim and colour is the un-premultiplied
+    // average re-premultiplied.
+    #[test]
+    fn convolve_preserve_alpha_keeps_alpha() {
+        let mut img = FilterImage::new(3, 3);
+        // straight colour (0.8, 0.4, 0.2) at alpha 0.5 → premultiplied.
+        for y in 0..3 {
+            for x in 0..3 {
+                img.set_pixel(x, y, [0.8 * 0.5, 0.4 * 0.5, 0.2 * 0.5, 0.5]);
+            }
+        }
+        let out = convolve_matrix(
+            &img,
+            3,
+            3,
+            &[1.0; 9],
+            9.0,
+            0.0,
+            1,
+            1,
+            ConvolveEdgeMode::Duplicate,
+            true,
+        );
+        let p = out.pixel(1, 1);
+        // alpha unchanged.
+        assert!((p[3] - 0.5).abs() < 1e-6, "{p:?}");
+        // colour = un-premul average (0.8,0.4,0.2) re-premultiplied by 0.5.
+        for (c, e) in p[..3].iter().zip([0.8 * 0.5, 0.4 * 0.5, 0.2 * 0.5]) {
+            assert!((c - e).abs() < 1e-6, "{c} vs {e}");
+        }
+    }
+
+    // §9.9: bias shifts every colour component. With the identity kernel
+    // (preserveAlpha=false), out_color = in_color + bias·convolved_alpha.
+    #[test]
+    fn convolve_bias_offsets_color() {
+        let mut img = FilterImage::new(1, 1);
+        img.set_pixel(0, 0, [0.2, 0.2, 0.2, 1.0]);
+        let out = convolve_matrix(
+            &img,
+            1,
+            1,
+            &[1.0],
+            1.0,
+            0.25,
+            0,
+            0,
+            ConvolveEdgeMode::None,
+            false,
+        );
+        let p = out.pixel(0, 0);
+        // colour = 0.2 + 0.25·1.0 = 0.45; alpha = 1.0.
+        for c in &p[..3] {
+            assert!((c - 0.45).abs() < 1e-6, "{c}");
+        }
+        assert!((p[3] - 1.0).abs() < 1e-6);
+    }
+
+    // §9.9: malformed kernel (length ≠ orderX·orderY) is a no-op.
+    #[test]
+    fn convolve_bad_kernel_len_is_identity() {
+        let mut img = FilterImage::new(2, 2);
+        img.set_pixel(0, 0, [0.1, 0.2, 0.3, 0.4]);
+        let out = convolve_matrix(
+            &img,
+            3,
+            3,
+            &[1.0, 2.0],
+            1.0,
+            0.0,
+            1,
+            1,
+            ConvolveEdgeMode::Duplicate,
+            false,
+        );
+        assert_eq!(out, img);
+    }
+
+    // The node wrapper round-trips an 8-bit sRGB buffer through a sharpen
+    // kernel. With sRGB working space (no linearisation) a flat field is
+    // unchanged by the unity-sum sharpen kernel [0 -1 0; -1 5 -1; 0 -1 0].
+    #[test]
+    fn evaluate_convolve_matrix_node_sharpen_flat_field() {
+        let buf = vec![128u8; 9 * 4];
+        let n = node(FilterPrimitive::ConvolveMatrix {
+            input: FilterInput::SourceGraphic,
+            order_x: 3,
+            order_y: 3,
+            kernel_matrix: vec![0.0, -1.0, 0.0, -1.0, 5.0, -1.0, 0.0, -1.0, 0.0],
+            divisor: 1.0,
+            bias: 0.0,
+            target_x: 1,
+            target_y: 1,
+            edge_mode: ConvolveEdgeMode::Duplicate,
+            preserve_alpha: false,
+        });
+        let out = evaluate_convolve_matrix_node(&n, &buf, 3, 3).unwrap();
+        // Unity-sum kernel on a flat field is the identity.
+        assert_eq!(out, buf);
+    }
+
+    #[test]
+    fn evaluate_convolve_matrix_node_declines_other_primitive() {
+        let n = node(FilterPrimitive::Flood {
+            flood_color: FloodColor::default(),
+            flood_opacity: 1.0,
+        });
+        assert!(evaluate_convolve_matrix_node(&n, &[0; 4], 1, 1).is_none());
+    }
+
+    #[test]
+    fn evaluate_convolve_matrix_node_rejects_bad_len() {
+        let n = node(FilterPrimitive::ConvolveMatrix {
+            input: FilterInput::SourceGraphic,
+            order_x: 3,
+            order_y: 3,
+            kernel_matrix: vec![1.0; 9],
+            divisor: 1.0,
+            bias: 0.0,
+            target_x: 1,
+            target_y: 1,
+            edge_mode: ConvolveEdgeMode::Duplicate,
+            preserve_alpha: false,
+        });
+        assert!(evaluate_convolve_matrix_node(&n, &[0; 3], 1, 1).is_none());
     }
 }

@@ -42,11 +42,17 @@ the IR cannot model directly via a `PreservedExtras` side-channel.
   `<blend-mode>` values defer to the un-staged `[COMPOSITING-1]`
   formulae), `feComponentTransfer` (the §9.7 per-channel
   `identity` / `table` / `discrete` / `linear` / `gamma` transfer
-  functions), and `feMorphology` (the §9.17 `erode` / `dilate`
+  functions), `feMorphology` (the §9.17 `erode` / `dilate`
   component-wise min/max over the `2·radius_x × 2·radius_y` kernel
   rectangle on premultiplied values, with independent x/y radii and the
-  negative/zero-radius identity short-circuit); the general filter pixel
-  pipeline is `oxideav-raster` work.
+  negative/zero-radius identity short-circuit), and `feConvolveMatrix`
+  (the §9.9 2-D linear convolution with the 180°-rotated `kernelMatrix`,
+  `divisor` / `bias` / `targetX` / `targetY` placement, all three
+  `edgeMode`s, the `divisor="0"` → kernel-sum fallback, and both
+  `preserveAlpha` modes — premultiplied all-channel convolution when
+  `false`, un-premultiplied colour-only with the alpha passed through
+  when `true`); the general filter pixel pipeline is `oxideav-raster`
+  work.
 * **Markers** — `<marker>` definitions parse into a typed `MarkerDef`
   and round-trip; vertex placement / `orient` rendering is deferred to a
   core `Marker` node.
