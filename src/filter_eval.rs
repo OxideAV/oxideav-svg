@@ -60,8 +60,9 @@
 //! and the topmost merge node.
 
 use crate::filter::{
-    BlendMode, ColorInterpolationFilters, CompositeOperator, ConvolveEdgeMode, EdgeMode,
-    FilterPrimitive, FilterPrimitiveNode, FloodColor, MorphologyOperator, TransferFunction,
+    BlendMode, ChannelSelector, ColorInterpolationFilters, CompositeOperator, ConvolveEdgeMode,
+    EdgeMode, FilterPrimitive, FilterPrimitiveNode, FloodColor, MorphologyOperator,
+    TransferFunction,
 };
 
 /// `<feColorMatrix>` per Filter Effects §9.6 — the matrix transform
@@ -1499,6 +1500,144 @@ pub fn evaluate_convolve_matrix_node(
             *preserve_alpha,
         )
         .to_rgba8(space),
+    )
+}
+
+/// Read the §9.11 displacement channel `XC`/`YC` from a non-premultiplied
+/// RGBA quad `[r, g, b, a]` (each component in `[0, 1]`) per the
+/// [`ChannelSelector`] enum: `R`/`G`/`B`/`A` → component 0/1/2/3.
+fn select_channel(sel: ChannelSelector, unp: [f32; 4]) -> f32 {
+    match sel {
+        ChannelSelector::R => unp[0],
+        ChannelSelector::G => unp[1],
+        ChannelSelector::B => unp[2],
+        ChannelSelector::A => unp[3],
+    }
+}
+
+/// Sample a premultiplied [`FilterImage`] at the integer coordinate
+/// `(x, y)` with the §9.11 edge policy of zero extension: a coordinate
+/// outside the image reads transparent black (the displacement map can
+/// point arbitrarily far per `scale`, and the §9.11 prose places no
+/// border-duplication requirement, so out-of-image source samples are
+/// the filter region's transparent-black backdrop).
+fn sample_zero(img: &FilterImage, x: isize, y: isize) -> [f32; 4] {
+    if x < 0 || y < 0 || x as usize >= img.width || y as usize >= img.height {
+        return [0.0; 4];
+    }
+    img.pixel(x as usize, y as usize)
+}
+
+/// `<feDisplacementMap>` per Filter Effects §9.11 — spatially displaces
+/// the `in` image (`src`) using per-pixel channel values from the `in2`
+/// displacement map (`map`):
+///
+/// ```text
+/// P'(x, y) ← P( x + scale·(XC(x, y) − ½), y + scale·(YC(x, y) − ½) )
+/// ```
+///
+/// where `XC` / `YC` are the `x_channel` / `y_channel` components of the
+/// **non-premultiplied** `map` pixel (§9.11: "The calculations using the
+/// pixel values from `in2` are performed using non-premultiplied color
+/// values"), and `P` is the **premultiplied** `src` pixel (§9.11: "The
+/// input image `in` is to remain premultiplied for this filter
+/// primitive").
+///
+/// The §9.11 displacement is `scale·(C − ½)`, so a map channel value of
+/// `½` is the no-displacement midpoint, `0` shifts the sample by
+/// `−scale/2`, and `1` shifts it by `+scale/2`. The destination samples
+/// `src` at the displaced integer coordinate (rounded to nearest — the
+/// §9.11 note leaves the sub-pixel interpolation method
+/// implementation-defined and explicitly unspecified for now, so the
+/// evaluator takes the nearest source texel rather than guess a filter
+/// kernel); out-of-image source coordinates read transparent black.
+///
+/// `scale == 0` is the §9.11 identity (the source is returned unchanged).
+/// The result has `src`'s dimensions; `map` is sampled at the same
+/// destination coordinate `(x, y)` and zero-extended past its own
+/// bounds.
+pub fn displacement_map(
+    src: &FilterImage,
+    map: &FilterImage,
+    scale: f32,
+    x_channel: ChannelSelector,
+    y_channel: ChannelSelector,
+) -> FilterImage {
+    let mut out = FilterImage::new(src.width, src.height);
+    if scale == 0.0 {
+        // §9.11: "When the value of this attribute is 0, this operation
+        // has no effect on the source image."
+        let n = out.data.len().min(src.data.len());
+        out.data[..n].copy_from_slice(&src.data[..n]);
+        return out;
+    }
+    for y in 0..out.height {
+        for x in 0..out.width {
+            // §9.11: in2 pixel read non-premultiplied. The map shares the
+            // destination coordinate (x, y); zero-extend past its bounds.
+            let m = if x < map.width && y < map.height {
+                map.pixel(x, y)
+            } else {
+                [0.0; 4]
+            };
+            let ma = m[3];
+            let unp = if ma > 0.0 {
+                [m[0] / ma, m[1] / ma, m[2] / ma, ma]
+            } else {
+                [0.0, 0.0, 0.0, 0.0]
+            };
+            let xc = select_channel(x_channel, unp);
+            let yc = select_channel(y_channel, unp);
+            // P'(x, y) ← P(x + scale·(XC − ½), y + scale·(YC − ½)).
+            let sx = x as f32 + scale * (xc - 0.5);
+            let sy = y as f32 + scale * (yc - 0.5);
+            let px = sample_zero(src, sx.round() as isize, sy.round() as isize);
+            out.set_pixel(x, y, px);
+        }
+    }
+    out
+}
+
+/// Evaluate a parsed [`FilterPrimitiveNode`] holding a
+/// [`FilterPrimitive::DisplacementMap`] over two 8-bit non-premultiplied
+/// sRGB-encoded RGBA buffers (`in1` ← `in`, `in2` ← `in2`).
+///
+/// Per §9.11 the two inputs live in **different colour spaces**: the
+/// `color-interpolation-filters` working space applies only to `in2`
+/// (the displacement map, whose channel values drive the maths), while
+/// `in` "must remain in its current colour space". The evaluator
+/// therefore decodes `in` with the sRGB-identity space (no §13.9
+/// linearisation) so the displaced source texels are passed through
+/// untouched, and decodes `in2` in the node's resolved working space so
+/// the channel selectors read the §10-correct values. The output is the
+/// re-encoded displaced `in`, so it is emitted with the sRGB-identity
+/// space to match `in`'s preserved space.
+///
+/// Both buffers must be `width × height × 4`. Returns `None` when the
+/// node is not a displacement map or when a buffer length is wrong.
+pub fn evaluate_displacement_map_node(
+    node: &FilterPrimitiveNode,
+    in1_rgba8: &[u8],
+    in2_rgba8: &[u8],
+    width: usize,
+    height: usize,
+) -> Option<Vec<u8>> {
+    let FilterPrimitive::DisplacementMap {
+        scale,
+        x_channel_selector,
+        y_channel_selector,
+        ..
+    } = &node.primitive
+    else {
+        return None;
+    };
+    // §9.11: in stays in its current colour space (no linearisation);
+    // in2 uses the node's working space.
+    let src = FilterImage::from_rgba8(width, height, in1_rgba8, ColorInterpolationFilters::Srgb)?;
+    let map = FilterImage::from_rgba8(width, height, in2_rgba8, node.color_interpolation_filters)?;
+    Some(
+        displacement_map(&src, &map, *scale, *x_channel_selector, *y_channel_selector)
+            .to_rgba8(ColorInterpolationFilters::Srgb),
     )
 }
 
@@ -3039,5 +3178,117 @@ mod tests {
             preserve_alpha: false,
         });
         assert!(evaluate_convolve_matrix_node(&n, &[0; 3], 1, 1).is_none());
+    }
+
+    // ------------------------------------------------------------------
+    // §9.11 feDisplacementMap
+    // ------------------------------------------------------------------
+
+    fn displacement_node(
+        scale: f32,
+        xc: ChannelSelector,
+        yc: ChannelSelector,
+    ) -> FilterPrimitiveNode {
+        node(FilterPrimitive::DisplacementMap {
+            input: FilterInput::SourceGraphic,
+            input2: FilterInput::SourceGraphic,
+            scale,
+            x_channel_selector: xc,
+            y_channel_selector: yc,
+        })
+    }
+
+    // §9.11: scale=0 is the identity — the source image is returned
+    // unchanged regardless of the displacement map.
+    #[test]
+    fn displacement_scale_zero_is_identity() {
+        let n = displacement_node(0.0, ChannelSelector::R, ChannelSelector::G);
+        // 2×1 source: two distinct colours.
+        let src = [0x11, 0x22, 0x33, 0xFF, 0x44, 0x55, 0x66, 0xFF];
+        // A map that would otherwise displace heavily.
+        let map = [0xFF, 0x00, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF];
+        let out = evaluate_displacement_map_node(&n, &src, &map, 2, 1).unwrap();
+        assert_eq!(out, src);
+    }
+
+    // §9.11: P'(x,y) ← P(x + scale·(XC−½), y + scale·(YC−½)). With a map
+    // whose selected x-channel is fully on (1.0) and scale=2, the x
+    // displacement is +1 pixel, so the destination samples one pixel to
+    // the right of the source. xChannelSelector=A reads the map's alpha.
+    #[test]
+    fn displacement_x_shift_pulls_from_right() {
+        // x-channel = A (drives x), y-channel = G (kept at the ½ midpoint
+        // so the single-row image isn't shifted off its only row).
+        let n = displacement_node(2.0, ChannelSelector::A, ChannelSelector::G);
+        // 3×1 source: a lit pixel at x=1, transparent neighbours.
+        let src = [
+            0x00, 0x00, 0x00, 0x00, // x=0
+            0x7A, 0x14, 0x33, 0xFF, // x=1 (lit)
+            0x00, 0x00, 0x00, 0x00, // x=2
+        ];
+        // Map: alpha=1.0 → XC=1.0 → +1 x displacement (2·(1.0−½)=1);
+        // G=0x80 (non-premult ≈½) → YC≈½ → no y displacement.
+        let map = [
+            0x00, 0x80, 0x00, 0xFF, // x=0
+            0x00, 0x80, 0x00, 0xFF, // x=1
+            0x00, 0x80, 0x00, 0xFF, // x=2
+        ];
+        let out = evaluate_displacement_map_node(&n, &src, &map, 3, 1).unwrap();
+        // dst x=0 ← src x=1 (the lit pixel); dst x=1 ← src x=2 (transp);
+        // dst x=2 ← src x=3 (out of image → transparent black).
+        assert_eq!(&out[0..4], &[0x7A, 0x14, 0x33, 0xFF]);
+        assert_eq!(&out[4..8], &[0x00, 0x00, 0x00, 0x00]);
+        assert_eq!(&out[8..12], &[0x00, 0x00, 0x00, 0x00]);
+    }
+
+    // §9.11: the midpoint map value ½ gives zero displacement; with an
+    // 8-bit map a channel byte of 0x80 (128/255 ≈ 0.502) rounds the
+    // shift to 0, so the source passes through unchanged.
+    #[test]
+    fn displacement_midpoint_channel_is_no_op() {
+        let n = displacement_node(4.0, ChannelSelector::R, ChannelSelector::G);
+        let src = [0x10, 0x20, 0x30, 0xFF, 0x40, 0x50, 0x60, 0xFF];
+        // R=G≈0x80 → (0.502−0.5)·4 ≈ 0.008 → round to 0.
+        let map = [0x80, 0x80, 0x00, 0xFF, 0x80, 0x80, 0x00, 0xFF];
+        let out = evaluate_displacement_map_node(&n, &src, &map, 2, 1).unwrap();
+        assert_eq!(out, src);
+    }
+
+    // §9.11: the in2 channel selection uses non-premultiplied values —
+    // a map pixel with alpha 0.5 and premultiplied red 0.5 has
+    // non-premultiplied red 1.0, the full +scale/2 displacement.
+    #[test]
+    fn displacement_channel_uses_non_premultiplied() {
+        // x-channel = R (the channel that must be read non-premultiplied),
+        // y-channel = G (kept at ½ so only the x-shift matters).
+        let n = displacement_node(2.0, ChannelSelector::R, ChannelSelector::G);
+        // 2×1 source: lit pixel at x=1.
+        let src = [0x00, 0x00, 0x00, 0x00, 0x99, 0x88, 0x77, 0xFF];
+        // Map x=0: sRGB R=0xFF, G=0x80, A=0x80. The decoder premultiplies
+        // (storing R·A); displacement_map un-premultiplies → R≈1.0,
+        // G≈½. So XC≈1.0 → +1 x-shift → src x=1 (the lit pixel); a naive
+        // *premultiplied* read would give R≈0.5 → only a +0 shift, so the
+        // pulled colour distinguishes the two code paths.
+        let map = [0xFF, 0x80, 0x00, 0x80, 0x00, 0x80, 0x00, 0xFF];
+        let out = evaluate_displacement_map_node(&n, &src, &map, 2, 1).unwrap();
+        // dst x=0 ← src x=1 (lit). A premultiplied read of R (≈0.5) would
+        // round to a 0-pixel shift and leave x=0 transparent.
+        assert_eq!(&out[0..4], &[0x99, 0x88, 0x77, 0xFF]);
+    }
+
+    #[test]
+    fn evaluate_displacement_map_node_declines_other_primitive() {
+        let n = node(FilterPrimitive::Flood {
+            flood_color: FloodColor::default(),
+            flood_opacity: 1.0,
+        });
+        assert!(evaluate_displacement_map_node(&n, &[0; 4], &[0; 4], 1, 1).is_none());
+    }
+
+    #[test]
+    fn evaluate_displacement_map_node_rejects_bad_len() {
+        let n = displacement_node(1.0, ChannelSelector::A, ChannelSelector::A);
+        assert!(evaluate_displacement_map_node(&n, &[0; 3], &[0; 4], 1, 1).is_none());
+        assert!(evaluate_displacement_map_node(&n, &[0; 4], &[0; 3], 1, 1).is_none());
     }
 }

@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- round 343 — pixel-level `<feDisplacementMap>` node evaluator in
+  [`crate::filter_eval`] (`displacement_map` +
+  `evaluate_displacement_map_node`). Implements the Filter Effects
+  Module Level 1 §9.11 spatial displacement
+  `P'(x, y) ← P(x + scale·(XC − ½), y + scale·(YC − ½))` over the
+  [`crate::filter_eval::FilterImage`] storage, where `XC` / `YC` are the
+  `xChannelSelector` / `yChannelSelector` components (`R`/`G`/`B`/`A`,
+  initial `A`) of the **non-premultiplied** `in2` displacement-map
+  pixel, and `P` is the `in` source. Honours the §9.11 dual-colour-space
+  rule: `color-interpolation-filters` applies only to `in2` (the map),
+  while `in` "must remain in its current colour space" — the source is
+  passed through with the sRGB-identity transfer (no §13.9
+  linearisation) and stays premultiplied. `scale == 0` is the §9.11
+  identity; out-of-image displaced source coordinates read transparent
+  black (the §9.11 note leaves sub-pixel interpolation unspecified, so
+  the evaluator takes the nearest source texel). 6 new tests.
+
 - round 336 — pixel-level `<feConvolveMatrix>` node evaluator in
   [`crate::filter_eval`] (`convolve_matrix` +
   `evaluate_convolve_matrix_node`). Implements the Filter Effects
