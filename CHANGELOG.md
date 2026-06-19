@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- round 343 — pixel-level `<feTurbulence>` Perlin-noise / fractal-sum
+  generator in [`crate::filter_eval`] (`turbulence_image` +
+  `evaluate_turbulence_node`, with the private `Turbulence` lattice
+  engine). A clean-room Rust port of the Filter Effects Module Level 1
+  §9.21 normative reference algorithm: the Park–Miller minimal-standard
+  LCG (`a = 16807`, `m = 2³¹ − 1`, Schrage's method), the rejection-
+  sampled unit-disc gradient lattice with the Fisher–Yates permutation
+  shuffle and high-half duplication, the `s_curve` / `lerp` bilinear
+  `noise2` sample, and the per-octave `turbulence` sum with optional
+  `stitchTiles` frequency-snap + lattice wrapping. Per §9.21 the four
+  channels R/G/B/A are generated in that fixed order (deterministic
+  per-channel random streams), mapped to colour values by
+  `(result + 1)/2` for `fractalNoise` or `result` for `turbulence`
+  (clamped to `[0, 1]`), then premultiplied into the
+  [`crate::filter_eval::FilterImage`] working space. 8 new tests,
+  including the §9.21 normative anchor that the LCG's 10,000th number
+  from seed 1 is `1043618065`.
+
 - round 343 — pixel-level `<feTile>` node evaluator in
   [`crate::filter_eval`] (`tile` + `evaluate_tile_node`). Implements the
   Filter Effects Module Level 1 §9.20 reference-tile replication: the

@@ -51,8 +51,15 @@ the IR cannot model directly via a `PreservedExtras` side-channel.
   `edgeMode`s, the `divisor="0"` → kernel-sum fallback, and both
   `preserveAlpha` modes — premultiplied all-channel convolution when
   `false`, un-premultiplied colour-only with the alpha passed through
-  when `true`); the general filter pixel pipeline is `oxideav-raster`
-  work.
+  when `true`), `feDisplacementMap` (the §9.11 spatial displacement
+  `P'(x,y) ← P(x + scale·(XC−½), y + scale·(YC−½))` with the
+  dual-colour-space rule — `in2` channels read non-premultiplied in the
+  working space, `in` passed through in its own space), `feTile` (the
+  §9.20 reference-tile periodic replication), and `feTurbulence` (a
+  clean-room port of the §9.21 Perlin-noise / `fractalNoise` reference
+  algorithm — Park–Miller LCG, unit-disc gradient lattice, `noise2`
+  bilinear sampling, per-octave sum, and `stitchTiles`); the general
+  filter pixel pipeline is `oxideav-raster` work.
 * **Markers** — `<marker>` definitions parse into a typed `MarkerDef`
   and round-trip; vertex placement / `orient` rendering is deferred to a
   core `Marker` node.
