@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- round 343 — pixel-level `<feTile>` node evaluator in
+  [`crate::filter_eval`] (`tile` + `evaluate_tile_node`). Implements the
+  Filter Effects Module Level 1 §9.20 reference-tile replication: the
+  destination pixel `(dx, dy)` samples the input's reference tile
+  `(tile_x, tile_y, tile_w, tile_h)` at the periodic coordinate
+  `tile_x + ((dx − tile_x) mod tile_w)`,
+  `tile_y + ((dy − tile_y) mod tile_h)` (Euclidean modulo, so the
+  §9.20 `(x + i·width, y + j·height)` tiling wraps for destinations
+  left of / above the tile origin). The caller (graph-level rasteriser)
+  supplies the input's filter-primitive subregion as the tile rectangle;
+  the evaluator does no subregion plumbing. A zero-area tile yields
+  transparent black. Tiling copies premultiplied storage verbatim, so it
+  is colour-space-neutral. 6 new tests.
+
 - round 343 — pixel-level `<feDisplacementMap>` node evaluator in
   [`crate::filter_eval`] (`displacement_map` +
   `evaluate_displacement_map_node`). Implements the Filter Effects

@@ -1641,6 +1641,101 @@ pub fn evaluate_displacement_map_node(
     )
 }
 
+/// `<feTile>` per Filter Effects §9.20 — fill the `width × height` target
+/// rectangle with a repeated, tiled copy of the input image's reference
+/// tile.
+///
+/// The reference tile is the rectangle `(tile_x, tile_y, tile_w,
+/// tile_h)` within `src` (the input's *filter-primitive subregion*; the
+/// graph-level rasteriser establishes those bounds and passes them in —
+/// the evaluator itself does no subregion plumbing). §9.20: "feTile
+/// replicates the reference tile in both X and Y to completely fill the
+/// target rectangle. The top/left corner of each given tile is at
+/// location `(x + i·width, y + j·height)` … and `i` and `j` can be any
+/// integer value."
+///
+/// The destination pixel `(dx, dy)` therefore samples the tile at the
+/// periodic coordinate
+///
+/// ```text
+/// sx = tile_x + ((dx − tile_x) mod tile_w)
+/// sy = tile_y + ((dy − tile_y) mod tile_h)
+/// ```
+///
+/// (Euclidean modulo, so destinations to the left of / above the tile
+/// origin wrap correctly). A degenerate tile (`tile_w == 0` or
+/// `tile_h == 0`, or one lying wholly outside `src`) yields a
+/// transparent-black result. Values are copied verbatim from the
+/// premultiplied [`FilterImage`] storage — tiling is a pure spatial
+/// replication, so no colour-space conversion happens inside the
+/// replication loop.
+pub fn tile(
+    src: &FilterImage,
+    tile_x: usize,
+    tile_y: usize,
+    tile_w: usize,
+    tile_h: usize,
+    width: usize,
+    height: usize,
+) -> FilterImage {
+    let mut out = FilterImage::new(width, height);
+    if tile_w == 0 || tile_h == 0 {
+        return out;
+    }
+    for dy in 0..height {
+        // sy = tile_y + ((dy − tile_y) mod tile_h).
+        let oy = (dy as isize - tile_y as isize).rem_euclid(tile_h as isize) as usize;
+        let sy = tile_y + oy;
+        if sy >= src.height {
+            continue;
+        }
+        for dx in 0..width {
+            let ox = (dx as isize - tile_x as isize).rem_euclid(tile_w as isize) as usize;
+            let sx = tile_x + ox;
+            if sx >= src.width {
+                continue;
+            }
+            out.set_pixel(dx, dy, src.pixel(sx, sy));
+        }
+    }
+    out
+}
+
+/// Evaluate a parsed [`FilterPrimitiveNode`] holding a
+/// [`FilterPrimitive::Tile`] over an 8-bit non-premultiplied
+/// sRGB-encoded RGBA buffer, replicating the reference tile
+/// `(tile_x, tile_y, tile_w, tile_h)` across the `width × height`
+/// output.
+///
+/// The caller (graph-level rasteriser) supplies the input image's
+/// filter-primitive subregion as the tile rectangle. Because §9.20
+/// tiling is a pure spatial replication that copies stored values
+/// verbatim, the working colour space is irrelevant to the maths — the
+/// node is decoded and re-encoded in the node's resolved
+/// `color-interpolation-filters` space purely so the round-trip is a
+/// byte-exact passthrough of the tiled pixels. Returns `None` when the
+/// node is not a tile or when `source_rgba8.len() != width·height·4`.
+#[allow(clippy::too_many_arguments)]
+pub fn evaluate_tile_node(
+    node: &FilterPrimitiveNode,
+    source_rgba8: &[u8],
+    src_width: usize,
+    src_height: usize,
+    tile_x: usize,
+    tile_y: usize,
+    tile_w: usize,
+    tile_h: usize,
+    out_width: usize,
+    out_height: usize,
+) -> Option<Vec<u8>> {
+    let FilterPrimitive::Tile { .. } = &node.primitive else {
+        return None;
+    };
+    let space = node.color_interpolation_filters;
+    let src = FilterImage::from_rgba8(src_width, src_height, source_rgba8, space)?;
+    Some(tile(&src, tile_x, tile_y, tile_w, tile_h, out_width, out_height).to_rgba8(space))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3290,5 +3385,100 @@ mod tests {
         let n = displacement_node(1.0, ChannelSelector::A, ChannelSelector::A);
         assert!(evaluate_displacement_map_node(&n, &[0; 3], &[0; 4], 1, 1).is_none());
         assert!(evaluate_displacement_map_node(&n, &[0; 4], &[0; 3], 1, 1).is_none());
+    }
+
+    // ------------------------------------------------------------------
+    // §9.20 feTile
+    // ------------------------------------------------------------------
+
+    // §9.20: a 2×2 reference tile at the buffer origin replicates across a
+    // 4×4 target. Each destination samples tile[(dx mod 2), (dy mod 2)].
+    #[test]
+    fn tile_2x2_replicates_to_4x4() {
+        // 2×2 source: distinct colours in each cell (sRGB space so no
+        // linearisation distorts the byte-exact passthrough).
+        let mut src = FilterImage::new(2, 2);
+        src.set_pixel(0, 0, [0.1, 0.0, 0.0, 1.0]);
+        src.set_pixel(1, 0, [0.0, 0.2, 0.0, 1.0]);
+        src.set_pixel(0, 1, [0.0, 0.0, 0.3, 1.0]);
+        src.set_pixel(1, 1, [0.4, 0.4, 0.4, 1.0]);
+        let out = tile(&src, 0, 0, 2, 2, 4, 4);
+        for dy in 0..4 {
+            for dx in 0..4 {
+                assert_eq!(
+                    out.pixel(dx, dy),
+                    src.pixel(dx % 2, dy % 2),
+                    "dst ({dx},{dy}) should mirror tile ({},{})",
+                    dx % 2,
+                    dy % 2
+                );
+            }
+        }
+    }
+
+    // §9.20: a tile that does not start at the origin uses the periodic
+    // origin (x + i·width). A 2×2 tile at (1,1) of a 3×3 buffer: dst
+    // (0,0) wraps to tile-relative ((0−1) mod 2, (0−1) mod 2) = (1,1),
+    // i.e. source pixel (1+1, 1+1) = (2,2).
+    #[test]
+    fn tile_offset_origin_wraps_periodically() {
+        let mut src = FilterImage::new(3, 3);
+        src.set_pixel(1, 1, [0.5, 0.0, 0.0, 1.0]);
+        src.set_pixel(2, 1, [0.0, 0.5, 0.0, 1.0]);
+        src.set_pixel(1, 2, [0.0, 0.0, 0.5, 1.0]);
+        src.set_pixel(2, 2, [0.5, 0.5, 0.0, 1.0]);
+        let out = tile(&src, 1, 1, 2, 2, 2, 2);
+        // dst (0,0) ← tile-rel (1,1) ← src (2,2).
+        assert_eq!(out.pixel(0, 0), src.pixel(2, 2));
+        // dst (1,0) ← tile-rel (0,1) ← src (1,2).
+        assert_eq!(out.pixel(1, 0), src.pixel(1, 2));
+        // dst (1,1) ← tile-rel (0,0) ← src (1,1).
+        assert_eq!(out.pixel(1, 1), src.pixel(1, 1));
+    }
+
+    // §9.20: a degenerate (zero-area) tile yields transparent black.
+    #[test]
+    fn tile_zero_area_is_transparent() {
+        let mut src = FilterImage::new(2, 2);
+        src.set_pixel(0, 0, [1.0, 1.0, 1.0, 1.0]);
+        let out = tile(&src, 0, 0, 0, 2, 4, 4);
+        for dy in 0..4 {
+            for dx in 0..4 {
+                assert_eq!(out.pixel(dx, dy), [0.0; 4]);
+            }
+        }
+    }
+
+    // Node entry point: a 1×1 reference tile fills the whole output with
+    // one colour. sRGB space keeps the byte passthrough exact.
+    #[test]
+    fn evaluate_tile_node_fills_with_single_pixel() {
+        let n = node(FilterPrimitive::Tile {
+            input: FilterInput::SourceGraphic,
+        });
+        // 1×1 source carrying one opaque colour, replicated to 3×2.
+        let src = [0x12, 0x34, 0x56, 0xFF];
+        let out = evaluate_tile_node(&n, &src, 1, 1, 0, 0, 1, 1, 3, 2).unwrap();
+        assert_eq!(out.len(), 3 * 2 * 4);
+        for px in out.chunks_exact(4) {
+            assert_eq!(px, &[0x12, 0x34, 0x56, 0xFF]);
+        }
+    }
+
+    #[test]
+    fn evaluate_tile_node_declines_other_primitive() {
+        let n = node(FilterPrimitive::Flood {
+            flood_color: FloodColor::default(),
+            flood_opacity: 1.0,
+        });
+        assert!(evaluate_tile_node(&n, &[0; 4], 1, 1, 0, 0, 1, 1, 1, 1).is_none());
+    }
+
+    #[test]
+    fn evaluate_tile_node_rejects_bad_len() {
+        let n = node(FilterPrimitive::Tile {
+            input: FilterInput::SourceGraphic,
+        });
+        assert!(evaluate_tile_node(&n, &[0; 3], 1, 1, 0, 0, 1, 1, 1, 1).is_none());
     }
 }
