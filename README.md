@@ -55,11 +55,21 @@ the IR cannot model directly via a `PreservedExtras` side-channel.
   `P'(x,y) ← P(x + scale·(XC−½), y + scale·(YC−½))` with the
   dual-colour-space rule — `in2` channels read non-premultiplied in the
   working space, `in` passed through in its own space), `feTile` (the
-  §9.20 reference-tile periodic replication), and `feTurbulence` (a
+  §9.20 reference-tile periodic replication), `feTurbulence` (a
   clean-room port of the §9.21 Perlin-noise / `fractalNoise` reference
   algorithm — Park–Miller LCG, unit-disc gradient lattice, `noise2`
-  bilinear sampling, per-octave sum, and `stitchTiles`); the general
-  filter pixel pipeline is `oxideav-raster` work.
+  bilinear sampling, per-octave sum, and `stitchTiles`), and the two
+  lighting primitives `feDiffuseLighting` / `feSpecularLighting` (the
+  §18 alpha-as-height-map surface normal from all nine position-
+  dependent Sobel kernels — four corners, four edges, the interior, each
+  with its `FACTORx`/`FACTORy` scale and edge-clamped sampling — driven
+  by the constant `<feDistantLight>` vector or the position-dependent
+  `<fePointLight>` / `<feSpotLight>` vectors, the spot
+  `pow(-L·S, exp)` cone fall-off with `limitingConeAngle` clipping, the
+  §18 Lambertian `D = kd·(N·L)·Lcolor` opaque map, and the §19
+  Blinn-Phong `S = ks·pow(N·H, exp)·Lcolor` highlight with the constant
+  `E = (0,0,1)` eye vector and the `Sa = max(Sr,Sg,Sb)` non-opaque
+  alpha); the general filter pixel pipeline is `oxideav-raster` work.
 * **Markers** — `<marker>` definitions parse into a typed `MarkerDef`
   and round-trip; vertex placement / `orient` rendering is deferred to a
   core `Marker` node.

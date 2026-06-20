@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- round 354 — pixel-level `<feSpecularLighting>` node evaluator in
+  [`crate::filter_eval`] (`specular_lighting` +
+  `evaluate_specular_lighting_node`), reusing the §18 `surface_normal` /
+  `light_geometry` kernel. Implements the Filter Effects Module Level 1 §19
+  Blinn-Phong specular model: the viewer is at infinity along `+Z` so the eye
+  vector is the constant `E = (0, 0, 1)` and the half-vector is
+  `H = (L + E) / Norm(L + E)`; per pixel `S = ks · pow(max(N·H, 0),
+  specularExponent) · Lcolor` with the §19 non-opaque alpha
+  `Sa = max(Sr, Sg, Sb)` (so the highlight can be *added* to a texture — a zero
+  highlight adds no coverage, a white highlight adds full opacity). The
+  spot-light cone fall-off folds into the per-pixel colour scale, and
+  `lighting-color` decodes into the working space (§10). 6 new tests
+  (flat-overhead-white, alpha-is-max-of-colour, zero-highlight-transparent,
+  exponent-sharpens, node round-trip, declines-other-primitive).
+
 - round 354 — pixel-level `<feDiffuseLighting>` node evaluator in
   [`crate::filter_eval`] (`diffuse_lighting` + `evaluate_diffuse_lighting_node`,
   with the shared `surface_normal` / `light_geometry` kernel). Implements the

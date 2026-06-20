@@ -2472,6 +2472,105 @@ pub fn evaluate_diffuse_lighting_node(
     )
 }
 
+/// `<feSpecularLighting>` per Filter Effects §19 — the Blinn-Phong specular
+/// highlight of the §18 surface normal under the configured light.
+///
+/// §19 reuses the §18 surface normal `N` and light geometry (`L`, light
+/// colour) verbatim. The reflectance model differs: the viewer sits at
+/// infinity along `+Z`, so the eye vector is `E = (0, 0, 1)` everywhere and the
+/// half-vector is `H = (L + E) / Norm(L + E)`. The §19 result is
+///
+/// ```text
+/// S = ks · pow(N·H, specularExponent) · Lcolor
+/// Sa = max(Sr, Sg, Sb)
+/// ```
+///
+/// Unlike `<feDiffuseLighting>`, the specular map is **non-opaque**: §19 sets
+/// the alpha to the max of the colour components so the highlight can be
+/// *added* to a textured image (a zero highlight adds no coverage; a white
+/// highlight adds full opacity). `N·H` is clamped to `≥ 0` (a surface whose
+/// half-vector faces away contributes nothing), and the per-pixel light-colour
+/// scale (the §18 spot-light fall-off) multiplies the highlight.
+///
+/// The colour channels are stored premultiplied: each is the §19 `Sc` (already
+/// `≤ Sa` because `Sc = ks·t·Lcolor_c ≤ ks·t·max = Sa`, so the premultiplied
+/// invariant `Sc ≤ Sa` holds after the per-channel clamp; the values are clamped
+/// to `[0, 1]` before storage).
+pub fn specular_lighting(
+    src: &FilterImage,
+    surface_scale: f32,
+    specular_constant: f32,
+    specular_exponent: f32,
+    lighting_color: FloodColor,
+    light: &LightSource,
+    space: ColorInterpolationFilters,
+) -> FilterImage {
+    let mut out = FilterImage::new(src.width, src.height);
+    let lc = lighting_color_rgb(lighting_color, space);
+    // §19: the eye direction is the constant unit vector (0, 0, 1).
+    let e = [0.0f32, 0.0, 1.0];
+    for y in 0..src.height {
+        for x in 0..src.width {
+            let n = surface_normal(src, x, y, surface_scale);
+            let z = surface_scale * i_00(src, x, y);
+            let (l, color_scale) = light_geometry(light, x as f32, y as f32, z);
+            // §19: H = (L + E) / Norm(L + E).
+            let h = normalize3([l[0] + e[0], l[1] + e[1], l[2] + e[2]]);
+            let n_dot_h = dot3(n, h).max(0.0);
+            // ks · pow(N·H, exp) · per-pixel light-colour scale.
+            let t = specular_constant * n_dot_h.powf(specular_exponent) * color_scale;
+            let sr = (t * lc[0]).clamp(0.0, 1.0);
+            let sg = (t * lc[1]).clamp(0.0, 1.0);
+            let sb = (t * lc[2]).clamp(0.0, 1.0);
+            // §19: Sa = max(Sr, Sg, Sb). Colour channels are already the
+            // premultiplied values (each ≤ Sa by construction).
+            let sa = sr.max(sg).max(sb);
+            out.set_pixel(x, y, [sr, sg, sb, sa]);
+        }
+    }
+    out
+}
+
+/// Evaluate a parsed [`FilterPrimitiveNode`] holding a
+/// [`FilterPrimitive::SpecularLighting`] over an 8-bit non-premultiplied
+/// sRGB-encoded RGBA buffer, in the node's resolved
+/// `color-interpolation-filters` working space (§10).
+///
+/// Returns `None` when the node is not a specular-lighting primitive or when
+/// `source_rgba8.len() != width * height * 4`.
+pub fn evaluate_specular_lighting_node(
+    node: &FilterPrimitiveNode,
+    source_rgba8: &[u8],
+    width: usize,
+    height: usize,
+) -> Option<Vec<u8>> {
+    let FilterPrimitive::SpecularLighting {
+        surface_scale,
+        specular_constant,
+        specular_exponent,
+        lighting_color,
+        light_source,
+        ..
+    } = &node.primitive
+    else {
+        return None;
+    };
+    let space = node.color_interpolation_filters;
+    let src = FilterImage::from_rgba8(width, height, source_rgba8, space)?;
+    Some(
+        specular_lighting(
+            &src,
+            *surface_scale,
+            *specular_constant,
+            *specular_exponent,
+            *lighting_color,
+            light_source,
+            space,
+        )
+        .to_rgba8(space),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4619,5 +4718,172 @@ mod tests {
             flood_opacity: 1.0,
         });
         assert!(evaluate_diffuse_lighting_node(&n, &[0; 16], 2, 2).is_none());
+    }
+
+    // --- §19 feSpecularLighting -----------------------------------------
+
+    // §19: on a flat surface (N = (0,0,1)) lit by a distant light straight
+    // overhead (L = (0,0,1)), H = (L+E)/Norm = (0,0,1) too, so N·H = 1 and
+    // pow(1, exp) = 1. With ks = 1 and white light the highlight is full
+    // white, and Sa = max(1,1,1) = 1 → opaque white.
+    #[test]
+    fn specular_flat_overhead_is_white() {
+        let src = FilterImage::from_rgba8(
+            3,
+            3,
+            &height_rgba8(&[128; 9]),
+            ColorInterpolationFilters::Srgb,
+        )
+        .unwrap();
+        let light = LightSource::Distant {
+            azimuth: 0.0,
+            elevation: 90.0,
+        };
+        let out = specular_lighting(
+            &src,
+            1.0,
+            1.0,
+            1.0,
+            white(),
+            &light,
+            ColorInterpolationFilters::Srgb,
+        )
+        .to_rgba8(ColorInterpolationFilters::Srgb);
+        for px in out.chunks_exact(4) {
+            assert_eq!(px, &[255, 255, 255, 255]);
+        }
+    }
+
+    // §19: Sa = max(Sr, Sg, Sb). A pure-red light on a flat overhead surface
+    // yields Sr = 255, Sg = Sb = 0, so Sa = 255. The result is opaque red —
+    // the alpha tracks the brightest colour channel, unlike feDiffuseLighting
+    // whose alpha is always 1 regardless of colour.
+    #[test]
+    fn specular_alpha_is_max_of_color() {
+        let src =
+            FilterImage::from_rgba8(1, 1, &height_rgba8(&[255]), ColorInterpolationFilters::Srgb)
+                .unwrap();
+        let red = FloodColor {
+            r: 255,
+            g: 0,
+            b: 0,
+            a: 255,
+        };
+        let light = LightSource::Distant {
+            azimuth: 0.0,
+            elevation: 90.0,
+        };
+        let out = specular_lighting(
+            &src,
+            1.0,
+            1.0,
+            1.0,
+            red,
+            &light,
+            ColorInterpolationFilters::Srgb,
+        )
+        .to_rgba8(ColorInterpolationFilters::Srgb);
+        assert_eq!(out, vec![255, 0, 0, 255]);
+    }
+
+    // §19: where the highlight is zero the specular map adds no coverage —
+    // a grazing distant light (elevation 0) on a flat surface gives
+    // H = (L+E)/Norm with L = (1,0,0), so H = (1,0,1)/√2, N·H = 1/√2;
+    // raised to a large exponent the highlight collapses to ~0 → Sa ≈ 0
+    // (transparent), in contrast to feDiffuseLighting which stays opaque.
+    #[test]
+    fn specular_zero_highlight_is_transparent() {
+        let src =
+            FilterImage::from_rgba8(1, 1, &height_rgba8(&[255]), ColorInterpolationFilters::Srgb)
+                .unwrap();
+        let light = LightSource::Distant {
+            azimuth: 0.0,
+            elevation: 0.0,
+        };
+        // Large exponent makes (1/√2)^exp ≈ 0.
+        let out = specular_lighting(
+            &src,
+            1.0,
+            1.0,
+            50.0,
+            white(),
+            &light,
+            ColorInterpolationFilters::Srgb,
+        )
+        .to_rgba8(ColorInterpolationFilters::Srgb);
+        assert_eq!(out[3], 0, "negligible highlight must be transparent");
+    }
+
+    // §19: specularExponent controls highlight sharpness. With N·H < 1 a
+    // larger exponent darkens the highlight (t = ks·(N·H)^exp shrinks).
+    #[test]
+    fn specular_exponent_sharpens_highlight() {
+        // Sloped surface so N tilts and N·H < 1.
+        let alpha = [0u8, 128, 255, 0, 128, 255, 0, 128, 255];
+        let src =
+            FilterImage::from_rgba8(3, 3, &height_rgba8(&alpha), ColorInterpolationFilters::Srgb)
+                .unwrap();
+        let light = LightSource::Distant {
+            azimuth: 0.0,
+            elevation: 90.0,
+        };
+        let low = specular_lighting(
+            &src,
+            5.0,
+            1.0,
+            1.0,
+            white(),
+            &light,
+            ColorInterpolationFilters::Srgb,
+        )
+        .to_rgba8(ColorInterpolationFilters::Srgb);
+        let high = specular_lighting(
+            &src,
+            5.0,
+            1.0,
+            20.0,
+            white(),
+            &light,
+            ColorInterpolationFilters::Srgb,
+        )
+        .to_rgba8(ColorInterpolationFilters::Srgb);
+        // Centre pixel index (1,1) = 4.
+        assert!(
+            high[4 * 4] <= low[4 * 4],
+            "higher exponent must not brighten an off-axis highlight: {} vs {}",
+            high[4 * 4],
+            low[4 * 4]
+        );
+    }
+
+    // Node entry point: identity round-trip on the specular primitive.
+    #[test]
+    fn evaluate_specular_lighting_node_basic() {
+        let n = node(FilterPrimitive::SpecularLighting {
+            input: FilterInput::SourceGraphic,
+            surface_scale: 1.0,
+            specular_constant: 1.0,
+            specular_exponent: 1.0,
+            kernel_unit_length: None,
+            lighting_color: white(),
+            light_source: LightSource::Distant {
+                azimuth: 0.0,
+                elevation: 90.0,
+            },
+        });
+        let src = height_rgba8(&[255; 4]);
+        let out = evaluate_specular_lighting_node(&n, &src, 2, 2).unwrap();
+        for px in out.chunks_exact(4) {
+            assert_eq!(px, &[255, 255, 255, 255]);
+        }
+    }
+
+    #[test]
+    fn evaluate_specular_lighting_node_declines_other_primitive() {
+        let n = node(FilterPrimitive::Flood {
+            flood_color: FloodColor::default(),
+            flood_opacity: 1.0,
+        });
+        assert!(evaluate_specular_lighting_node(&n, &[0; 16], 2, 2).is_none());
     }
 }
