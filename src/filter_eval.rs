@@ -61,7 +61,7 @@
 
 use crate::filter::{
     BlendMode, ChannelSelector, ColorInterpolationFilters, CompositeOperator, ConvolveEdgeMode,
-    EdgeMode, FilterPrimitive, FilterPrimitiveNode, FloodColor, MorphologyOperator,
+    EdgeMode, FilterPrimitive, FilterPrimitiveNode, FloodColor, LightSource, MorphologyOperator,
     TransferFunction,
 };
 
@@ -2116,6 +2116,362 @@ pub fn evaluate_turbulence_node(
     Some(img.to_rgba8(node.color_interpolation_filters))
 }
 
+// ===========================================================================
+// feDiffuseLighting / feSpecularLighting — W3C Filter Effects §18 / §19
+// ===========================================================================
+//
+// Both lighting primitives treat the **alpha channel** of their input as a
+// height map and build a per-pixel surface normal `N` from it (§18, shared by
+// §19). They then combine `N` with a per-pixel light unit-vector `L` and the
+// light colour. The two routines below — [`surface_normal`] (§18 Sobel
+// gradient) and [`light_geometry`] (§18 `L` / spot-light colour) — are the
+// shared kernel; the diffuse and specular reflectance models differ only in
+// the final per-pixel combine.
+//
+// ## Height map
+//
+// `Z(x,y) = surfaceScale · I(x,y)` where `I` is the *non-premultiplied* alpha
+// of the input at `(x,y)` (§18). [`FilterImage`] stores the alpha channel
+// directly (alpha is never premultiplied), so `I` reads straight from the
+// pixel's fourth component — no colour-space transfer applies to alpha.
+//
+// ## Output colour space
+//
+// The light colour (`lighting-color`) is an sRGB-encoded `FloodColor`; it is
+// decoded into the node's working space (§10) before the reflectance multiply,
+// exactly as `<feFlood>` decodes its `flood-color`. The reflectance scalars
+// (`N·L`, `pow(N·H, …)`) are dimensionless, so the working-space colour passes
+// through them unchanged and the result is re-encoded by [`FilterImage::
+// to_rgba8`].
+
+/// Vector helper — Euclidean norm of a 3-vector, the §18 `Norm` function.
+fn norm3(v: [f32; 3]) -> f32 {
+    (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()
+}
+
+/// Normalise a 3-vector to unit length; a zero vector stays zero (the
+/// degenerate case never contributes light because `N·L` then vanishes).
+fn normalize3(v: [f32; 3]) -> [f32; 3] {
+    let n = norm3(v);
+    if n > 0.0 {
+        [v[0] / n, v[1] / n, v[2] / n]
+    } else {
+        [0.0, 0.0, 0.0]
+    }
+}
+
+/// Dot product of two 3-vectors.
+fn dot3(a: [f32; 3], b: [f32; 3]) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+/// Read the height-map sample `I(x, y)` (= the input's non-premultiplied
+/// alpha) with §18 edge clamping: out-of-image coordinates clamp to the
+/// nearest border pixel, matching the per-position Sobel kernels which only
+/// reference in-image neighbours at the borders.
+fn height_at(src: &FilterImage, x: isize, y: isize) -> f32 {
+    let xc = x.clamp(0, src.width as isize - 1) as usize;
+    let yc = y.clamp(0, src.height as isize - 1) as usize;
+    // Alpha is component 3 and is stored un-premultiplied by construction.
+    src.pixel(xc, yc)[3]
+}
+
+/// §18 surface normal `N = (Nx, Ny, Nz) / Norm(...)` at `(x, y)`.
+///
+/// `Nx`/`Ny` come from the position-dependent Sobel gradient: the spec gives
+/// nine 3×3 kernels (four corners, four edges, the interior) each paired with
+/// a `FACTORx`/`FACTORy` scale. `Nz = 1.0`, then the whole vector is scaled by
+/// `-surfaceScale` on the in-plane components before normalisation.
+///
+/// The kernels are transcribed from the §18 "surface normal" tables. Rather
+/// than store nine literal 3×3 matrices, the row/column position selects the
+/// matching `FACTOR` and the (sparse) non-zero kernel taps directly — the
+/// kernels are the standard Sobel operator truncated at the borders, so each
+/// border case is the interior kernel with the out-of-range row/column
+/// dropped and the surviving taps re-weighted by the listed `FACTOR`.
+///
+/// `dx`/`dy` are the finite-difference deltas (`kernelUnitLength`, default 1
+/// pixel each).
+//
+// The kernel taps are written with their literal `±1`/`±2` coefficients (and
+// explicit `1.0 *` / `-1.0 *` factors) so each branch is line-checkable against
+// the transcribed §18 `Kx`/`Ky` matrices in the doc-comment above. Dropping the
+// unit/negation coefficients would obscure that correspondence, so the
+// identity-op / neg-multiply lints are silenced for this one spec-mirroring
+// function.
+#[allow(clippy::neg_multiply, clippy::identity_op)]
+fn surface_normal(src: &FilterImage, x: usize, y: usize, surface_scale: f32) -> [f32; 3] {
+    let w = src.width as isize;
+    let h = src.height as isize;
+    let xi = x as isize;
+    let yi = y as isize;
+
+    // Sample the 3×3 neighbourhood with edge clamping. Naming: `i_<col><row>`
+    // with col/row ∈ {m (minus), 0 (centre), p (plus)} relative to (x, y).
+    let i_mm = height_at(src, xi - 1, yi - 1);
+    let i_0m = height_at(src, xi, yi - 1);
+    let i_pm = height_at(src, xi + 1, yi - 1);
+    let i_m0 = height_at(src, xi - 1, yi);
+    let i_p0 = height_at(src, xi + 1, yi);
+    let i_mp = height_at(src, xi - 1, yi + 1);
+    let i_0p = height_at(src, xi, yi + 1);
+    let i_pp = height_at(src, xi + 1, yi + 1);
+
+    let on_left = xi == 0;
+    let on_right = xi == w - 1;
+    let on_top = yi == 0;
+    let on_bottom = yi == h - 1;
+
+    // dx = dy = 1 pixel (kernelUnitLength default); see [`light_geometry`]
+    // for the per-call note on the deprecated explicit-spacing attribute.
+    let dx = 1.0f32;
+    let dy = 1.0f32;
+
+    // Each branch transcribes one §18 kernel pair (FACTORx·Kx, FACTORy·Ky).
+    // The kernels are sparse; only the non-zero taps appear.
+    let (nx_raw, ny_raw) = if on_top && on_left {
+        // Top/left corner.
+        // FACTORx = 2/(3·dx), Kx = | 0 0 0 | 0 -2 2 | 0 -1 1 |
+        // FACTORy = 2/(3·dy), Ky = | 0 0 0 | 0 -2 -1 | 0 2 1 |
+        let gx = 2.0 / (3.0 * dx) * (-2.0 * i_00(src, x, y) + 2.0 * i_p0 - 1.0 * i_0p + 1.0 * i_pp);
+        let gy = 2.0 / (3.0 * dy) * (-2.0 * i_00(src, x, y) - 1.0 * i_p0 + 2.0 * i_0p + 1.0 * i_pp);
+        (gx, gy)
+    } else if on_top && on_right {
+        // Top/right corner.
+        // FACTORx = 2/(3·dx), Kx = | 0 0 0 | -2 2 0 | -1 1 0 |
+        // FACTORy = 2/(3·dy), Ky = | 0 0 0 | -1 -2 0 | 1 2 0 |
+        let gx = 2.0 / (3.0 * dx) * (-2.0 * i_m0 + 2.0 * i_00(src, x, y) - 1.0 * i_mp + 1.0 * i_0p);
+        let gy = 2.0 / (3.0 * dy) * (-1.0 * i_m0 - 2.0 * i_00(src, x, y) + 1.0 * i_mp + 2.0 * i_0p);
+        (gx, gy)
+    } else if on_bottom && on_left {
+        // Bottom/left corner.
+        // FACTORx = 2/(3·dx), Kx = | 0 -1 1 | 0 -2 2 | 0 0 0 |
+        // FACTORy = 2/(3·dy), Ky = | 0 -2 -1 | 0 2 1 | 0 0 0 |
+        let gx = 2.0 / (3.0 * dx) * (-1.0 * i_0m + 1.0 * i_pm - 2.0 * i_00(src, x, y) + 2.0 * i_p0);
+        let gy = 2.0 / (3.0 * dy) * (-2.0 * i_0m - 1.0 * i_pm + 2.0 * i_00(src, x, y) + 1.0 * i_p0);
+        (gx, gy)
+    } else if on_bottom && on_right {
+        // Bottom/right corner.
+        // FACTORx = 2/(3·dx), Kx = | -1 1 0 | -2 2 0 | 0 0 0 |
+        // FACTORy = 2/(3·dy), Ky = | -1 -2 0 | 1 2 0 | 0 0 0 |
+        let gx = 2.0 / (3.0 * dx) * (-1.0 * i_mm + 1.0 * i_0m - 2.0 * i_m0 + 2.0 * i_00(src, x, y));
+        let gy = 2.0 / (3.0 * dy) * (-1.0 * i_mm - 2.0 * i_0m + 1.0 * i_m0 + 2.0 * i_00(src, x, y));
+        (gx, gy)
+    } else if on_top {
+        // Top row (interior columns).
+        // FACTORx = 1/(3·dx), Kx = | 0 0 0 | -2 0 2 | -1 0 1 |
+        // FACTORy = 1/(2·dy), Ky = | 0 0 0 | -1 -2 -1 | 1 2 1 |
+        let gx = 1.0 / (3.0 * dx) * (-2.0 * i_m0 + 2.0 * i_p0 - 1.0 * i_mp + 1.0 * i_pp);
+        let gy = 1.0 / (2.0 * dy)
+            * (-1.0 * i_m0 - 2.0 * i_00(src, x, y) - 1.0 * i_p0
+                + 1.0 * i_mp
+                + 2.0 * i_0p
+                + 1.0 * i_pp);
+        (gx, gy)
+    } else if on_bottom {
+        // Bottom row (interior columns).
+        // FACTORx = 1/(3·dx), Kx = | -1 0 1 | -2 0 2 | 0 0 0 |
+        // FACTORy = 1/(2·dy), Ky = | -1 -2 -1 | 1 2 1 | 0 0 0 |
+        let gx = 1.0 / (3.0 * dx) * (-1.0 * i_mm + 1.0 * i_pm - 2.0 * i_m0 + 2.0 * i_p0);
+        let gy = 1.0 / (2.0 * dy)
+            * (-1.0 * i_mm - 2.0 * i_0m - 1.0 * i_pm
+                + 1.0 * i_m0
+                + 2.0 * i_00(src, x, y)
+                + 1.0 * i_p0);
+        (gx, gy)
+    } else if on_left {
+        // Left column (interior rows).
+        // FACTORx = 1/(2·dx), Kx = | 0 -1 1 | 0 -2 2 | 0 -1 1 |
+        // FACTORy = 1/(3·dy), Ky = | 0 -2 -1 | 0 0 0 | 0 2 1 |
+        let gx = 1.0 / (2.0 * dx)
+            * (-1.0 * i_0m + 1.0 * i_pm - 2.0 * i_00(src, x, y) + 2.0 * i_p0 - 1.0 * i_0p
+                + 1.0 * i_pp);
+        let gy = 1.0 / (3.0 * dy) * (-2.0 * i_0m - 1.0 * i_pm + 2.0 * i_0p + 1.0 * i_pp);
+        (gx, gy)
+    } else if on_right {
+        // Right column (interior rows).
+        // FACTORx = 1/(2·dx), Kx = | -1 1 0 | -2 2 0 | -1 1 0 |
+        // FACTORy = 1/(3·dy), Ky = | -1 -2 0 | 0 0 0 | 1 2 0 |
+        let gx = 1.0 / (2.0 * dx)
+            * (-1.0 * i_mm + 1.0 * i_0m - 2.0 * i_m0 + 2.0 * i_00(src, x, y) - 1.0 * i_mp
+                + 1.0 * i_0p);
+        let gy = 1.0 / (3.0 * dy) * (-1.0 * i_mm - 2.0 * i_0m + 1.0 * i_mp + 2.0 * i_0p);
+        (gx, gy)
+    } else {
+        // Interior pixels — the full Sobel operator.
+        // FACTORx = 1/(4·dx), Kx = | -1 0 1 | -2 0 2 | -1 0 1 |
+        // FACTORy = 1/(4·dy), Ky = | -1 -2 -1 | 0 0 0 | 1 2 1 |
+        let gx = 1.0 / (4.0 * dx)
+            * (-1.0 * i_mm + 1.0 * i_pm - 2.0 * i_m0 + 2.0 * i_p0 - 1.0 * i_mp + 1.0 * i_pp);
+        let gy = 1.0 / (4.0 * dy)
+            * (-1.0 * i_mm - 2.0 * i_0m - 1.0 * i_pm + 1.0 * i_mp + 2.0 * i_0p + 1.0 * i_pp);
+        (gx, gy)
+    };
+
+    let nx = -surface_scale * nx_raw;
+    let ny = -surface_scale * ny_raw;
+    normalize3([nx, ny, 1.0])
+}
+
+/// Centre height-map sample `I(x, y)` — pulled out so the corner/edge Sobel
+/// branches can reference the centre tap without re-reading the pixel.
+fn i_00(src: &FilterImage, x: usize, y: usize) -> f32 {
+    src.pixel(x, y)[3]
+}
+
+/// §18 light geometry at output pixel `(x, y)` with height `z = Z(x,y)`:
+/// returns the light unit vector `L` and the per-pixel light colour scale
+/// (`1.0` except for a spot light, where the §18 `pow((-L·S), specularExponent)`
+/// cone fall-off applies, gated by `limitingConeAngle`). A zero colour scale
+/// means the pixel receives no light.
+fn light_geometry(light: &LightSource, x: f32, y: f32, z: f32) -> ([f32; 3], f32) {
+    match *light {
+        LightSource::Distant { azimuth, elevation } => {
+            // §18: constant L = (cos·cos, sin·cos, sin) of (azimuth, elevation).
+            let az = azimuth.to_radians();
+            let el = elevation.to_radians();
+            let l = [az.cos() * el.cos(), az.sin() * el.cos(), el.sin()];
+            (normalize3(l), 1.0)
+        }
+        LightSource::Point {
+            x: lx,
+            y: ly,
+            z: lz,
+        } => {
+            // §18: L = (Lightx − x, Lighty − y, Lightz − Z(x,y)), normalised.
+            let l = normalize3([lx - x, ly - y, lz - z]);
+            (l, 1.0)
+        }
+        LightSource::Spot {
+            x: lx,
+            y: ly,
+            z: lz,
+            points_at_x,
+            points_at_y,
+            points_at_z,
+            specular_exponent,
+            limiting_cone_angle,
+        } => {
+            let l = normalize3([lx - x, ly - y, lz - z]);
+            // §18: S = unit vector from light toward (pointsAtX/Y/Z).
+            let s = normalize3([points_at_x - lx, points_at_y - ly, points_at_z - lz]);
+            // §18: light colour scaled by pow(-L·S, specularExponent).
+            // If L·S is positive (i.e. -L·S ≤ 0) no light is present.
+            let neg_ls = -dot3(l, s);
+            if neg_ls <= 0.0 {
+                return (l, 0.0);
+            }
+            // §18: -L·S < cos(limitingConeAngle) ⇒ outside the cone ⇒ no light.
+            if let Some(cone) = limiting_cone_angle {
+                if neg_ls < cone.to_radians().cos() {
+                    return (l, 0.0);
+                }
+            }
+            (l, neg_ls.powf(specular_exponent))
+        }
+    }
+}
+
+/// Decode a `FloodColor` (sRGB-encoded) into the node's working colour space
+/// (§10), returning the non-premultiplied RGB triple in `[0, 1]`. Mirrors the
+/// `<feFlood>` colour decode so `lighting-color` lands in the same space the
+/// reflectance multiply happens in.
+fn lighting_color_rgb(color: FloodColor, space: ColorInterpolationFilters) -> [f32; 3] {
+    let linear = working_space_is_linear(space);
+    let conv = |c: u8| {
+        let v = c as f32 / 255.0;
+        if linear {
+            srgb_to_linear(v)
+        } else {
+            v
+        }
+    };
+    [conv(color.r), conv(color.g), conv(color.b)]
+}
+
+/// `<feDiffuseLighting>` per Filter Effects §18 — the Lambertian-diffuse
+/// reflectance of the §18 surface normal under the configured light.
+///
+/// For each output pixel the §18 result is
+/// `D = kd · (N·L) · Lcolor`, alpha `= 1.0` (the diffuse map is opaque). The
+/// surface normal `N` comes from [`surface_normal`]; the light vector `L` and
+/// per-pixel colour scale come from [`light_geometry`] (the spot-light
+/// fall-off folds into the colour scale). `N·L` is clamped to `≥ 0` — a
+/// surface facing away from the light reflects nothing.
+///
+/// The result is stored premultiplied; with `α = 1` that equals the colour, so
+/// each channel is `clamp(kd · max(N·L, 0) · scale · Lcolor_c, 0, 1)`.
+pub fn diffuse_lighting(
+    src: &FilterImage,
+    surface_scale: f32,
+    diffuse_constant: f32,
+    lighting_color: FloodColor,
+    light: &LightSource,
+    space: ColorInterpolationFilters,
+) -> FilterImage {
+    let mut out = FilterImage::new(src.width, src.height);
+    let lc = lighting_color_rgb(lighting_color, space);
+    for y in 0..src.height {
+        for x in 0..src.width {
+            let n = surface_normal(src, x, y, surface_scale);
+            let z = surface_scale * i_00(src, x, y);
+            let (l, color_scale) = light_geometry(light, x as f32, y as f32, z);
+            let n_dot_l = dot3(n, l).max(0.0);
+            let k = diffuse_constant * n_dot_l * color_scale;
+            // α = 1.0 (opaque); premultiplied == colour.
+            out.set_pixel(
+                x,
+                y,
+                [
+                    (k * lc[0]).clamp(0.0, 1.0),
+                    (k * lc[1]).clamp(0.0, 1.0),
+                    (k * lc[2]).clamp(0.0, 1.0),
+                    1.0,
+                ],
+            );
+        }
+    }
+    out
+}
+
+/// Evaluate a parsed [`FilterPrimitiveNode`] holding a
+/// [`FilterPrimitive::DiffuseLighting`] over an 8-bit non-premultiplied
+/// sRGB-encoded RGBA buffer, in the node's resolved
+/// `color-interpolation-filters` working space (§10).
+///
+/// Returns `None` when the node is not a diffuse-lighting primitive or when
+/// `source_rgba8.len() != width * height * 4`.
+pub fn evaluate_diffuse_lighting_node(
+    node: &FilterPrimitiveNode,
+    source_rgba8: &[u8],
+    width: usize,
+    height: usize,
+) -> Option<Vec<u8>> {
+    let FilterPrimitive::DiffuseLighting {
+        surface_scale,
+        diffuse_constant,
+        lighting_color,
+        light_source,
+        ..
+    } = &node.primitive
+    else {
+        return None;
+    };
+    let space = node.color_interpolation_filters;
+    let src = FilterImage::from_rgba8(width, height, source_rgba8, space)?;
+    Some(
+        diffuse_lighting(
+            &src,
+            *surface_scale,
+            *diffuse_constant,
+            *lighting_color,
+            light_source,
+            space,
+        )
+        .to_rgba8(space),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4025,5 +4381,243 @@ mod tests {
             flood_opacity: 1.0,
         });
         assert!(evaluate_turbulence_node(&n, 4, 4, 0.0, 0.0, 4.0, 4.0).is_none());
+    }
+
+    // --- §18 feDiffuseLighting ------------------------------------------
+
+    // Build an RGBA8 buffer from a height map (alpha) — RGB are 0; only the
+    // alpha channel matters to the lighting surface.
+    fn height_rgba8(alpha: &[u8]) -> Vec<u8> {
+        let mut v = Vec::with_capacity(alpha.len() * 4);
+        for &a in alpha {
+            v.extend_from_slice(&[0, 0, 0, a]);
+        }
+        v
+    }
+
+    fn white() -> FloodColor {
+        FloodColor {
+            r: 255,
+            g: 255,
+            b: 255,
+            a: 255,
+        }
+    }
+
+    // §18: a perfectly flat height map has N = (0, 0, 1) everywhere. With a
+    // distant light straight overhead (elevation 90°) L = (0, 0, 1), so
+    // N·L = 1 and the diffuse map equals kd · lighting-color. With kd = 1 and
+    // white light over sRGB, every output pixel is opaque white.
+    #[test]
+    fn diffuse_flat_overhead_is_white() {
+        // Flat: constant alpha 128 everywhere.
+        let src = FilterImage::from_rgba8(
+            3,
+            3,
+            &height_rgba8(&[128; 9]),
+            ColorInterpolationFilters::Srgb,
+        )
+        .unwrap();
+        let light = LightSource::Distant {
+            azimuth: 0.0,
+            elevation: 90.0,
+        };
+        let out = diffuse_lighting(
+            &src,
+            1.0,
+            1.0,
+            white(),
+            &light,
+            ColorInterpolationFilters::Srgb,
+        )
+        .to_rgba8(ColorInterpolationFilters::Srgb);
+        for px in out.chunks_exact(4) {
+            assert_eq!(px, &[255, 255, 255, 255]);
+        }
+    }
+
+    // §18: the diffuse map is always opaque (Da = 1.0), even where N·L = 0.
+    // A distant light grazing the horizon (elevation 0, azimuth 0) gives
+    // L = (1, 0, 0); on a flat surface N = (0,0,1) so N·L = 0 → black, but
+    // still opaque.
+    #[test]
+    fn diffuse_is_always_opaque() {
+        let src = FilterImage::from_rgba8(
+            2,
+            2,
+            &height_rgba8(&[200; 4]),
+            ColorInterpolationFilters::Srgb,
+        )
+        .unwrap();
+        let light = LightSource::Distant {
+            azimuth: 0.0,
+            elevation: 0.0,
+        };
+        let out = diffuse_lighting(
+            &src,
+            1.0,
+            1.0,
+            white(),
+            &light,
+            ColorInterpolationFilters::Srgb,
+        )
+        .to_rgba8(ColorInterpolationFilters::Srgb);
+        for px in out.chunks_exact(4) {
+            assert_eq!(px[3], 255, "diffuse alpha must be opaque");
+            assert_eq!(
+                &px[..3],
+                &[0, 0, 0],
+                "grazing light on flat surface is black"
+            );
+        }
+    }
+
+    // §18: diffuseConstant scales the whole map linearly. kd = 0.5 over a
+    // flat surface lit overhead halves the white light (sRGB working space,
+    // no linearisation), giving ~128.
+    #[test]
+    fn diffuse_constant_scales_output() {
+        let src =
+            FilterImage::from_rgba8(1, 1, &height_rgba8(&[255]), ColorInterpolationFilters::Srgb)
+                .unwrap();
+        let light = LightSource::Distant {
+            azimuth: 0.0,
+            elevation: 90.0,
+        };
+        let out = diffuse_lighting(
+            &src,
+            1.0,
+            0.5,
+            white(),
+            &light,
+            ColorInterpolationFilters::Srgb,
+        )
+        .to_rgba8(ColorInterpolationFilters::Srgb);
+        // 0.5 · 1.0 · 255 = 127.5 → rounds to 128.
+        assert_eq!(&out[..3], &[128, 128, 128]);
+        assert_eq!(out[3], 255);
+    }
+
+    // §18: lighting-color tints the result. A flat surface lit overhead with
+    // a pure-red light yields opaque red.
+    #[test]
+    fn diffuse_lighting_color_tints() {
+        let src =
+            FilterImage::from_rgba8(1, 1, &height_rgba8(&[255]), ColorInterpolationFilters::Srgb)
+                .unwrap();
+        let red = FloodColor {
+            r: 255,
+            g: 0,
+            b: 0,
+            a: 255,
+        };
+        let light = LightSource::Distant {
+            azimuth: 0.0,
+            elevation: 90.0,
+        };
+        let out = diffuse_lighting(&src, 1.0, 1.0, red, &light, ColorInterpolationFilters::Srgb)
+            .to_rgba8(ColorInterpolationFilters::Srgb);
+        assert_eq!(out, vec![255, 0, 0, 255]);
+    }
+
+    // §18: a sloped height map tilts the surface normal away from vertical,
+    // so an overhead light reflects less than full intensity (N·L < 1).
+    // Step ramp 0 → 255 along x produces a non-trivial gradient; the lit
+    // value must be < 255 and > 0 somewhere.
+    #[test]
+    fn diffuse_slope_reduces_overhead_reflection() {
+        // 3×3 ramp increasing left→right.
+        let alpha = [0u8, 128, 255, 0, 128, 255, 0, 128, 255];
+        let src =
+            FilterImage::from_rgba8(3, 3, &height_rgba8(&alpha), ColorInterpolationFilters::Srgb)
+                .unwrap();
+        let light = LightSource::Distant {
+            azimuth: 0.0,
+            elevation: 90.0,
+        };
+        // surfaceScale large enough to make the slope bite.
+        let out = diffuse_lighting(
+            &src,
+            10.0,
+            1.0,
+            white(),
+            &light,
+            ColorInterpolationFilters::Srgb,
+        )
+        .to_rgba8(ColorInterpolationFilters::Srgb);
+        // The centre pixel sits on the slope: N tilts, N·L < 1 → < 255.
+        // Centre of a 3×3 grid is index (1, 1) = row·width + col = 4.
+        let centre = &out[4 * 4..4 * 4 + 4];
+        assert!(
+            centre[0] < 255,
+            "sloped surface should not be full white: {centre:?}"
+        );
+        assert_eq!(centre[3], 255);
+    }
+
+    // §18 spot light: a point straight above the centre pixel pointing down
+    // at it lights that pixel; the spot cone fall-off keeps neighbours dim.
+    #[test]
+    fn diffuse_spot_light_lights_center() {
+        let src = FilterImage::from_rgba8(
+            3,
+            3,
+            &height_rgba8(&[0; 9]),
+            ColorInterpolationFilters::Srgb,
+        )
+        .unwrap();
+        let light = LightSource::Spot {
+            x: 1.0,
+            y: 1.0,
+            z: 10.0,
+            points_at_x: 1.0,
+            points_at_y: 1.0,
+            points_at_z: 0.0,
+            specular_exponent: 1.0,
+            limiting_cone_angle: None,
+        };
+        let out = diffuse_lighting(
+            &src,
+            1.0,
+            1.0,
+            white(),
+            &light,
+            ColorInterpolationFilters::Srgb,
+        )
+        .to_rgba8(ColorInterpolationFilters::Srgb);
+        // Centre of a 3×3 grid is index (1, 1) = row·width + col = 4.
+        let centre = out[4 * 4];
+        // Directly under the light, L ≈ (0,0,1) and -L·S ≈ 1 → strong.
+        assert!(centre > 200, "spot centre should be bright: {centre}");
+    }
+
+    // Node entry point: identity round-trip on the diffuse primitive.
+    #[test]
+    fn evaluate_diffuse_lighting_node_basic() {
+        let n = node(FilterPrimitive::DiffuseLighting {
+            input: FilterInput::SourceGraphic,
+            surface_scale: 1.0,
+            diffuse_constant: 1.0,
+            kernel_unit_length: None,
+            lighting_color: white(),
+            light_source: LightSource::Distant {
+                azimuth: 0.0,
+                elevation: 90.0,
+            },
+        });
+        let src = height_rgba8(&[255; 4]);
+        let out = evaluate_diffuse_lighting_node(&n, &src, 2, 2).unwrap();
+        for px in out.chunks_exact(4) {
+            assert_eq!(px, &[255, 255, 255, 255]);
+        }
+    }
+
+    #[test]
+    fn evaluate_diffuse_lighting_node_declines_other_primitive() {
+        let n = node(FilterPrimitive::Flood {
+            flood_color: FloodColor::default(),
+            flood_opacity: 1.0,
+        });
+        assert!(evaluate_diffuse_lighting_node(&n, &[0; 16], 2, 2).is_none());
     }
 }

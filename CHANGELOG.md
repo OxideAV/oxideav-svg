@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- round 354 — pixel-level `<feDiffuseLighting>` node evaluator in
+  [`crate::filter_eval`] (`diffuse_lighting` + `evaluate_diffuse_lighting_node`,
+  with the shared `surface_normal` / `light_geometry` kernel). Implements the
+  Filter Effects Module Level 1 §18 Lambertian-diffuse model: the alpha channel
+  is treated as a height map `Z = surfaceScale · I`, the surface normal `N`
+  comes from the position-dependent §18 Sobel gradient (all nine kernels — four
+  corners, four edges, the interior — each with its listed `FACTORx`/`FACTORy`
+  scale and edge-clamped sampling), and per pixel `D = kd · max(N·L, 0) ·
+  Lcolor` with `Da = 1.0` (opaque). The light unit-vector `L` is constant for a
+  `<feDistantLight>` (`cos·cos`, `sin·cos`, `sin` of azimuth/elevation) and
+  position-dependent for `<fePointLight>` / `<feSpotLight>`; the spot-light
+  `pow(-L·S, specularExponent)` cone fall-off (with `limitingConeAngle`
+  clipping) folds into a per-pixel colour scale. `lighting-color` is decoded
+  into the node's `color-interpolation-filters` working space (§10) exactly as
+  `<feFlood>` decodes `flood-color`. 8 new tests (flat-overhead-is-white,
+  always-opaque, kd scaling, colour tint, slope reduction, spot centre, node
+  round-trip, declines-other-primitive).
+
 - round 343 — pixel-level `<feTurbulence>` Perlin-noise / fractal-sum
   generator in [`crate::filter_eval`] (`turbulence_image` +
   `evaluate_turbulence_node`, with the private `Turbulence` lattice
