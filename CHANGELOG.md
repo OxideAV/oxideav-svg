@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- round 361 — filter-primitive subregion clipping per Filter Effects §9.4.
+  `clip_to_subregion` applies a `PixelRect` as a hard clip on a primitive's
+  result (pixels outside become transparent black; a zero-extent rectangle
+  disables the primitive), and `evaluate_filter_graph_clipped` threads a
+  per-primitive `&[Option<PixelRect>]` through the DAG evaluator, clipping
+  each node's output *before* it is stored as a named `result` or reused as
+  the next primitive's default input. `evaluate_filter_graph` is now a
+  no-clip wrapper. Resolving a subregion's user / `objectBoundingBox`
+  attributes to pixels stays a rasteriser concern; the clip arithmetic is
+  in-crate. 5 new tests (keep-inside/zero-outside, zero-extent disables,
+  partial raster overlap, clipped flood, clip-propagates-to-downstream).
 - round 361 — top-level filter-graph DAG evaluator `evaluate_filter_graph`
   in [`crate::filter_eval`], chaining the per-primitive `evaluate_*_node`
   functions into a complete pipeline. Maintains the named-`result` map and

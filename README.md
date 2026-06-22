@@ -76,9 +76,14 @@ the IR cannot model directly via a `PreservedExtras` side-channel.
   `SourceAlpha` / `BackgroundAlpha` from their colour counterparts,
   resolves every `in` / `in2` (including unknown `result` references) to a
   pixel buffer, dispatches each node, and returns the final layer; the
-  whole graph runs at full filter-region resolution (per-primitive
-  sub-region clipping and the general rasteriser surface remain
-  `oxideav-raster` work).
+  whole graph runs at full filter-region resolution.
+  `evaluate_filter_graph_clipped` additionally applies each primitive's
+  resolved subregion as the §9.4 hard clip on that primitive's result —
+  pixels outside the supplied `PixelRect` become transparent black and a
+  zero-extent subregion disables the primitive — applied *before* the
+  result is stored / reused (resolving a subregion's `x` / `y` / `width` /
+  `height` to pixels stays a rasteriser concern; the clip arithmetic is
+  in-crate). The general rasteriser surface remains `oxideav-raster` work.
 * **Markers** — `<marker>` definitions parse into a typed `MarkerDef`
   and round-trip; vertex placement / `orient` rendering is deferred to a
   core `Marker` node.
@@ -120,12 +125,13 @@ Rust, no C dependencies.
 
 ## Not yet supported
 
-* Per-primitive filter sub-region clipping (`x` / `y` / `width` /
-  `height` on each primitive) and the standard-input slots
-  `BackgroundImage` / `FillPaint` / `StrokePaint` (the graph evaluator
-  defaults them to transparent black until the rasteriser supplies them);
-  the eleven extra `feBlend` `<blend-mode>` values and `feImage` external
-  reference resolution also remain rasteriser work.
+* Resolving per-primitive sub-region `x` / `y` / `width` / `height` (in
+  user / `objectBoundingBox` units) to the `PixelRect`s the clip consumes,
+  and supplying the standard-input slots `BackgroundImage` / `FillPaint` /
+  `StrokePaint` (the graph evaluator defaults them to transparent black
+  until the rasteriser supplies them); the eleven extra `feBlend`
+  `<blend-mode>` values and `feImage` external-reference resolution also
+  remain rasteriser work.
 * Marker rendering, `textPath method="stretch"` per-glyph warping, the
   `<image>` element, and live pseudo-element / stateful pseudo-class
   evaluation (selectors parse + round-trip; the synthesised-box renderer

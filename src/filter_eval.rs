@@ -2590,6 +2590,55 @@ fn source_alpha(source_graphic: &[u8]) -> Vec<u8> {
     out
 }
 
+/// An integer pixel rectangle, used to express a filter primitive's
+/// resolved subregion (§9.4) within the working raster. `x` / `y` are the
+/// top-left corner (which may sit at or beyond the raster edges) and
+/// `width` / `height` the extent in pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PixelRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Apply a filter-primitive subregion as a hard clip on a primitive's
+/// result, per Filter Effects §9.4: "The filter primitive subregion acts
+/// as a hard clip clipping rectangle on the filter primitive result."
+///
+/// Pixels of the `width × height` buffer that fall outside `rect` are set
+/// to transparent black; pixels inside are untouched. A subregion with
+/// zero width or height disables the primitive (§9.4: "If the filter
+/// primitive subregion has a negative or zero width or height, the effect
+/// of the filter primitive is disabled"), which this models as an
+/// all-transparent result.
+///
+/// The buffer is the 8-bit non-premultiplied RGBA layout the
+/// `evaluate_*_node` functions produce.
+pub fn clip_to_subregion(buf: &mut [u8], width: usize, height: usize, rect: PixelRect) {
+    // Zero or negative extent disables the primitive entirely.
+    if rect.width == 0 || rect.height == 0 {
+        for b in buf.iter_mut() {
+            *b = 0;
+        }
+        return;
+    }
+    let x0 = rect.x;
+    let y0 = rect.y;
+    let x1 = rect.x + rect.width as i32;
+    let y1 = rect.y + rect.height as i32;
+    for y in 0..height {
+        let inside_y = (y as i32) >= y0 && (y as i32) < y1;
+        for x in 0..width {
+            let inside = inside_y && (x as i32) >= x0 && (x as i32) < x1;
+            if !inside {
+                let i = (y * width + x) * 4;
+                buf[i..i + 4].copy_from_slice(&[0, 0, 0, 0]);
+            }
+        }
+    }
+}
+
 /// The standard-input buffers a [`FilterGraph`] evaluation pulls keyword
 /// [`FilterInput`]s from. `SourceGraphic` is the rasterised element the
 /// filter is applied to; the other slots are supplied by the rasteriser
@@ -2697,17 +2746,44 @@ pub fn evaluate_filter_graph(
     width: usize,
     height: usize,
 ) -> Option<Vec<u8>> {
+    evaluate_filter_graph_clipped(graph, sources, width, height, &[])
+}
+
+/// Evaluate a [`FilterGraph`] exactly like [`evaluate_filter_graph`], but
+/// additionally apply each primitive's resolved subregion as a hard clip
+/// on that primitive's result, per Filter Effects §9.4.
+///
+/// `subregions` is indexed in lock-step with `graph.primitives`: entry `i`
+/// is the pixel rectangle for primitive `i`, or `None` to leave that
+/// primitive unclipped (its subregion defaults to the whole filter
+/// region). A shorter slice (including the empty slice
+/// [`evaluate_filter_graph`] passes) leaves the remaining primitives
+/// unclipped — so resolving subregions to pixels is an opt-in the
+/// rasteriser performs once it knows the filter-region geometry, while the
+/// clip arithmetic itself lives here.
+///
+/// The clip is applied to the primitive's output *before* it is stored as
+/// a named `result` or used as the next primitive's default input, which
+/// matches §9.4's statement that the subregion clips "the filter primitive
+/// result".
+pub fn evaluate_filter_graph_clipped(
+    graph: &FilterGraph,
+    sources: &FilterSources,
+    width: usize,
+    height: usize,
+    subregions: &[Option<PixelRect>],
+) -> Option<Vec<u8>> {
     if graph.primitives.is_empty() {
         return None;
     }
     let mut results: HashMap<String, Vec<u8>> = HashMap::new();
     let mut last: Option<Vec<u8>> = None;
 
-    for node in &graph.primitives {
+    for (idx, node) in graph.primitives.iter().enumerate() {
         let resolve = |input: &FilterInput| {
             resolve_input(input, sources, &results, last.as_ref(), width, height)
         };
-        let out = match &node.primitive {
+        let mut out = match &node.primitive {
             FilterPrimitive::ColorMatrix { input, .. } => {
                 evaluate_color_matrix_node(node, &resolve(input), width, height)
             }
@@ -2782,6 +2858,12 @@ pub fn evaluate_filter_graph(
             // complete.
             FilterPrimitive::Image { .. } => None,
         }?;
+
+        // §9.4: the filter primitive subregion acts as a hard clip on the
+        // primitive's result. Applied before the result is stored / reused.
+        if let Some(Some(rect)) = subregions.get(idx) {
+            clip_to_subregion(&mut out, width, height, *rect);
+        }
 
         if let Some(name) = &node.result {
             results.insert(name.clone(), out.clone());
@@ -5324,6 +5406,149 @@ mod tests {
         })]);
         let src = FilterSources::from_source_graphic(vec![0u8; 4]);
         assert!(evaluate_filter_graph(&g, &src, 1, 1).is_none());
+    }
+
+    // ----- §9.4 subregion clipping -----------------------------------
+
+    // clip_to_subregion zeroes pixels outside the rect, keeps those in.
+    #[test]
+    fn clip_keeps_inside_zeroes_outside() {
+        // 3x3 buffer, all opaque white.
+        let mut buf = vec![255u8; 3 * 3 * 4];
+        // Keep only the centre pixel (1,1).
+        clip_to_subregion(
+            &mut buf,
+            3,
+            3,
+            PixelRect {
+                x: 1,
+                y: 1,
+                width: 1,
+                height: 1,
+            },
+        );
+        for y in 0..3 {
+            for x in 0..3 {
+                let i = (y * 3 + x) * 4;
+                let px = &buf[i..i + 4];
+                if x == 1 && y == 1 {
+                    assert_eq!(px, [255, 255, 255, 255], "centre kept");
+                } else {
+                    assert_eq!(px, [0, 0, 0, 0], "({x},{y}) cleared");
+                }
+            }
+        }
+    }
+
+    // A zero-width subregion disables the primitive (all transparent).
+    #[test]
+    fn clip_zero_extent_disables() {
+        let mut buf = vec![255u8; 2 * 2 * 4];
+        clip_to_subregion(
+            &mut buf,
+            2,
+            2,
+            PixelRect {
+                x: 0,
+                y: 0,
+                width: 0,
+                height: 2,
+            },
+        );
+        assert!(buf.iter().all(|&b| b == 0));
+    }
+
+    // A subregion that exceeds the raster clips only at the raster edge.
+    #[test]
+    fn clip_partial_overlap() {
+        let mut buf = vec![255u8; 2 * 4];
+        // Keep x in [1, 5): only column 1 survives within the 2-wide buf.
+        clip_to_subregion(
+            &mut buf,
+            2,
+            1,
+            PixelRect {
+                x: 1,
+                y: 0,
+                width: 4,
+                height: 1,
+            },
+        );
+        assert_eq!(&buf[0..4], [0, 0, 0, 0]);
+        assert_eq!(&buf[4..8], [255, 255, 255, 255]);
+    }
+
+    // The clipped graph entry point clips a flood to its subregion before
+    // the result is returned.
+    #[test]
+    fn graph_clipped_flood_to_subregion() {
+        let fc = FloodColor {
+            r: 255,
+            g: 255,
+            b: 255,
+            a: 255,
+        };
+        let g = graph(vec![node(FilterPrimitive::Flood {
+            flood_color: fc,
+            flood_opacity: 1.0,
+        })]);
+        let src = FilterSources::from_source_graphic(vec![0u8; 2 * 2 * 4]);
+        let subregions = [Some(PixelRect {
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 2,
+        })];
+        let out = evaluate_filter_graph_clipped(&g, &src, 2, 2, &subregions).unwrap();
+        // Column 0 floods white; column 1 is clipped to transparent.
+        assert_eq!(&out[0..4], [255, 255, 255, 255]); // (0,0)
+        assert_eq!(&out[4..8], [0, 0, 0, 0]); // (1,0)
+        assert_eq!(&out[8..12], [255, 255, 255, 255]); // (0,1)
+        assert_eq!(&out[12..16], [0, 0, 0, 0]); // (1,1)
+    }
+
+    // The clip is applied *before* a result is reused: a clipped flood
+    // stored as a named result is the clipped pixels downstream.
+    #[test]
+    fn graph_clipped_result_propagates_clipped() {
+        let fc = FloodColor {
+            r: 10,
+            g: 20,
+            b: 30,
+            a: 255,
+        };
+        let mut m = [0.0f32; 20];
+        m[0] = 1.0;
+        m[6] = 1.0;
+        m[12] = 1.0;
+        m[18] = 1.0;
+        let g = graph(vec![
+            named(
+                FilterPrimitive::Flood {
+                    flood_color: fc,
+                    flood_opacity: 1.0,
+                },
+                "f",
+            ),
+            node(FilterPrimitive::ColorMatrix {
+                input: FilterInput::Reference("f".to_string()),
+                matrix: m,
+            }),
+        ]);
+        let src = FilterSources::from_source_graphic(vec![0u8; 2 * 4]);
+        // Clip the flood to column 0 only.
+        let subregions = [
+            Some(PixelRect {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            }),
+            None,
+        ];
+        let out = evaluate_filter_graph_clipped(&g, &src, 2, 1, &subregions).unwrap();
+        assert_eq!(&out[0..4], [10, 20, 30, 255]); // flood survived clip
+        assert_eq!(&out[4..8], [0, 0, 0, 0]); // clipped to transparent
     }
 
     // A standard input with no supplied buffer is transparent black.
