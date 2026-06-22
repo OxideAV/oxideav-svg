@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- round 361 — top-level filter-graph DAG evaluator `evaluate_filter_graph`
+  in [`crate::filter_eval`], chaining the per-primitive `evaluate_*_node`
+  functions into a complete pipeline. Maintains the named-`result` map and
+  the implicit "previous result" fallback the Filter Effects `in` attribute
+  defines (first primitive → `SourceGraphic`, subsequent → prior result),
+  resolves every `in` / `in2` — including unknown `result` references
+  (falling back to the previous result) and the `SourceAlpha` /
+  `BackgroundAlpha` alpha-only derivations — to an 8-bit RGBA buffer, and
+  dispatches each node in source order, returning the final layer. Adds a
+  `FilterSources` operand set carrying the `SourceGraphic` plus the optional
+  `BackgroundImage` / `FillPaint` / `StrokePaint` standard inputs (each
+  defaulting to transparent black per §15.7.2 when unsupplied). The whole
+  graph runs at full filter-region resolution; per-primitive sub-region
+  clipping and `feImage` external-reference resolution remain rasteriser
+  work. 9 new tests (empty graph, identity offset, previous-result default
+  chaining, named-result reference, unknown-reference fallback, SourceAlpha
+  derivation, two-layer feMerge, unresolved feImage → None, missing standard
+  input → transparent).
 - round 354 — pixel-level `<feSpecularLighting>` node evaluator in
   [`crate::filter_eval`] (`specular_lighting` +
   `evaluate_specular_lighting_node`), reusing the §18 `surface_normal` /

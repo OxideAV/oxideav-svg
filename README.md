@@ -69,7 +69,16 @@ the IR cannot model directly via a `PreservedExtras` side-channel.
   §18 Lambertian `D = kd·(N·L)·Lcolor` opaque map, and the §19
   Blinn-Phong `S = ks·pow(N·H, exp)·Lcolor` highlight with the constant
   `E = (0,0,1)` eye vector and the `Sa = max(Sr,Sg,Sb)` non-opaque
-  alpha); the general filter pixel pipeline is `oxideav-raster` work.
+  alpha). A top-level `evaluate_filter_graph` chains those per-primitive
+  evaluators into a full DAG: it maintains the named-`result` map and the
+  implicit "previous result" fallback the `in` attribute defines (first
+  primitive → `SourceGraphic`, subsequent → prior result), derives
+  `SourceAlpha` / `BackgroundAlpha` from their colour counterparts,
+  resolves every `in` / `in2` (including unknown `result` references) to a
+  pixel buffer, dispatches each node, and returns the final layer; the
+  whole graph runs at full filter-region resolution (per-primitive
+  sub-region clipping and the general rasteriser surface remain
+  `oxideav-raster` work).
 * **Markers** — `<marker>` definitions parse into a typed `MarkerDef`
   and round-trip; vertex placement / `orient` rendering is deferred to a
   core `Marker` node.
@@ -111,8 +120,12 @@ Rust, no C dependencies.
 
 ## Not yet supported
 
-* Filter-primitive rasterisation beyond the in-crate evaluators above
-  (the typed graph is pre-rasteriser plumbing).
+* Per-primitive filter sub-region clipping (`x` / `y` / `width` /
+  `height` on each primitive) and the standard-input slots
+  `BackgroundImage` / `FillPaint` / `StrokePaint` (the graph evaluator
+  defaults them to transparent black until the rasteriser supplies them);
+  the eleven extra `feBlend` `<blend-mode>` values and `feImage` external
+  reference resolution also remain rasteriser work.
 * Marker rendering, `textPath method="stretch"` per-glyph warping, the
   `<image>` element, and live pseudo-element / stateful pseudo-class
   evaluation (selectors parse + round-trip; the synthesised-box renderer
