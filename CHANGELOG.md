@@ -34,7 +34,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for round-trip / back-compat). 10 new unit tests (explicit percentage,
   user-space number, object-bounding-box fraction, flood/standard-input/
   feTile full-region defaults, referenced-node union default, zero-extent
-  disable, integer snapping).
+  disable, integer snapping) plus 8 end-to-end integration tests in
+  `tests/round367_subregion_resolve.rs` driving the resolver from parsed
+  `<filter>` documents — including the §9.4 worked example
+  (`<feFlood x="25%" y="25%" width="50%" height="50%">` → a
+  half-the-region-centred rectangle) — exercising the `RegionCoords`
+  percentage capture through the real parser.
 - round 361 — filter-primitive subregion clipping per Filter Effects §9.4.
   `clip_to_subregion` applies a `PixelRect` as a hard clip on a primitive's
   result (pixels outside become transparent black; a zero-extent rectangle
