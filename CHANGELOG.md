@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Vec<Option<PixelRect>>` that `evaluate_filter_graph_clipped` already
   consumes, so the SVG layer now owns the full §9.4 subregion pipeline
   (resolution → clip) rather than leaving resolution to the rasteriser.
+  The turn-key `evaluate_filter_graph_resolved(graph, sources, ctx)`
+  composes resolution + clipped evaluation, deriving the working-raster
+  size from the filter region on `ctx` so the caller supplies the filter
+  geometry once.
   New `FilterSubregionCtx` carries the §8 filter region (as a pixel
   rectangle) plus the user-space and object-bounding-box mappings; the
   resolver honours: the §7 `<length-percentage>` distinction (percentages

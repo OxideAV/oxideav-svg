@@ -89,8 +89,10 @@ the IR cannot model directly via a `PreservedExtras` side-channel.
   subregion (union of referenced nodes, whole filter region for
   standard-input references and `feImage` / `feTurbulence` / `feTile`),
   and the negative/zero-extent disable rule — so the SVG layer owns the
-  full §9.4 resolve → clip pipeline. The general rasteriser surface
-  remains `oxideav-raster` work.
+  full §9.4 resolve → clip pipeline. The turn-key
+  `evaluate_filter_graph_resolved` composes the resolver with the clipped
+  evaluator, deriving the working-raster size from the filter region. The
+  general rasteriser surface remains `oxideav-raster` work.
 * **Markers** — `<marker>` definitions parse into a typed `MarkerDef`
   and round-trip; vertex placement / `orient` rendering is deferred to a
   core `Marker` node.

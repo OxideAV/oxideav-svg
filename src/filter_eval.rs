@@ -3230,6 +3230,36 @@ pub fn evaluate_filter_graph_clipped(
     last
 }
 
+/// Turn-key §9.4 pipeline: resolve every primitive's subregion from
+/// `ctx`, then evaluate the graph with each result hard-clipped to its
+/// resolved subregion.
+///
+/// This is the convenience composition of [`resolve_subregions`] and
+/// [`evaluate_filter_graph_clipped`]: the working raster's dimensions are
+/// taken from the filter-region pixel size on `ctx`
+/// (`region_w_px` × `region_h_px`, rounded to the nearest non-negative
+/// integer), so the caller only supplies the filter geometry once. Use
+/// [`evaluate_filter_graph_clipped`] directly when the working raster size
+/// must differ from the filter region, or when the subregions are already
+/// resolved.
+///
+/// Returns `None` on the same conditions as [`evaluate_filter_graph`] (an
+/// empty graph, an unresolved `feImage`, or an unsupported operator), or
+/// when the filter region rounds to a zero-area raster.
+pub fn evaluate_filter_graph_resolved(
+    graph: &FilterGraph,
+    sources: &FilterSources,
+    ctx: &FilterSubregionCtx,
+) -> Option<Vec<u8>> {
+    let width = ctx.region_w_px.round().max(0.0) as usize;
+    let height = ctx.region_h_px.round().max(0.0) as usize;
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let subregions = resolve_subregions(graph, ctx);
+    evaluate_filter_graph_clipped(graph, sources, width, height, &subregions)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6191,5 +6221,43 @@ mod tests {
             color_interpolation_filters: ColorInterpolationFilters::Srgb,
             primitive,
         }
+    }
+
+    // The turn-key wrapper resolves the subregion from the ctx and clips:
+    // an opaque flood over a 4×4 region clipped to the top-left 2×2 leaves
+    // the bottom/right pixels transparent.
+    #[test]
+    fn evaluate_resolved_clips_flood_to_subregion() {
+        let rc = RegionCoords {
+            x: Some(FilterCoord::Number(0.0)),
+            y: Some(FilterCoord::Number(0.0)),
+            width: Some(FilterCoord::Number(2.0)),
+            height: Some(FilterCoord::Number(2.0)),
+        };
+        // A solid-red flood (sRGB working space so the bytes are exact).
+        let flood = FilterPrimitive::Flood {
+            flood_color: FloodColor {
+                r: 255,
+                g: 0,
+                b: 0,
+                a: 255,
+            },
+            flood_opacity: 1.0,
+        };
+        let g = graph(vec![FilterPrimitiveNode {
+            region: Default::default(),
+            region_coords: rc,
+            result: None,
+            color_interpolation_filters: ColorInterpolationFilters::Srgb,
+            primitive: flood,
+        }]);
+        let ctx = FilterSubregionCtx::user_space(4.0, 4.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 4.0, 4.0);
+        let src = FilterSources::from_source_graphic(vec![0u8; 4 * 4 * 4]);
+        let out = evaluate_filter_graph_resolved(&g, &src, &ctx).unwrap();
+        // Pixel (0,0) is inside the 2×2 subregion → opaque red.
+        assert_eq!(&out[0..4], [255, 0, 0, 255]);
+        // Pixel (3,3) is outside → transparent black.
+        let last = (3 * 4 + 3) * 4;
+        assert_eq!(&out[last..last + 4], [0, 0, 0, 0]);
     }
 }
