@@ -61,8 +61,8 @@
 
 use crate::filter::{
     BlendMode, ChannelSelector, ColorInterpolationFilters, CompositeOperator, ConvolveEdgeMode,
-    EdgeMode, FilterGraph, FilterInput, FilterPrimitive, FilterPrimitiveNode, FloodColor,
-    LightSource, MorphologyOperator, TransferFunction,
+    EdgeMode, FilterCoord, FilterGraph, FilterInput, FilterPrimitive, FilterPrimitiveNode,
+    FilterUnits, FloodColor, LightSource, MorphologyOperator, RegionCoords, TransferFunction,
 };
 use std::collections::HashMap;
 
@@ -2639,6 +2639,362 @@ pub fn clip_to_subregion(buf: &mut [u8], width: usize, height: usize, rect: Pixe
     }
 }
 
+/// A floating-point rectangle in the working (filter-region) pixel grid,
+/// the intermediate form the §9.4 subregion resolver computes before it
+/// snaps to an integer [`PixelRect`]. `x` / `y` are the top-left corner
+/// and `w` / `h` the extent; all four are in device pixels relative to
+/// the working raster's top-left (i.e. the filter region's origin maps to
+/// `(0, 0)`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SubRectF {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+}
+
+/// The geometry the §9.4 subregion resolver needs to turn a primitive's
+/// `x` / `y` / `width` / `height` attributes into a pixel rectangle within
+/// the working raster.
+///
+/// The rasteriser resolves the *filter region* itself (§8) and hands the
+/// resolver the result as a pixel rectangle (`region_w_px × region_h_px`,
+/// whose origin is the working raster's `(0, 0)`), together with the two
+/// mappings a primitive coordinate can need:
+///
+/// * **user space** (`primitiveUnits="userSpaceOnUse"`, the initial value)
+///   — a plain `<number>` is a length in the user coordinate system in
+///   place when the `<filter>` was referenced. `user_scale_x` /
+///   `user_scale_y` give device-pixels-per-user-unit and `user_origin_x` /
+///   `user_origin_y` the user-space coordinate that maps to the working
+///   raster's `(0, 0)` (i.e. the filter region's top-left in user space).
+/// * **object bounding box** (`primitiveUnits="objectBoundingBox"`) — a
+///   `<number>` is a fraction of the referencing element's bounding box,
+///   and a `<percentage>` is the same fraction `÷ 100`. `bbox_*` give that
+///   box in working-raster pixels.
+///
+/// A `<percentage>` on a primitive coordinate is **always** resolved
+/// against the filter region (§7: "the same rules as other filter
+/// primitives coordinate and length attributes" → §8 reference box),
+/// independent of `primitiveUnits`; only a `<number>` consults
+/// `primitiveUnits`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FilterSubregionCtx {
+    /// `primitiveUnits` on the `<filter>` element (governs how a bare
+    /// `<number>` coordinate is interpreted).
+    pub primitive_units: FilterUnits,
+    /// Filter-region width in working-raster pixels.
+    pub region_w_px: f64,
+    /// Filter-region height in working-raster pixels.
+    pub region_h_px: f64,
+    /// Device pixels per user-space x-unit.
+    pub user_scale_x: f64,
+    /// Device pixels per user-space y-unit.
+    pub user_scale_y: f64,
+    /// User-space x that maps to working-raster `x = 0`.
+    pub user_origin_x: f64,
+    /// User-space y that maps to working-raster `y = 0`.
+    pub user_origin_y: f64,
+    /// Referencing element's bounding-box left edge, in working-raster px.
+    pub bbox_x_px: f64,
+    /// Referencing element's bounding-box top edge, in working-raster px.
+    pub bbox_y_px: f64,
+    /// Referencing element's bounding-box width, in working-raster px.
+    pub bbox_w_px: f64,
+    /// Referencing element's bounding-box height, in working-raster px.
+    pub bbox_h_px: f64,
+}
+
+impl FilterSubregionCtx {
+    /// Convenience constructor for the common `userSpaceOnUse` case where
+    /// the working raster *is* the filter region at a single uniform
+    /// scale: the filter region is `w × h` user units mapped 1:1 onto a
+    /// `w × h` pixel raster, the element bounding box is `(bx, by, bw, bh)`
+    /// in those same pixels, and the user origin is `(ux, uy)`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn user_space(
+        region_w_px: f64,
+        region_h_px: f64,
+        user_scale_x: f64,
+        user_scale_y: f64,
+        user_origin_x: f64,
+        user_origin_y: f64,
+        bbox_x_px: f64,
+        bbox_y_px: f64,
+        bbox_w_px: f64,
+        bbox_h_px: f64,
+    ) -> Self {
+        Self {
+            primitive_units: FilterUnits::UserSpaceOnUse,
+            region_w_px,
+            region_h_px,
+            user_scale_x,
+            user_scale_y,
+            user_origin_x,
+            user_origin_y,
+            bbox_x_px,
+            bbox_y_px,
+            bbox_w_px,
+            bbox_h_px,
+        }
+    }
+
+    /// Resolve a single positional coordinate (`x` or `y`) to a pixel
+    /// offset from the working raster origin.
+    ///
+    /// * `Percentage(p)` → `p/100 × region_extent_px` (§8 reference box).
+    /// * `Number(n)` under `userSpaceOnUse` → `(n − user_origin) × scale`.
+    /// * `Number(n)` under `objectBoundingBox` → `bbox_origin + n × bbox_extent`.
+    fn pos(&self, c: FilterCoord, axis_y: bool) -> f64 {
+        let region = if axis_y {
+            self.region_h_px
+        } else {
+            self.region_w_px
+        };
+        match c {
+            FilterCoord::Percentage(p) => f64::from(p) / 100.0 * region,
+            FilterCoord::Number(n) => match self.primitive_units {
+                FilterUnits::UserSpaceOnUse => {
+                    let (scale, origin) = if axis_y {
+                        (self.user_scale_y, self.user_origin_y)
+                    } else {
+                        (self.user_scale_x, self.user_origin_x)
+                    };
+                    (f64::from(n) - origin) * scale
+                }
+                FilterUnits::ObjectBoundingBox => {
+                    let (b0, be) = if axis_y {
+                        (self.bbox_y_px, self.bbox_h_px)
+                    } else {
+                        (self.bbox_x_px, self.bbox_w_px)
+                    };
+                    b0 + f64::from(n) * be
+                }
+            },
+        }
+    }
+
+    /// Resolve a single extent coordinate (`width` or `height`) to a pixel
+    /// length. Unlike [`Self::pos`] there is no origin term: a length is a
+    /// pure scaling of its reference extent.
+    fn len(&self, c: FilterCoord, axis_y: bool) -> f64 {
+        let region = if axis_y {
+            self.region_h_px
+        } else {
+            self.region_w_px
+        };
+        match c {
+            FilterCoord::Percentage(p) => f64::from(p) / 100.0 * region,
+            FilterCoord::Number(n) => match self.primitive_units {
+                FilterUnits::UserSpaceOnUse => {
+                    let scale = if axis_y {
+                        self.user_scale_y
+                    } else {
+                        self.user_scale_x
+                    };
+                    f64::from(n) * scale
+                }
+                FilterUnits::ObjectBoundingBox => {
+                    let be = if axis_y {
+                        self.bbox_h_px
+                    } else {
+                        self.bbox_w_px
+                    };
+                    f64::from(n) * be
+                }
+            },
+        }
+    }
+}
+
+/// The `result=` names a primitive references through its `in` / `in2`
+/// (or, for `feMerge`, every `<feMergeNode in=>`); used to chase the §9.4
+/// "union of referenced nodes" default subregion. Standard-input keywords
+/// and `feFlood` / `feImage` / `feTurbulence` (which take no node input)
+/// contribute no names. A primitive that references at least one standard
+/// input is flagged so the resolver can fall back to the filter region.
+fn referenced_results(node: &FilterPrimitiveNode) -> (Vec<String>, bool) {
+    let mut names = Vec::new();
+    let mut has_standard = false;
+    let mut push = |inp: &FilterInput| match inp {
+        FilterInput::Reference(n) => names.push(n.clone()),
+        _ => has_standard = true,
+    };
+    match &node.primitive {
+        FilterPrimitive::Flood { .. }
+        | FilterPrimitive::Turbulence { .. }
+        | FilterPrimitive::Image { .. } => {}
+        FilterPrimitive::Composite { input, input2, .. }
+        | FilterPrimitive::Blend { input, input2, .. }
+        | FilterPrimitive::DisplacementMap { input, input2, .. } => {
+            push(input);
+            push(input2);
+        }
+        FilterPrimitive::Merge { inputs } => {
+            for i in inputs {
+                push(i);
+            }
+        }
+        FilterPrimitive::GaussianBlur { input, .. }
+        | FilterPrimitive::Offset { input, .. }
+        | FilterPrimitive::Morphology { input, .. }
+        | FilterPrimitive::ColorMatrix { input, .. }
+        | FilterPrimitive::ComponentTransfer { input, .. }
+        | FilterPrimitive::DropShadow { input, .. }
+        | FilterPrimitive::ConvolveMatrix { input, .. }
+        | FilterPrimitive::DiffuseLighting { input, .. }
+        | FilterPrimitive::SpecularLighting { input, .. }
+        | FilterPrimitive::Tile { input } => push(input),
+    }
+    (names, has_standard)
+}
+
+/// `true` for the §9.4 primitives whose default subregion is *always* the
+/// whole filter region regardless of their referenced nodes: `feImage` and
+/// `feTurbulence` (no referenced node) and `feTile` (whose "principal
+/// function is to replicate the referenced node … thereby produce a
+/// usually larger result").
+fn forces_full_region(node: &FilterPrimitiveNode) -> bool {
+    matches!(
+        node.primitive,
+        FilterPrimitive::Image { .. }
+            | FilterPrimitive::Turbulence { .. }
+            | FilterPrimitive::Tile { .. }
+    )
+}
+
+/// Snap a floating-point subregion to the enclosing integer
+/// [`PixelRect`]: the left/top edges round *down* and the right/bottom
+/// edges round *up*, so the integer rectangle fully contains the
+/// continuous one (§9.4: "offscreens are made big enough to accommodate
+/// any pixels which even partly intersect"). The §9.4 negative/zero-extent
+/// disable rule is preserved — a zero-or-negative `w`/`h` yields a
+/// zero-extent rect, which [`clip_to_subregion`] treats as "disable the
+/// primitive". (§9.4 leaves the float→pixel snapping rule unspecified;
+/// the enclosing-integer choice is the in-crate convention, matching the
+/// "even partly intersect" wording.)
+fn snap_subrect(r: SubRectF) -> PixelRect {
+    if r.w <= 0.0 || r.h <= 0.0 {
+        return PixelRect {
+            x: r.x.floor() as i32,
+            y: r.y.floor() as i32,
+            width: 0,
+            height: 0,
+        };
+    }
+    let x0 = r.x.floor();
+    let y0 = r.y.floor();
+    let x1 = (r.x + r.w).ceil();
+    let y1 = (r.y + r.h).ceil();
+    PixelRect {
+        x: x0 as i32,
+        y: y0 as i32,
+        width: (x1 - x0).max(0.0) as u32,
+        height: (y1 - y0).max(0.0) as u32,
+    }
+}
+
+/// Resolve every primitive's §9.4 filter-primitive subregion to a
+/// [`PixelRect`] within the working raster, ready to feed
+/// [`evaluate_filter_graph_clipped`].
+///
+/// The returned vector is indexed in lock-step with `graph.primitives`.
+/// For each primitive:
+///
+/// * any of `x` / `y` / `width` / `height` that is **present** is resolved
+///   through [`FilterSubregionCtx`] (percentages against the filter
+///   region, numbers against `primitiveUnits`);
+/// * any component that is **absent** falls back to the §9.4 default — the
+///   union (tightest-fitting bounding box) of the *resolved* subregions of
+///   the nodes this primitive references, unless the primitive references
+///   a standard input or is `feImage` / `feTurbulence` / `feTile`, in
+///   which case the default is the whole filter region (`0,0 →
+///   region_w,region_h`).
+///
+/// Because the default of a primitive can depend on an earlier
+/// primitive's resolved subregion, primitives are resolved in source
+/// order and each resolved float-rectangle is memoised by its `result=`
+/// name for later union look-ups.
+///
+/// Every entry is `Some` — a primitive with no explicit attributes still
+/// has a well-defined default subregion. The resulting slice can be passed
+/// straight to [`evaluate_filter_graph_clipped`].
+pub fn resolve_subregions(graph: &FilterGraph, ctx: &FilterSubregionCtx) -> Vec<Option<PixelRect>> {
+    // Float subregion per primitive index, plus a name→index map so a
+    // later primitive can union the resolved rects of its referenced
+    // nodes. Last definition of a name wins (matches the `result` map the
+    // evaluator builds).
+    let mut floats: Vec<SubRectF> = Vec::with_capacity(graph.primitives.len());
+    let mut by_name: HashMap<&str, usize> = HashMap::new();
+
+    let full = SubRectF {
+        x: 0.0,
+        y: 0.0,
+        w: ctx.region_w_px,
+        h: ctx.region_h_px,
+    };
+
+    for (idx, node) in graph.primitives.iter().enumerate() {
+        // 1. The §9.4 default rectangle for this primitive.
+        let default = if forces_full_region(node) {
+            full
+        } else {
+            let (names, has_standard) = referenced_results(node);
+            if has_standard || names.is_empty() {
+                // A referenced standard input (or no node input at all,
+                // e.g. feFlood) → whole filter region.
+                full
+            } else {
+                // Union the resolved subregions of the referenced nodes.
+                let mut acc: Option<SubRectF> = None;
+                for n in &names {
+                    if let Some(&j) = by_name.get(n.as_str()) {
+                        acc = Some(match acc {
+                            None => floats[j],
+                            Some(a) => union(a, floats[j]),
+                        });
+                    }
+                }
+                // A reference to an unknown result contributes nothing; if
+                // *every* reference was unknown the union is empty, which
+                // §15.7.2 maps to the previous-result default — modelled
+                // here as the whole filter region (the conservative
+                // superset the clip then narrows by the actual inputs).
+                acc.unwrap_or(full)
+            }
+        };
+
+        // 2. Override each present component with the resolved attribute.
+        let rc: &RegionCoords = &node.region_coords;
+        let x = rc.x.map(|c| ctx.pos(c, false)).unwrap_or(default.x);
+        let y = rc.y.map(|c| ctx.pos(c, true)).unwrap_or(default.y);
+        let w = rc.width.map(|c| ctx.len(c, false)).unwrap_or(default.w);
+        let h = rc.height.map(|c| ctx.len(c, true)).unwrap_or(default.h);
+        let rect = SubRectF { x, y, w, h };
+
+        floats.push(rect);
+        if let Some(name) = &node.result {
+            by_name.insert(name.as_str(), idx);
+        }
+    }
+
+    floats.into_iter().map(|r| Some(snap_subrect(r))).collect()
+}
+
+/// Tightest-fitting bounding box of two float subregions (§9.4 "union").
+fn union(a: SubRectF, b: SubRectF) -> SubRectF {
+    let x0 = a.x.min(b.x);
+    let y0 = a.y.min(b.y);
+    let x1 = (a.x + a.w).max(b.x + b.w);
+    let y1 = (a.y + a.h).max(b.y + b.h);
+    SubRectF {
+        x: x0,
+        y: y0,
+        w: x1 - x0,
+        h: y1 - y0,
+    }
+}
+
 /// The standard-input buffers a [`FilterGraph`] evaluation pulls keyword
 /// [`FilterInput`]s from. `SourceGraphic` is the rasterised element the
 /// filter is applied to; the other slots are supplied by the rasteriser
@@ -3130,6 +3486,7 @@ mod tests {
     fn evaluate_composite_node_arithmetic_srgb() {
         let node = FilterPrimitiveNode {
             region: Default::default(),
+            region_coords: Default::default(),
             result: None,
             color_interpolation_filters: ColorInterpolationFilters::Srgb,
             primitive: FilterPrimitive::Composite {
@@ -3157,6 +3514,7 @@ mod tests {
     fn evaluate_composite_node_declines_unstaged() {
         let node = FilterPrimitiveNode {
             region: Default::default(),
+            region_coords: Default::default(),
             result: None,
             color_interpolation_filters: ColorInterpolationFilters::Srgb,
             primitive: FilterPrimitive::Composite {
@@ -3276,6 +3634,7 @@ mod tests {
         ];
         let node = FilterPrimitiveNode {
             region: Default::default(),
+            region_coords: Default::default(),
             result: None,
             color_interpolation_filters: ColorInterpolationFilters::Srgb,
             primitive: FilterPrimitive::ColorMatrix {
@@ -3292,6 +3651,7 @@ mod tests {
     fn evaluate_color_matrix_node_declines_other_primitive() {
         let node = FilterPrimitiveNode {
             region: Default::default(),
+            region_coords: Default::default(),
             result: None,
             color_interpolation_filters: ColorInterpolationFilters::Srgb,
             primitive: FilterPrimitive::Flood {
@@ -3447,6 +3807,7 @@ mod tests {
     fn evaluate_component_transfer_node_identity_srgb() {
         let node = FilterPrimitiveNode {
             region: Default::default(),
+            region_coords: Default::default(),
             result: None,
             color_interpolation_filters: ColorInterpolationFilters::Srgb,
             primitive: FilterPrimitive::ComponentTransfer {
@@ -3471,6 +3832,7 @@ mod tests {
         };
         let node = FilterPrimitiveNode {
             region: Default::default(),
+            region_coords: Default::default(),
             result: None,
             color_interpolation_filters: ColorInterpolationFilters::Srgb,
             primitive: FilterPrimitive::ComponentTransfer {
@@ -3494,6 +3856,7 @@ mod tests {
     fn evaluate_component_transfer_node_declines_other_primitive() {
         let node = FilterPrimitiveNode {
             region: Default::default(),
+            region_coords: Default::default(),
             result: None,
             color_interpolation_filters: ColorInterpolationFilters::Srgb,
             primitive: FilterPrimitive::Flood {
@@ -3601,6 +3964,7 @@ mod tests {
     fn evaluate_flood_node_default_opaque_black() {
         let node = FilterPrimitiveNode {
             region: Default::default(),
+            region_coords: Default::default(),
             result: None,
             color_interpolation_filters: ColorInterpolationFilters::Srgb,
             primitive: FilterPrimitive::Flood {
@@ -3621,6 +3985,7 @@ mod tests {
     fn evaluate_flood_node_declines_other_primitive() {
         let node = FilterPrimitiveNode {
             region: Default::default(),
+            region_coords: Default::default(),
             result: None,
             color_interpolation_filters: ColorInterpolationFilters::Srgb,
             primitive: FilterPrimitive::ColorMatrix {
@@ -3769,6 +4134,7 @@ mod tests {
     fn node(primitive: FilterPrimitive) -> FilterPrimitiveNode {
         FilterPrimitiveNode {
             region: Default::default(),
+            region_coords: Default::default(),
             result: None,
             color_interpolation_filters: ColorInterpolationFilters::Srgb,
             primitive,
@@ -5195,6 +5561,7 @@ mod tests {
     fn named(primitive: FilterPrimitive, result: &str) -> FilterPrimitiveNode {
         FilterPrimitiveNode {
             region: Default::default(),
+            region_coords: Default::default(),
             result: Some(result.to_string()),
             color_interpolation_filters: ColorInterpolationFilters::Srgb,
             primitive,
@@ -5567,5 +5934,262 @@ mod tests {
         let src = FilterSources::from_source_graphic(vec![255, 255, 255, 255]);
         let out = evaluate_filter_graph(&g, &src, 1, 1).unwrap();
         assert_eq!(out, vec![0, 0, 0, 0]);
+    }
+
+    // ----- §9.4 subregion resolution ---------------------------------
+
+    // A 100×100 user-space filter region mapped 1:1 onto a 100×100 px
+    // raster; element bbox = (10,20,40,60); user origin = (0,0).
+    fn sub_ctx_user() -> FilterSubregionCtx {
+        FilterSubregionCtx::user_space(100.0, 100.0, 1.0, 1.0, 0.0, 0.0, 10.0, 20.0, 40.0, 60.0)
+    }
+
+    fn node_with_region(primitive: FilterPrimitive, rc: RegionCoords) -> FilterPrimitiveNode {
+        FilterPrimitiveNode {
+            region: Default::default(),
+            region_coords: rc,
+            result: None,
+            color_interpolation_filters: ColorInterpolationFilters::Srgb,
+            primitive,
+        }
+    }
+
+    fn flood_prim() -> FilterPrimitive {
+        FilterPrimitive::Flood {
+            flood_color: FloodColor::default(),
+            flood_opacity: 1.0,
+        }
+    }
+
+    // Explicit percentages resolve against the filter region (§7/§8),
+    // independent of primitiveUnits. 25%/25%/50%/50% of 100×100 → 25,25,50,50.
+    #[test]
+    fn subregion_explicit_percentage() {
+        let rc = RegionCoords {
+            x: Some(FilterCoord::Percentage(25.0)),
+            y: Some(FilterCoord::Percentage(25.0)),
+            width: Some(FilterCoord::Percentage(50.0)),
+            height: Some(FilterCoord::Percentage(50.0)),
+        };
+        let g = graph(vec![node_with_region(flood_prim(), rc)]);
+        let out = resolve_subregions(&g, &sub_ctx_user());
+        assert_eq!(
+            out[0],
+            Some(PixelRect {
+                x: 25,
+                y: 25,
+                width: 50,
+                height: 50
+            })
+        );
+    }
+
+    // A bare number under userSpaceOnUse is a user-space length: with the
+    // 1:1 mapping it maps straight to pixels.
+    #[test]
+    fn subregion_number_user_space() {
+        let rc = RegionCoords {
+            x: Some(FilterCoord::Number(10.0)),
+            y: Some(FilterCoord::Number(12.0)),
+            width: Some(FilterCoord::Number(30.0)),
+            height: Some(FilterCoord::Number(40.0)),
+        };
+        let g = graph(vec![node_with_region(flood_prim(), rc)]);
+        let out = resolve_subregions(&g, &sub_ctx_user());
+        assert_eq!(
+            out[0],
+            Some(PixelRect {
+                x: 10,
+                y: 12,
+                width: 30,
+                height: 40
+            })
+        );
+    }
+
+    // A bare number under objectBoundingBox is a fraction of the bbox:
+    // x = bbox_x + n·bbox_w, width = n·bbox_w. bbox = (10,20,40,60).
+    // x=0.5 → 10 + 0.5·40 = 30; width=0.5 → 0.5·40 = 20;
+    // y=0.5 → 20 + 0.5·60 = 50; height=0.5 → 0.5·60 = 30.
+    #[test]
+    fn subregion_number_object_bounding_box() {
+        let mut ctx = sub_ctx_user();
+        ctx.primitive_units = FilterUnits::ObjectBoundingBox;
+        let rc = RegionCoords {
+            x: Some(FilterCoord::Number(0.5)),
+            y: Some(FilterCoord::Number(0.5)),
+            width: Some(FilterCoord::Number(0.5)),
+            height: Some(FilterCoord::Number(0.5)),
+        };
+        let g = graph(vec![node_with_region(flood_prim(), rc)]);
+        let out = resolve_subregions(&g, &ctx);
+        assert_eq!(
+            out[0],
+            Some(PixelRect {
+                x: 30,
+                y: 50,
+                width: 20,
+                height: 30
+            })
+        );
+    }
+
+    // feFlood references no node → its default subregion is the whole
+    // filter region (no explicit attributes).
+    #[test]
+    fn subregion_default_flood_is_full_region() {
+        let g = graph(vec![node_with_region(
+            flood_prim(),
+            RegionCoords::default(),
+        )]);
+        let out = resolve_subregions(&g, &sub_ctx_user());
+        assert_eq!(
+            out[0],
+            Some(PixelRect {
+                x: 0,
+                y: 0,
+                width: 100,
+                height: 100
+            })
+        );
+    }
+
+    // §9.4 union default: an feOffset that references a prior result with
+    // a small explicit subregion inherits that result's box (no explicit
+    // attributes of its own).
+    #[test]
+    fn subregion_default_union_of_referenced_node() {
+        let small = RegionCoords {
+            x: Some(FilterCoord::Number(10.0)),
+            y: Some(FilterCoord::Number(20.0)),
+            width: Some(FilterCoord::Number(30.0)),
+            height: Some(FilterCoord::Number(40.0)),
+        };
+        let g = graph(vec![
+            named_with_region(flood_prim(), "a", small),
+            node_with_region(
+                FilterPrimitive::Offset {
+                    input: FilterInput::Reference("a".to_string()),
+                    dx: 0.0,
+                    dy: 0.0,
+                },
+                RegionCoords::default(),
+            ),
+        ]);
+        let out = resolve_subregions(&g, &sub_ctx_user());
+        // Primitive 1 inherits primitive 0's resolved subregion.
+        assert_eq!(
+            out[1],
+            Some(PixelRect {
+                x: 10,
+                y: 20,
+                width: 30,
+                height: 40
+            })
+        );
+    }
+
+    // A primitive referencing a standard input (SourceGraphic) defaults to
+    // the whole filter region even though it has a node-style `in`.
+    #[test]
+    fn subregion_standard_input_is_full_region() {
+        let g = graph(vec![node_with_region(
+            FilterPrimitive::Offset {
+                input: FilterInput::SourceGraphic,
+                dx: 0.0,
+                dy: 0.0,
+            },
+            RegionCoords::default(),
+        )]);
+        let out = resolve_subregions(&g, &sub_ctx_user());
+        assert_eq!(
+            out[0],
+            Some(PixelRect {
+                x: 0,
+                y: 0,
+                width: 100,
+                height: 100
+            })
+        );
+    }
+
+    // feTile forces the whole filter region per §9.4 even when it
+    // references a small-subregion node.
+    #[test]
+    fn subregion_tile_forces_full_region() {
+        let small = RegionCoords {
+            x: Some(FilterCoord::Number(10.0)),
+            y: Some(FilterCoord::Number(10.0)),
+            width: Some(FilterCoord::Number(20.0)),
+            height: Some(FilterCoord::Number(20.0)),
+        };
+        let g = graph(vec![
+            named_with_region(flood_prim(), "a", small),
+            node_with_region(
+                FilterPrimitive::Tile {
+                    input: FilterInput::Reference("a".to_string()),
+                },
+                RegionCoords::default(),
+            ),
+        ]);
+        let out = resolve_subregions(&g, &sub_ctx_user());
+        assert_eq!(
+            out[1],
+            Some(PixelRect {
+                x: 0,
+                y: 0,
+                width: 100,
+                height: 100
+            })
+        );
+    }
+
+    // A zero width disables the primitive (§9.4): zero-extent rect.
+    #[test]
+    fn subregion_zero_width_disables() {
+        let rc = RegionCoords {
+            width: Some(FilterCoord::Number(0.0)),
+            ..RegionCoords::default()
+        };
+        let g = graph(vec![node_with_region(flood_prim(), rc)]);
+        let out = resolve_subregions(&g, &sub_ctx_user());
+        let r = out[0].unwrap();
+        assert_eq!(r.width, 0);
+    }
+
+    // Fractional float subregion snaps to the enclosing integer rect:
+    // x=10.4,w=5.3 → [floor 10.4, ceil 15.7] = [10,16] → width 6.
+    // y=20.6,h=4.1 → [floor 20.6, ceil 24.7] = [20,25] → height 5.
+    #[test]
+    fn subregion_snaps_to_enclosing_integer_rect() {
+        let r = snap_subrect(SubRectF {
+            x: 10.4,
+            y: 20.6,
+            w: 5.3,
+            h: 4.1,
+        });
+        assert_eq!(
+            r,
+            PixelRect {
+                x: 10,
+                y: 20,
+                width: 6,
+                height: 5
+            }
+        );
+    }
+
+    fn named_with_region(
+        primitive: FilterPrimitive,
+        result: &str,
+        rc: RegionCoords,
+    ) -> FilterPrimitiveNode {
+        FilterPrimitiveNode {
+            region: Default::default(),
+            region_coords: rc,
+            result: Some(result.to_string()),
+            color_interpolation_filters: ColorInterpolationFilters::Srgb,
+            primitive,
+        }
     }
 }

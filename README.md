@@ -81,9 +81,16 @@ the IR cannot model directly via a `PreservedExtras` side-channel.
   resolved subregion as the §9.4 hard clip on that primitive's result —
   pixels outside the supplied `PixelRect` become transparent black and a
   zero-extent subregion disables the primitive — applied *before* the
-  result is stored / reused (resolving a subregion's `x` / `y` / `width` /
-  `height` to pixels stays a rasteriser concern; the clip arithmetic is
-  in-crate). The general rasteriser surface remains `oxideav-raster` work.
+  result is stored / reused. `resolve_subregions` computes those
+  `PixelRect`s end-to-end from a `FilterSubregionCtx` (the §8 filter
+  region plus the user-space / object-bounding-box mappings): it honours
+  the §7 `<length-percentage>` distinction (percentages resolve against
+  the filter region, numbers consult `primitiveUnits`), the §9.4 default
+  subregion (union of referenced nodes, whole filter region for
+  standard-input references and `feImage` / `feTurbulence` / `feTile`),
+  and the negative/zero-extent disable rule — so the SVG layer owns the
+  full §9.4 resolve → clip pipeline. The general rasteriser surface
+  remains `oxideav-raster` work.
 * **Markers** — `<marker>` definitions parse into a typed `MarkerDef`
   and round-trip; vertex placement / `orient` rendering is deferred to a
   core `Marker` node.
@@ -125,13 +132,13 @@ Rust, no C dependencies.
 
 ## Not yet supported
 
-* Resolving per-primitive sub-region `x` / `y` / `width` / `height` (in
-  user / `objectBoundingBox` units) to the `PixelRect`s the clip consumes,
-  and supplying the standard-input slots `BackgroundImage` / `FillPaint` /
+* Supplying the standard-input slots `BackgroundImage` / `FillPaint` /
   `StrokePaint` (the graph evaluator defaults them to transparent black
   until the rasteriser supplies them); the eleven extra `feBlend`
-  `<blend-mode>` values and `feImage` external-reference resolution also
-  remain rasteriser work.
+  `<blend-mode>` values + the `feComposite` `in` / `out` / `atop` / `xor`
+  operators (whose mixing formulae live in the un-staged `[COMPOSITING-1]`
+  / `[PORTERDUFF]` companion specs) and `feImage` external-reference
+  resolution also remain rasteriser work.
 * Marker rendering, `textPath method="stretch"` per-glyph warping, the
   `<image>` element, and live pseudo-element / stateful pseudo-class
   evaluation (selectors parse + round-trip; the synthesised-box renderer

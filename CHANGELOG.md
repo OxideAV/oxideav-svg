@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- round 367 — §9.4 filter-primitive subregion *resolution*: the missing
+  half of round 361's clip arithmetic. `resolve_subregions(graph, ctx)`
+  turns each primitive's `x` / `y` / `width` / `height` into the
+  `Vec<Option<PixelRect>>` that `evaluate_filter_graph_clipped` already
+  consumes, so the SVG layer now owns the full §9.4 subregion pipeline
+  (resolution → clip) rather than leaving resolution to the rasteriser.
+  New `FilterSubregionCtx` carries the §8 filter region (as a pixel
+  rectangle) plus the user-space and object-bounding-box mappings; the
+  resolver honours: the §7 `<length-percentage>` distinction (percentages
+  always resolve against the filter region, numbers consult
+  `primitiveUnits` — user-space length vs object-bounding-box fraction),
+  the §9.4 default subregion (union/tightest-fitting bounding box of the
+  referenced nodes' resolved subregions; whole filter region when a
+  primitive references any standard input or is `feFlood` /
+  `feTurbulence`), the §9.4 `feImage` / `feTurbulence` / `feTile`
+  whole-region forcing, and the §9.4 negative/zero-extent disable rule.
+  Float subregions snap to the enclosing integer `PixelRect` (left/top
+  floor, right/bottom ceil) so partly-covered pixels survive, per the
+  §9.4 "even partly intersect" wording. To carry the percentage flag a
+  new `FilterCoord` (`Number` / `Percentage`) + `RegionCoords` are parsed
+  alongside the existing lossy numeric `PrimitiveRegion` on both
+  `FilterGraph` and `FilterPrimitiveNode` (the numeric view is unchanged
+  for round-trip / back-compat). 10 new unit tests (explicit percentage,
+  user-space number, object-bounding-box fraction, flood/standard-input/
+  feTile full-region defaults, referenced-node union default, zero-extent
+  disable, integer snapping).
 - round 361 — filter-primitive subregion clipping per Filter Effects §9.4.
   `clip_to_subregion` applies a `PixelRect` as a hard clip on a primitive's
   result (pixels outside become transparent black; a zero-extent rectangle

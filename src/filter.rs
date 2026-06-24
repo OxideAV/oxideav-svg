@@ -706,6 +706,11 @@ pub struct FilterPrimitiveNode {
     /// region" — concretely, every primitive defaults to filling the
     /// filter's own region.
     pub region: PrimitiveRegion,
+    /// The same sub-region as [`Self::region`], but preserving the §7
+    /// length-vs-percentage distinction the §9.4 subregion resolver
+    /// needs (`region` keeps the lossy numeric view for round-trip and
+    /// back-compat).
+    pub region_coords: RegionCoords,
     /// Optional `result="name"` — addressable by `in=`/`in2=` of later
     /// primitives.
     pub result: Option<String>,
@@ -728,6 +733,79 @@ pub struct PrimitiveRegion {
     pub y: Option<f32>,
     pub width: Option<f32>,
     pub height: Option<f32>,
+}
+
+/// One filter coordinate / length attribute (`x` / `y` / `width` /
+/// `height` on either the `<filter>` element or a primitive), preserving
+/// the distinction Filter Effects §7 draws between a `<percentage>` and a
+/// plain user-space `<number>`.
+///
+/// The legacy [`PrimitiveRegion`] stores only the leading float and so
+/// cannot tell `x="25%"` from `x="25"`; the §9.4 subregion resolver needs
+/// that distinction because a percentage resolves against the filter
+/// region (or the object bounding box, under `objectBoundingBox` units)
+/// while a number is taken verbatim in the active coordinate system.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FilterCoord {
+    /// A plain `<number>` — a length in the coordinate system selected by
+    /// `filterUnits` / `primitiveUnits` (user units, or — under
+    /// `objectBoundingBox` — a fraction of the bounding box).
+    Number(f32),
+    /// A `<percentage>` — `<number>%`, stored as the raw number before the
+    /// `%` (so `"25%"` is `Percentage(25.0)`). Resolved against the
+    /// reference box per §7 / §8 (`÷ 100`).
+    Percentage(f32),
+}
+
+impl FilterCoord {
+    /// Parse a single `<length-percentage>` filter coordinate attribute,
+    /// returning `None` when the attribute is absent or malformed. A
+    /// trailing `%` marks a [`FilterCoord::Percentage`]; any other token
+    /// (a bare number, optionally with a unit suffix the leading-number
+    /// parser tolerates) is a [`FilterCoord::Number`].
+    fn parse(el: &Element, name: &str) -> Option<Self> {
+        let raw = attr(el, name)?.trim();
+        if raw.is_empty() {
+            return None;
+        }
+        let n = parse_number(Some(raw), 0.0).ok()?;
+        // A `%` immediately after the numeric prefix marks a percentage.
+        // `parse_number` already dropped the suffix, so re-inspect the
+        // source: the first non-numeric character decides.
+        let is_percent = raw
+            .trim_start_matches(|c: char| {
+                c.is_ascii_digit() || c == '.' || c == '+' || c == '-' || c == 'e' || c == 'E'
+            })
+            .starts_with('%');
+        Some(if is_percent {
+            FilterCoord::Percentage(n)
+        } else {
+            FilterCoord::Number(n)
+        })
+    }
+}
+
+/// The `x` / `y` / `width` / `height` of a `<filter>` element or a filter
+/// primitive, each captured as a [`FilterCoord`] so the §9.4 subregion
+/// resolver can honour the §7 length-vs-percentage distinction. A `None`
+/// component means the attribute was absent, so the spec default applies.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RegionCoords {
+    pub x: Option<FilterCoord>,
+    pub y: Option<FilterCoord>,
+    pub width: Option<FilterCoord>,
+    pub height: Option<FilterCoord>,
+}
+
+impl RegionCoords {
+    fn parse(el: &Element) -> Self {
+        RegionCoords {
+            x: FilterCoord::parse(el, "x"),
+            y: FilterCoord::parse(el, "y"),
+            width: FilterCoord::parse(el, "width"),
+            height: FilterCoord::parse(el, "height"),
+        }
+    }
 }
 
 /// The coordinate system a filter-element length attribute is resolved
@@ -818,6 +896,9 @@ pub struct FilterGraph {
     /// rasterizer can apply the spec defaults (`-10% -10% 120% 120%` of
     /// the bounding box).
     pub region: PrimitiveRegion,
+    /// The same filter region as [`Self::region`], but preserving the §8
+    /// length-vs-percentage distinction the §9.4 subregion resolver needs.
+    pub region_coords: RegionCoords,
     /// `filterUnits` — the coordinate system for the filter region
     /// (`region`). Defaults to `objectBoundingBox` per SVG 1.1 §15.7.2
     /// when the attribute is absent.
@@ -870,6 +951,7 @@ pub fn parse_filter_graph(el: &Element) -> FilterGraph {
         width: parse_attr_number(el, "width"),
         height: parse_attr_number(el, "height"),
     };
+    let region_coords = RegionCoords::parse(el);
     // `filterUnits` defaults to `objectBoundingBox`; `primitiveUnits`
     // defaults to `userSpaceOnUse` — two different defaults per
     // SVG 1.1 §15.7.2.
@@ -933,6 +1015,7 @@ pub fn parse_filter_graph(el: &Element) -> FilterGraph {
             width: parse_attr_number(c, "width"),
             height: parse_attr_number(c, "height"),
         };
+        let prim_region_coords = RegionCoords::parse(c);
         let result = attr(c, "result").map(|s| s.trim().to_string());
         if let Some(r) = result.as_deref() {
             prev_result = Some(r.to_string());
@@ -946,6 +1029,7 @@ pub fn parse_filter_graph(el: &Element) -> FilterGraph {
             .unwrap_or_default();
         primitives.push(FilterPrimitiveNode {
             region: prim_region,
+            region_coords: prim_region_coords,
             result,
             color_interpolation_filters: cif,
             primitive,
@@ -953,6 +1037,7 @@ pub fn parse_filter_graph(el: &Element) -> FilterGraph {
     }
     FilterGraph {
         region,
+        region_coords,
         filter_units,
         primitive_units,
         color_interpolation_filters,
