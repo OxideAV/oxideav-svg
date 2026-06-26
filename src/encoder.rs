@@ -194,6 +194,15 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
     for entry in &extras.filter_refs {
         path_to_filter_ref.insert(entry.path.clone(), entry.filter.as_str());
     }
+    // Round 372 — index `marker-*` reference bindings (SVG 2 §13.7.4) by
+    // scene-graph tree-path so `write_node` can re-emit the vertex-marker
+    // references on the matching shape / `<g>`, reconnecting it to its
+    // preserved `<marker>` def.
+    let mut path_to_marker: HashMap<Vec<usize>, &crate::preserved::MarkerRefBinding> =
+        HashMap::new();
+    for entry in &extras.marker_refs {
+        path_to_marker.insert(entry.path.clone(), entry);
+    }
     // Round 122 — index `<title>` / `<desc>` bindings (SVG 2 §5.8) by
     // their *parent* container's scene-graph tree-path so `write_node`
     // can re-emit them as the first children of the matching `<g>` on
@@ -516,6 +525,7 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
         &path_to_use,
         &path_to_switch,
         &path_to_filter_ref,
+        &path_to_marker,
         &parent_to_titles,
         &parent_to_descs,
         &anim_by_parent,
@@ -608,6 +618,24 @@ fn write_link_attrs(out: &mut String, link: &LinkBinding) {
     }
     if let Some(rp) = &link.referrerpolicy {
         out.push_str(&format!(" referrerpolicy=\"{}\"", escape_attr(rp)));
+    }
+}
+
+/// Round 372 — emit the SVG 2 §13.7.4 `marker-start` / `marker-mid` /
+/// `marker-end` references recorded for a shape onto an already-opened
+/// element tag (caller has written `<path` / `<g`, this appends the
+/// attributes, and the caller closes the tag). Each is emitted only when
+/// the source carried it (a `marker` shorthand was expanded into the
+/// three slots at capture time, so the longhand form round-trips).
+fn write_marker_attrs(out: &mut String, binding: &crate::preserved::MarkerRefBinding) {
+    if let Some(v) = &binding.marker_start {
+        out.push_str(&format!(" marker-start=\"{}\"", escape_attr(v)));
+    }
+    if let Some(v) = &binding.marker_mid {
+        out.push_str(&format!(" marker-mid=\"{}\"", escape_attr(v)));
+    }
+    if let Some(v) = &binding.marker_end {
+        out.push_str(&format!(" marker-end=\"{}\"", escape_attr(v)));
     }
 }
 
@@ -747,6 +775,7 @@ fn write_group_children(
     path_to_use: &HashMap<Vec<usize>, &crate::preserved::UseBinding>,
     path_to_switch: &HashMap<Vec<usize>, &crate::preserved::SwitchBinding>,
     path_to_filter_ref: &HashMap<Vec<usize>, &str>,
+    path_to_marker: &HashMap<Vec<usize>, &crate::preserved::MarkerRefBinding>,
     parent_to_titles: &HashMap<Vec<usize>, &DescriptiveBinding>,
     parent_to_descs: &HashMap<Vec<usize>, &DescriptiveBinding>,
     anim_by_parent: &HashMap<String, Vec<&AnimationFragment>>,
@@ -777,6 +806,7 @@ fn write_group_children(
             path_to_use,
             path_to_switch,
             path_to_filter_ref,
+            path_to_marker,
             parent_to_titles,
             parent_to_descs,
             anim_by_parent,
@@ -810,12 +840,19 @@ fn write_node(
     path_to_use: &HashMap<Vec<usize>, &crate::preserved::UseBinding>,
     path_to_switch: &HashMap<Vec<usize>, &crate::preserved::SwitchBinding>,
     path_to_filter_ref: &HashMap<Vec<usize>, &str>,
+    path_to_marker: &HashMap<Vec<usize>, &crate::preserved::MarkerRefBinding>,
     parent_to_titles: &HashMap<Vec<usize>, &DescriptiveBinding>,
     parent_to_descs: &HashMap<Vec<usize>, &DescriptiveBinding>,
     anim_by_parent: &HashMap<String, Vec<&AnimationFragment>>,
     path_stack: &mut Vec<usize>,
 ) {
     let indent = "  ".repeat(depth);
+    // Round 372 — does this scene-graph position carry recorded
+    // `marker-*` references (SVG 2 §13.7.4)? If so the `Node::Group` /
+    // `Node::Path` arm re-emits `marker-start` / `marker-mid` /
+    // `marker-end` on the matching shape.
+    let marker_here: Option<&crate::preserved::MarkerRefBinding> =
+        path_to_marker.get(path_stack.as_slice()).copied();
     // Round 372 — does this scene-graph position carry a recorded
     // `filter="url(#id)"` reference (SVG 1.1 §15)? If so the
     // `Node::Group` arm re-emits `filter=` on the filter-wrapper `<g>`.
@@ -1032,6 +1069,13 @@ fn write_node(
             if let Some(fr) = filter_ref_here {
                 out.push_str(&format!(" filter=\"{}\"", escape_attr(fr)));
             }
+            // Round 372 — SVG 2 §13.7.4 `marker-*` references on a `<g>`
+            // carrier (when the shape's outer-most emit site is a clip /
+            // mask / filter wrapper group, the source marker attributes
+            // ride the wrapping group on round-trip).
+            if let Some(m) = marker_here {
+                write_marker_attrs(out, m);
+            }
             // Round 205 — SVG 2 §13.8 `paint-order` attribute. When
             // the shape's outer-most emit site is a `<g>` (clip /
             // mask / filter wrapper, or the round-205 split into two
@@ -1159,6 +1203,7 @@ fn write_node(
                 path_to_use,
                 path_to_switch,
                 path_to_filter_ref,
+                path_to_marker,
                 parent_to_titles,
                 parent_to_descs,
                 anim_by_parent,
@@ -1196,6 +1241,14 @@ fn write_node(
             // Round 21 — re-emit the author's `pathLength` (SVG 2 §9.6.1).
             if let Some(pl) = path_length_here {
                 out.push_str(&format!(" pathLength=\"{}\"", trim_float(pl)));
+            }
+            // Round 372 — SVG 2 §13.7.4 `marker-*` references on a bare
+            // `<path>` (the common case: a hand-authored `<path
+            // marker-end="url(#arrow)">` lands as a single PathNode). The
+            // `<marker>` def rides `extras.markers` verbatim; this
+            // reconnects the shape to it on round-trip.
+            if let Some(m) = marker_here {
+                write_marker_attrs(out, m);
             }
             // Round 205 — re-emit the author's `paint-order` keyword
             // string (SVG 2 §13.8) when the shape's outer-most emit
@@ -1351,6 +1404,7 @@ fn write_node(
                 path_to_use,
                 path_to_switch,
                 path_to_filter_ref,
+                path_to_marker,
                 parent_to_titles,
                 parent_to_descs,
                 anim_by_parent,
@@ -1914,6 +1968,8 @@ fn write_mask(
     let empty_path_to_switch: HashMap<Vec<usize>, &crate::preserved::SwitchBinding> =
         HashMap::new();
     let empty_path_to_filter_ref: HashMap<Vec<usize>, &str> = HashMap::new();
+    let empty_path_to_marker: HashMap<Vec<usize>, &crate::preserved::MarkerRefBinding> =
+        HashMap::new();
     let empty_titles: HashMap<Vec<usize>, &DescriptiveBinding> = HashMap::new();
     let empty_descs: HashMap<Vec<usize>, &DescriptiveBinding> = HashMap::new();
     let empty_anims: HashMap<String, Vec<&AnimationFragment>> = HashMap::new();
@@ -1941,6 +1997,7 @@ fn write_mask(
         &empty_path_to_use,
         &empty_path_to_switch,
         &empty_path_to_filter_ref,
+        &empty_path_to_marker,
         &empty_titles,
         &empty_descs,
         &empty_anims,

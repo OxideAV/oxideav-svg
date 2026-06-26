@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- round 372 — `marker-start` / `marker-mid` / `marker-end` (and the
+  `marker` shorthand) reference round-trip fidelity (SVG 2 §13.7.4).
+  `oxideav_core::Node` has no marker construct (vertex placement is
+  deferred to a core `Marker` node), so a shape's marker references were
+  dropped on write even though the `<marker>` def itself rides
+  `PreservedExtras::markers` verbatim — orphaning the def. New
+  `PreservedExtras::marker_refs: Vec<MarkerRefBinding>` records the
+  verbatim `marker-*` attribute text keyed by the shape's scene-graph
+  tree-path (a `marker` shorthand is expanded into the three
+  position-specific slots so the longhand round-trips regardless of
+  source spelling; `none` / absent records nothing). On write the
+  encoder re-emits `marker-start=` / `marker-mid=` / `marker-end=` on the
+  matching `<path>` / `<g>`, reconnecting the shape to its preserved
+  marker def. New `tests/round372_marker_ref_roundtrip.rs` (5 tests):
+  single position, all-three-positions, shorthand expansion,
+  reconnect-after-reparse, and a no-marker no-op guard.
 - round 372 — `<clipPath>` / `<mask>` reference-identity round-trip
   fidelity (SVG 1.1 §14.3 / §14.4). The decoder collapses a
   `clip-path="url(#id)"` into a single merged `Path` on `Group.clip`

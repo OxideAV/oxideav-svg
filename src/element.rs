@@ -2262,6 +2262,13 @@ pub struct ParseContext {
     /// `filter="url(#id)"` on the matching filter-wrapper `<g>` on
     /// round-trip so the preserved `<filter>` def stays referenced.
     pub filter_refs: Vec<crate::preserved::FilterRefBinding>,
+    /// Round 372 — collected `(scene_path, marker-* refs)` bindings (SVG
+    /// 2 §13.7.4). Populated only when the caller opted in via
+    /// [`crate::decoder::parse_svg_with_extras`] (same gate as
+    /// [`Self::track_id_paths`]). The encoder re-emits `marker-start` /
+    /// `marker-mid` / `marker-end` on the matching shape on round-trip
+    /// so the preserved `<marker>` def stays referenced.
+    pub marker_refs: Vec<crate::preserved::MarkerRefBinding>,
 }
 
 impl Default for ParseContext {
@@ -2312,7 +2319,49 @@ impl ParseContext {
             uses: Vec::new(),
             switches: Vec::new(),
             filter_refs: Vec::new(),
+            marker_refs: Vec::new(),
         }
+    }
+
+    /// Round 372 — record the SVG 2 §13.7.4 `marker-start` / `marker-mid`
+    /// / `marker-end` (or expanded `marker` shorthand) references at the
+    /// current scene-graph path. Same [`Self::track_id_paths`] gate as
+    /// the other side-channel recorders. No-op when no marker reference
+    /// is present so a plain shape records nothing. The encoder re-emits
+    /// the matching shape with the marker references on round-trip.
+    pub fn record_marker_refs(&mut self, el: &Element) {
+        if !self.track_id_paths {
+            return;
+        }
+        // The `marker` shorthand sets all three position-specific
+        // properties (§13.7.4); a position-specific longhand overrides
+        // the shorthand for its slot.
+        let shorthand = attr(el, "marker");
+        let start = attr(el, "marker-start").or(shorthand);
+        let mid = attr(el, "marker-mid").or(shorthand);
+        let end = attr(el, "marker-end").or(shorthand);
+        // Record only references (`url(...)`) — a `none` / absent value
+        // is the initial value and needs no carrier.
+        let norm = |v: Option<&str>| -> Option<String> {
+            let t = v?.trim();
+            if t.is_empty() || t.eq_ignore_ascii_case("none") {
+                None
+            } else {
+                Some(t.to_string())
+            }
+        };
+        let marker_start = norm(start);
+        let marker_mid = norm(mid);
+        let marker_end = norm(end);
+        if marker_start.is_none() && marker_mid.is_none() && marker_end.is_none() {
+            return;
+        }
+        self.marker_refs.push(crate::preserved::MarkerRefBinding {
+            path: self.current_path.clone(),
+            marker_start,
+            marker_mid,
+            marker_end,
+        });
     }
 
     /// Round 372 — record a `filter="url(#id)"` reference at the current
@@ -4142,6 +4191,15 @@ pub fn parse_element_to_node_ctx(
             }
         }
     }
+    // Round 372 — SVG 2 §13.7.4: record any `marker-start` / `marker-mid`
+    // / `marker-end` (or `marker` shorthand) references at the current
+    // scene-graph path so the encoder re-attaches them on round-trip.
+    // The recorder is a no-op when no marker reference is present, so a
+    // plain shape records nothing. Recorded at the topmost emit site
+    // (same slot as the round-13 `id_paths` / round-205+ hint carriers)
+    // because the encoder writes presentation attributes on the topmost
+    // node it produces for a shape.
+    ctx.record_marker_refs(el);
     // Round 21 — drain the shape branch's pending `pathLength` (if
     // any) and record it at the **inner Path's** scene-graph slot.
     // The encoder emits `pathLength="..."` on the `<path>` element

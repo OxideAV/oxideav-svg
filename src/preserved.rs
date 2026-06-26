@@ -458,6 +458,41 @@ pub struct PreservedExtras {
     /// for its dedup (`"{MaskKind:?}:{node_fingerprint}"`). Populated
     /// only by [`crate::decoder::parse_svg_with_extras`].
     pub mask_refs: Vec<RefBinding>,
+    /// Round 372 — SVG 2 §13.7.4 `marker-start` / `marker-mid` /
+    /// `marker-end` (and the `marker` shorthand) reference bindings,
+    /// recorded per emitted shape so the encoder can re-attach the
+    /// vertex-marker references on round-trip. `oxideav_core::Node` has
+    /// no marker construct (vertex placement is deferred to a core
+    /// `Marker` node), so the shape's marker references were dropped on
+    /// write even though the `<marker>` def itself rides
+    /// [`Self::markers`] verbatim — orphaning the def. This binding
+    /// records the verbatim `marker-*` attribute text keyed by the
+    /// shape's scene-graph tree-path (same layout as
+    /// [`id_paths`](Self::id_paths)) so a `parse_svg_with_extras →
+    /// write_svg_with_extras` cycle re-emits `marker-start="url(#id)"`
+    /// etc. on the matching `<path>` / `<g>`. Populated only by
+    /// [`crate::decoder::parse_svg_with_extras`].
+    pub marker_refs: Vec<MarkerRefBinding>,
+}
+
+/// Round 372 — one (scene-graph tree-path, `marker-*` references) entry
+/// (SVG 2 §13.7.4). Each position-specific reference is recorded
+/// verbatim (`url(#id)` / `none`); a `marker` shorthand is expanded by
+/// the recorder into the three position-specific slots so the
+/// round-trip is independent of the shorthand-vs-longhand spelling.
+#[derive(Clone, Debug, Default)]
+pub struct MarkerRefBinding {
+    /// Tree-path through the scene graph; matches the layout of
+    /// [`IdScenePath::path`]. Identifies the shape `<path>` / wrapper
+    /// `<g>` the encoder re-tags with the marker references.
+    pub path: Vec<usize>,
+    /// `marker-start` verbatim value (e.g. `"url(#arrow)"`). `None` =
+    /// attribute absent (initial value `none`).
+    pub marker_start: Option<String>,
+    /// `marker-mid` verbatim value. `None` = absent.
+    pub marker_mid: Option<String>,
+    /// `marker-end` verbatim value. `None` = absent.
+    pub marker_end: Option<String>,
 }
 
 /// Round 372 — one (encoder dedup fingerprint, `url(#id)` reference)
@@ -631,6 +666,7 @@ impl PreservedExtras {
             && self.masks_raw.is_empty()
             && self.clip_refs.is_empty()
             && self.mask_refs.is_empty()
+            && self.marker_refs.is_empty()
     }
 }
 

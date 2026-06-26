@@ -111,8 +111,11 @@ the IR cannot model directly via a `PreservedExtras` side-channel.
   `<filter>` def stays connected to its graphics element (a chained
   `url(#a) url(#b)` list round-trips verbatim).
 * **Markers** — `<marker>` definitions parse into a typed `MarkerDef`
-  and round-trip; vertex placement / `orient` rendering is deferred to a
-  core `Marker` node.
+  and round-trip; a `parse_svg_with_extras → write_svg_with_extras`
+  round-trip also re-attaches the shape's `marker-start` / `marker-mid`
+  / `marker-end` references (the `marker` shorthand expands into the
+  three longhands) so the preserved def stays referenced. Vertex
+  placement / `orient` rendering is deferred to a core `Marker` node.
 * **Animation** — `<animate>` / `<set>` / `<animateTransform>`
   snapshotting via `parse_svg_at(bytes, t)` with the SMIL timing model
   (`begin` / `dur` / `repeatCount` / `keyTimes` / `values` /
