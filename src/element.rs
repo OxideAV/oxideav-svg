@@ -3882,7 +3882,7 @@ pub fn parse_element_to_node_ctx(
                 // `viewBox` (or a degenerate one) it is the identity.
                 let viewport_t = match view_box {
                     Some(vb) if vb.width > 0.0 && vb.height > 0.0 => {
-                        nested_svg_viewport_transform(width, height, vb, par)
+                        symbol_viewport_transform(width, height, vb, par)
                     }
                     _ => Transform2D::identity(),
                 };
@@ -5613,9 +5613,15 @@ fn symbol_viewport_transform(
             }
         }
     };
-    // Spec steps 9–14 — translate.
-    let mut tx = -vb.min_x * sx;
-    let mut ty = -vb.min_y * sy;
+    // §8.2 translate. The trailing `translate(-vb.min_x, -vb.min_y)`
+    // already maps the viewBox origin to (0,0), so this term carries
+    // *only* the meet/slice alignment offset (`dx/2`, `dx`, …) — never
+    // the `-min·scale` term (round 375 fix: the prior `-vb.min_x * sx`
+    // seed double-counted the min translation, so a `<symbol>` /
+    // `<use>` viewBox with a non-zero `min-x` / `min-y` was shifted by
+    // an extra `min·scale`; documents with the usual `min=0` viewBox
+    // were unaffected, which is why it went unnoticed).
+    let (mut tx, mut ty) = (0.0_f32, 0.0_f32);
     if !matches!(par.align, PreserveAspectRatioAlign::None) {
         let dx = width - vb.width * sx;
         let dy = height - vb.height * sy;
@@ -5656,88 +5662,6 @@ fn symbol_viewport_transform(
     }
     // viewport_transform = translate(tx, ty) * scale(sx, sy) *
     //                      translate(-vb.min_x, -vb.min_y)
-    Transform2D::translate(tx, ty)
-        .compose(&Transform2D::scale(sx, sy))
-        .compose(&Transform2D::translate(-vb.min_x, -vb.min_y))
-}
-
-/// Round 375 — the SVG 2 §8.2 "equivalent transform" that maps a
-/// `viewBox` rectangle onto a `width × height` viewport, honouring
-/// `preserveAspectRatio`. Used by the *nested* `<svg>` arm.
-///
-/// Unlike [`symbol_viewport_transform`] (whose translate term folds the
-/// `-min·scale` into the alignment translate *and* keeps a trailing
-/// `translate(-min)`), this builds the canonical single-chain form
-///   `translate(tx, ty) ∘ scale(sx, sy) ∘ translate(-min_x, -min_y)`
-/// where `tx` / `ty` carry *only* the §8.2 meet/slice alignment offset
-/// (`dx/2`, `dx`, …). With `align=none` or a viewBox whose aspect
-/// already matches the viewport, `tx = ty = 0`, so the viewBox-min
-/// corner maps exactly to the viewport origin — the §8.6 requirement
-/// ("map the specified rectangle to the bounds of the viewport").
-fn nested_svg_viewport_transform(
-    width: f32,
-    height: f32,
-    vb: oxideav_core::ViewBox,
-    par: crate::filter::PreserveAspectRatio,
-) -> Transform2D {
-    use crate::filter::{MeetOrSlice, PreserveAspectRatioAlign};
-    let nat_sx = width / vb.width;
-    let nat_sy = height / vb.height;
-    let (sx, sy) = if matches!(par.align, PreserveAspectRatioAlign::None) {
-        (nat_sx, nat_sy)
-    } else {
-        match par.meet_or_slice {
-            MeetOrSlice::Meet => {
-                let s = nat_sx.min(nat_sy);
-                (s, s)
-            }
-            MeetOrSlice::Slice => {
-                let s = nat_sx.max(nat_sy);
-                (s, s)
-            }
-        }
-    };
-    // §8.2 alignment translate — only the leftover gap after the
-    // (possibly uniform) scale, never the `-min·scale` term.
-    let (mut tx, mut ty) = (0.0_f32, 0.0_f32);
-    if !matches!(par.align, PreserveAspectRatioAlign::None) {
-        let dx = width - vb.width * sx;
-        let dy = height - vb.height * sy;
-        let x_mid = matches!(
-            par.align,
-            PreserveAspectRatioAlign::XMidYMin
-                | PreserveAspectRatioAlign::XMidYMid
-                | PreserveAspectRatioAlign::XMidYMax
-        );
-        let x_max = matches!(
-            par.align,
-            PreserveAspectRatioAlign::XMaxYMin
-                | PreserveAspectRatioAlign::XMaxYMid
-                | PreserveAspectRatioAlign::XMaxYMax
-        );
-        let y_mid = matches!(
-            par.align,
-            PreserveAspectRatioAlign::XMinYMid
-                | PreserveAspectRatioAlign::XMidYMid
-                | PreserveAspectRatioAlign::XMaxYMid
-        );
-        let y_max = matches!(
-            par.align,
-            PreserveAspectRatioAlign::XMinYMax
-                | PreserveAspectRatioAlign::XMidYMax
-                | PreserveAspectRatioAlign::XMaxYMax
-        );
-        if x_mid {
-            tx += dx / 2.0;
-        } else if x_max {
-            tx += dx;
-        }
-        if y_mid {
-            ty += dy / 2.0;
-        } else if y_max {
-            ty += dy;
-        }
-    }
     Transform2D::translate(tx, ty)
         .compose(&Transform2D::scale(sx, sy))
         .compose(&Transform2D::translate(-vb.min_x, -vb.min_y))

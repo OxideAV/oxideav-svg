@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- round 375 — the `<symbol>` / `<use>` §8.2 viewport transform
+  (`symbol_viewport_transform`) double-counted the viewBox min
+  translation: its alignment translate seeded `tx = -min_x · scale`
+  *and* the chain kept a trailing `translate(-min_x, -min_y)`, so a
+  `<symbol viewBox="min-x min-y …">` with a non-zero `min-x` / `min-y`
+  shifted the instantiated content by an extra `min · scale`. Documents
+  with the usual `min=0` viewBox were unaffected (which is why every
+  prior test passed). The alignment translate now seeds at zero, leaving
+  the trailing `translate(-min)` as the sole min-mapping term, so the
+  viewBox-min corner maps exactly to the viewport origin per §8.6. New
+  `tests/round375_symbol_viewbox_min.rs` (2 tests).
+
 ### Added
 
 - round 375 — *nested* `<svg>` viewport establishment (SVG 1.1 §7.10 /
