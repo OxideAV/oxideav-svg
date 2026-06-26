@@ -186,6 +186,14 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
     for entry in &extras.switches {
         path_to_switch.insert(entry.path.clone(), entry);
     }
+    // Round 372 — index `filter="url(#id)"` reference bindings (SVG 1.1
+    // §15) by scene-graph tree-path so `write_node`'s `Node::Group` arm
+    // can re-emit `filter=` on the matching filter-wrapper `<g>`,
+    // reconnecting the graphics element to its preserved `<filter>` def.
+    let mut path_to_filter_ref: HashMap<Vec<usize>, &str> = HashMap::new();
+    for entry in &extras.filter_refs {
+        path_to_filter_ref.insert(entry.path.clone(), entry.filter.as_str());
+    }
     // Round 122 — index `<title>` / `<desc>` bindings (SVG 2 §5.8) by
     // their *parent* container's scene-graph tree-path so `write_node`
     // can re-emit them as the first children of the matching `<g>` on
@@ -395,6 +403,7 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
         &path_to_dominant_baseline,
         &path_to_use,
         &path_to_switch,
+        &path_to_filter_ref,
         &parent_to_titles,
         &parent_to_descs,
         &anim_by_parent,
@@ -625,6 +634,7 @@ fn write_group_children(
     path_to_dominant_baseline: &HashMap<Vec<usize>, &str>,
     path_to_use: &HashMap<Vec<usize>, &crate::preserved::UseBinding>,
     path_to_switch: &HashMap<Vec<usize>, &crate::preserved::SwitchBinding>,
+    path_to_filter_ref: &HashMap<Vec<usize>, &str>,
     parent_to_titles: &HashMap<Vec<usize>, &DescriptiveBinding>,
     parent_to_descs: &HashMap<Vec<usize>, &DescriptiveBinding>,
     anim_by_parent: &HashMap<String, Vec<&AnimationFragment>>,
@@ -654,6 +664,7 @@ fn write_group_children(
             path_to_dominant_baseline,
             path_to_use,
             path_to_switch,
+            path_to_filter_ref,
             parent_to_titles,
             parent_to_descs,
             anim_by_parent,
@@ -686,12 +697,17 @@ fn write_node(
     path_to_dominant_baseline: &HashMap<Vec<usize>, &str>,
     path_to_use: &HashMap<Vec<usize>, &crate::preserved::UseBinding>,
     path_to_switch: &HashMap<Vec<usize>, &crate::preserved::SwitchBinding>,
+    path_to_filter_ref: &HashMap<Vec<usize>, &str>,
     parent_to_titles: &HashMap<Vec<usize>, &DescriptiveBinding>,
     parent_to_descs: &HashMap<Vec<usize>, &DescriptiveBinding>,
     anim_by_parent: &HashMap<String, Vec<&AnimationFragment>>,
     path_stack: &mut Vec<usize>,
 ) {
     let indent = "  ".repeat(depth);
+    // Round 372 — does this scene-graph position carry a recorded
+    // `filter="url(#id)"` reference (SVG 1.1 §15)? If so the
+    // `Node::Group` arm re-emits `filter=` on the filter-wrapper `<g>`.
+    let filter_ref_here: Option<&str> = path_to_filter_ref.get(path_stack.as_slice()).copied();
     // Round 372 — does this scene-graph position carry a recorded
     // `<switch>` (SVG 2 §5.7)? If so the `Node::Group` arm emits the
     // verbatim `<switch>` (all alternatives) and skips the selected
@@ -895,6 +911,15 @@ fn write_node(
                     out.push_str(&format!(" clip-path=\"url(#{})\"", escape_attr(id)));
                 }
             }
+            // Round 372 — SVG 1.1 §15 `filter="url(#id)"`. The decoder
+            // wraps a filtered element in a pass-through `<g>`; this
+            // re-emits the source `filter=` reference on that wrapper so
+            // the preserved `<filter>` def (in <defs>) stays connected to
+            // its graphics element after round-trip. Emitted verbatim
+            // (preserves a chained `filter="url(#a) url(#b)"` list).
+            if let Some(fr) = filter_ref_here {
+                out.push_str(&format!(" filter=\"{}\"", escape_attr(fr)));
+            }
             // Round 205 — SVG 2 §13.8 `paint-order` attribute. When
             // the shape's outer-most emit site is a `<g>` (clip /
             // mask / filter wrapper, or the round-205 split into two
@@ -1021,6 +1046,7 @@ fn write_node(
                 path_to_dominant_baseline,
                 path_to_use,
                 path_to_switch,
+                path_to_filter_ref,
                 parent_to_titles,
                 parent_to_descs,
                 anim_by_parent,
@@ -1212,6 +1238,7 @@ fn write_node(
                 path_to_dominant_baseline,
                 path_to_use,
                 path_to_switch,
+                path_to_filter_ref,
                 parent_to_titles,
                 parent_to_descs,
                 anim_by_parent,
@@ -1753,6 +1780,7 @@ fn write_mask(
     let empty_path_to_use: HashMap<Vec<usize>, &crate::preserved::UseBinding> = HashMap::new();
     let empty_path_to_switch: HashMap<Vec<usize>, &crate::preserved::SwitchBinding> =
         HashMap::new();
+    let empty_path_to_filter_ref: HashMap<Vec<usize>, &str> = HashMap::new();
     let empty_titles: HashMap<Vec<usize>, &DescriptiveBinding> = HashMap::new();
     let empty_descs: HashMap<Vec<usize>, &DescriptiveBinding> = HashMap::new();
     let empty_anims: HashMap<String, Vec<&AnimationFragment>> = HashMap::new();
@@ -1779,6 +1807,7 @@ fn write_mask(
         &empty_path_to_dominant_baseline,
         &empty_path_to_use,
         &empty_path_to_switch,
+        &empty_path_to_filter_ref,
         &empty_titles,
         &empty_descs,
         &empty_anims,

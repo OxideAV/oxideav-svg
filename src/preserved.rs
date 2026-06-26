@@ -403,6 +403,39 @@ pub struct PreservedExtras {
     /// the first decode's choice). Populated only by
     /// [`crate::decoder::parse_svg_with_extras`].
     pub switches: Vec<SwitchBinding>,
+    /// Round 372 — SVG 1.1 §15 `filter="url(#id)"` reference bindings,
+    /// recorded per emitted node so the encoder can re-attach the
+    /// `filter=` attribute on round-trip. The decoder wraps a filtered
+    /// element in a pass-through `Group` (the actual rasterisation is
+    /// `oxideav-raster` work) and the `<filter>` def itself rides
+    /// [`Self::filters`] verbatim — but the *reference* from the
+    /// graphics element to the filter was dropped on write, orphaning
+    /// the def. This binding records the original `url(#id)` text keyed
+    /// by the wrapper group's scene-graph tree-path (same layout as
+    /// [`id_paths`](Self::id_paths)) so a `parse_svg_with_extras →
+    /// write_svg_with_extras` cycle re-emits `filter="url(#id)"` on the
+    /// matching `<g>`, reconnecting the graphics element to its
+    /// preserved filter. Populated only by
+    /// [`crate::decoder::parse_svg_with_extras`].
+    pub filter_refs: Vec<FilterRefBinding>,
+}
+
+/// Round 372 — one (scene-graph tree-path, `filter` url-ref) pair (SVG
+/// 1.1 §15). Same shape as [`PaintOrderBinding`]; the binding only
+/// round-trips the source `filter=` attribute so the preserved
+/// `<filter>` def (carried on [`PreservedExtras::filters`]) stays
+/// referenced after a parse → write cycle.
+#[derive(Clone, Debug)]
+pub struct FilterRefBinding {
+    /// Tree-path through the scene graph; matches the layout of
+    /// [`IdScenePath::path`]. Identifies the filter wrapper `<g>` the
+    /// encoder re-tags with `filter="url(#id)"`.
+    pub path: Vec<usize>,
+    /// The verbatim `filter` attribute source text, e.g.
+    /// `"url(#f)"`. Preserved as-authored so a `filter="url(#a) url(#b)"`
+    /// filter-list (SVG 2 chained references) round-trips unchanged even
+    /// though the decoder only wraps a single pass-through group.
+    pub filter: String,
 }
 
 /// Round 372 — one captured `<switch>` element, keyed by the
@@ -535,6 +568,7 @@ impl PreservedExtras {
             && self.uses.is_empty()
             && self.defs_targets.is_empty()
             && self.switches.is_empty()
+            && self.filter_refs.is_empty()
     }
 }
 

@@ -99,7 +99,11 @@ the IR cannot model directly via a `PreservedExtras` side-channel.
   full §9.4 resolve → clip pipeline. The turn-key
   `evaluate_filter_graph_resolved` composes the resolver with the clipped
   evaluator, deriving the working-raster size from the filter region. The
-  general rasteriser surface remains `oxideav-raster` work.
+  general rasteriser surface remains `oxideav-raster` work. A
+  `parse_svg_with_extras → write_svg_with_extras` round-trip re-attaches
+  the `filter="url(#id)"` reference on the wrapper group so the preserved
+  `<filter>` def stays connected to its graphics element (a chained
+  `url(#a) url(#b)` list round-trips verbatim).
 * **Markers** — `<marker>` definitions parse into a typed `MarkerDef`
   and round-trip; vertex placement / `orient` rendering is deferred to a
   core `Marker` node.

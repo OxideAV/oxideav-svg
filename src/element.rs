@@ -2255,6 +2255,13 @@ pub struct ParseContext {
     /// `<g>` (the selected branch) with the verbatim `<switch>` on
     /// round-trip, skipping the selected child.
     pub switches: Vec<crate::preserved::SwitchBinding>,
+    /// Round 372 — collected `(scene_path, filter url-ref)` bindings
+    /// (SVG 1.1 §15). Populated only when the caller opted in via
+    /// [`crate::decoder::parse_svg_with_extras`] (same gate as
+    /// [`Self::track_id_paths`]). The encoder re-emits
+    /// `filter="url(#id)"` on the matching filter-wrapper `<g>` on
+    /// round-trip so the preserved `<filter>` def stays referenced.
+    pub filter_refs: Vec<crate::preserved::FilterRefBinding>,
 }
 
 impl Default for ParseContext {
@@ -2304,7 +2311,23 @@ impl ParseContext {
             pending_dominant_baseline: None,
             uses: Vec::new(),
             switches: Vec::new(),
+            filter_refs: Vec::new(),
         }
+    }
+
+    /// Round 372 — record a `filter="url(#id)"` reference at the current
+    /// scene-graph path (SVG 1.1 §15). Same [`Self::track_id_paths`]
+    /// gate as the other side-channel recorders. The encoder re-emits
+    /// `filter="url(#id)"` on the matching filter-wrapper `<g>` so the
+    /// preserved `<filter>` def stays referenced after round-trip.
+    pub fn record_filter_ref(&mut self, filter: String) {
+        if !self.track_id_paths {
+            return;
+        }
+        self.filter_refs.push(crate::preserved::FilterRefBinding {
+            path: self.current_path.clone(),
+            filter,
+        });
     }
 
     /// Round 372 — record a `<switch>` verbatim binding at the current
@@ -4103,6 +4126,21 @@ pub fn parse_element_to_node_ctx(
     // render).
     if tag_local(&el.name) == "switch" {
         ctx.record_switch(el.clone());
+    }
+    // Round 372 — SVG 1.1 §15: record the `filter="url(#id)"` reference
+    // at the current scene-graph path (the topmost emit site, which is
+    // the filter wrapper group when the ref resolved) so the encoder can
+    // re-attach `filter=` on round-trip. Only record when the referenced
+    // `<filter>` def actually exists — `apply_referenced_defs` wraps the
+    // node in a pass-through group precisely then, so the binding has a
+    // matching `<g>` emit site. An unresolved ref produced no wrapper,
+    // so recording one would mis-tag an unrelated node.
+    if let Some(filter_text) = attr(el, "filter") {
+        if let Some(id) = parse_url_ref(filter_text) {
+            if ctx.defs.filters.contains_key(id) {
+                ctx.record_filter_ref(filter_text.to_string());
+            }
+        }
     }
     // Round 21 — drain the shape branch's pending `pathLength` (if
     // any) and record it at the **inner Path's** scene-graph slot.

@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- round 372 — `filter="url(#id)"` reference round-trip fidelity (SVG 1.1
+  §15). The decoder wraps a filtered element in a pass-through `Group`
+  and preserves the `<filter>` def verbatim in `PreservedExtras::filters`,
+  but the *reference* from the graphics element to the filter was dropped
+  on write, orphaning the def. New
+  `PreservedExtras::filter_refs: Vec<FilterRefBinding>` records the source
+  `filter=` attribute text keyed by the wrapper group's scene-graph
+  tree-path (only when the referenced `<filter>` def actually exists);
+  on write the encoder re-emits `filter="url(#id)"` on the matching `<g>`,
+  reconnecting the graphics element to its preserved filter (a chained
+  `filter="url(#a) url(#b)"` list round-trips verbatim). New
+  `tests/round372_filter_ref_roundtrip.rs` (4 tests): re-attachment,
+  reconnect-after-reparse, unresolved-ref records nothing, and a
+  no-filter no-op guard.
 - round 372 — `<switch>` verbatim round-trip fidelity (SVG 2 §5.7). The
   decoder renders the first child whose conditional-processing
   attributes test true and wraps it in a `Group`, discarding the
