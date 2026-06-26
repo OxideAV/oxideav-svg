@@ -35,6 +35,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- round 375 — `preserveAspectRatio` now consumes the optional leading
+  `defer` keyword (SVG 2 §8.7: `[defer] <align> [<meetOrSlice>]`).
+  Previously `defer` was parsed *as* the `<align>` token (falling back
+  to the `xMidYMid` default) and shifted the real align into the
+  `<meetOrSlice>` slot — so e.g. `"defer xMinYMin slice"` lost both the
+  `xMinYMin` alignment and the `slice` mode. `defer` is only meaningful
+  on `<image>` (ignored elsewhere) but must be consumed everywhere so
+  the remaining tokens read from their correct positions. New unit test
+  + a nested-`<svg>` integration assertion.
 - round 375 — the `<symbol>` / `<use>` §8.2 viewport transform
   (`symbol_viewport_transform`) double-counted the viewBox min
   translation: its alignment translate seeded `tx = -min_x · scale`

@@ -432,12 +432,23 @@ impl Default for PreserveAspectRatio {
 
 impl PreserveAspectRatio {
     /// Round-12 — exposed for the root-`<svg>` viewport mapper in
-    /// [`crate::decoder`]. Parses the `align [meetOrSlice]` keyword
-    /// pair per SVG 2 §8.7. Unknown align tokens fall back to
-    /// `xMidYMid`; missing meetOrSlice defaults to `meet`.
+    /// [`crate::decoder`]. Parses the `[defer] <align> [<meetOrSlice>]`
+    /// keyword sequence per SVG 2 §8.7. Unknown align tokens fall back
+    /// to `xMidYMid`; missing meetOrSlice defaults to `meet`.
+    ///
+    /// Round 375 — the optional leading `defer` keyword (§8.7: only
+    /// meaningful on `<image>`, ignored elsewhere) is now consumed so
+    /// the `<align>` / `<meetOrSlice>` tokens are read from their
+    /// correct positions. Before this, `"defer xMinYMin slice"` parsed
+    /// `defer` as the (unknown → default `xMidYMid`) align and shifted
+    /// `slice` out of the meetOrSlice slot entirely.
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
-        let mut parts = s.split_whitespace();
+        let mut parts = s.split_whitespace().peekable();
+        // §8.7 — an optional `defer` precedes the alignment keyword.
+        if parts.peek() == Some(&"defer") {
+            parts.next();
+        }
         let align = parts
             .next()
             .map(PreserveAspectRatioAlign::from_str)
@@ -3176,5 +3187,30 @@ mod tests {
             PreserveAspectRatioAlign::from_str("not-a-real-value"),
             PreserveAspectRatioAlign::XMidYMid
         );
+    }
+
+    #[test]
+    fn preserve_aspect_ratio_optional_defer_prefix() {
+        // §8.7 — an optional leading `defer` precedes the align keyword.
+        // It must be consumed so align / meetOrSlice read from the right
+        // positions (regression: `defer` used to be parsed AS the align
+        // and shifted meetOrSlice off the end).
+        let par = PreserveAspectRatio::from_str("defer xMinYMin slice");
+        assert_eq!(par.align, PreserveAspectRatioAlign::XMinYMin);
+        assert_eq!(par.meet_or_slice, MeetOrSlice::Slice);
+
+        let par2 = PreserveAspectRatio::from_str("defer none");
+        assert_eq!(par2.align, PreserveAspectRatioAlign::None);
+        assert_eq!(par2.meet_or_slice, MeetOrSlice::Meet);
+
+        // Without `defer`, the same align/meetOrSlice still parse.
+        let par3 = PreserveAspectRatio::from_str("xMaxYMax meet");
+        assert_eq!(par3.align, PreserveAspectRatioAlign::XMaxYMax);
+        assert_eq!(par3.meet_or_slice, MeetOrSlice::Meet);
+
+        // `defer` alone (no align) → align defaults to xMidYMid.
+        let par4 = PreserveAspectRatio::from_str("defer");
+        assert_eq!(par4.align, PreserveAspectRatioAlign::XMidYMid);
+        assert_eq!(par4.meet_or_slice, MeetOrSlice::Meet);
     }
 }

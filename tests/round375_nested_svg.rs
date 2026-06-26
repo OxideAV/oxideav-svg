@@ -170,3 +170,28 @@ fn nested_svg_default_dimensions_fill_parent() {
     );
     assert_eq!(count_paths(&frame.root), 1, "subtree renders");
 }
+
+#[test]
+fn nested_svg_preserve_aspect_ratio_defer_prefix_parses() {
+    // §8.7 — a `defer` prefix on the alignment keyword must not shift
+    // the align / meetOrSlice. With "defer xMidYMid meet" on a square
+    // viewBox-to-square-viewport mapping the result is identity-like:
+    // viewBox (10,10) at scale 0.4 (40/100) maps to (4,4).
+    let src = br##"<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
+  <svg x="0" y="0" width="40" height="40" viewBox="0 0 100 100"
+       preserveAspectRatio="defer xMidYMid meet">
+    <rect x="0" y="0" width="10" height="10" fill="red"/>
+  </svg>
+</svg>"##;
+    let frame = parse_svg(src).expect("parse");
+    let t = first_group_with_path(&frame.root, Transform2D::identity())
+        .expect("a group carrying the rect");
+    let p = t.apply(Point { x: 10.0, y: 10.0 });
+    assert!(
+        (p.x - 4.0).abs() < 1e-3 && (p.y - 4.0).abs() < 1e-3,
+        "defer-prefixed PAR keeps uniform scale 0.4: (10,10) → (4,4), got ({},{})",
+        p.x,
+        p.y
+    );
+}
