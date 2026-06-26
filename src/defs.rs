@@ -375,6 +375,16 @@ pub struct SymbolDef {
     pub preserve_aspect_ratio: PreserveAspectRatio,
     pub intrinsic_width: Option<f32>,
     pub intrinsic_height: Option<f32>,
+    /// SVG 2 §5.5 `refX` / `refY` — the symbol's reference point, given
+    /// in the symbol's own (post-`viewBox`) coordinate system. When a
+    /// `<use>` instantiates the symbol, this point is aligned with the
+    /// use's `x` / `y` position ("Similar to the matching attributes on
+    /// `marker`"). `None` when the attribute was absent. The geometric
+    /// keywords (`left` / `center` / `right` for `refX`; `top` /
+    /// `center` / `bottom` for `refY`) resolve against the `viewBox`
+    /// extent at parse time, mirroring the `<marker>` handling.
+    pub ref_x: Option<f32>,
+    pub ref_y: Option<f32>,
 }
 
 /// Round 20 — captured `<pattern id="...">` paint server. SVG 2 §14.3.

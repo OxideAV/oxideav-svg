@@ -5069,6 +5069,15 @@ pub fn parse_symbol_def(
     };
     let intrinsic_width = parse_optional_length(attr(el, "width"))?;
     let intrinsic_height = parse_optional_length(attr(el, "height"))?;
+    // SVG 2 §5.5 — `refX` / `refY` reference point. Absent → `None`
+    // (no reference-point offset). The geometric keywords resolve
+    // against the `viewBox` extent, reusing the `<marker>` helper; a
+    // numeric value is a coordinate in the symbol's own coordinate
+    // system.
+    let ref_x =
+        attr(el, "refX").map(|s| parse_marker_ref(Some(s), view_box.map(|v| (v.min_x, v.width))));
+    let ref_y =
+        attr(el, "refY").map(|s| parse_marker_ref(Some(s), view_box.map(|v| (v.min_y, v.height))));
     Ok(Some((
         id,
         SymbolDef {
@@ -5077,6 +5086,8 @@ pub fn parse_symbol_def(
             preserve_aspect_ratio,
             intrinsic_width,
             intrinsic_height,
+            ref_x,
+            ref_y,
         },
     )))
 }
@@ -5500,16 +5511,20 @@ pub fn parse_use_element(
         // The defs.elements clone is the verbatim XML; the SymbolDef
         // is the structured form built during register_all_defs.
         let sym_meta = ctx.defs.symbols.get(id).cloned();
-        let (sym_view_box, sym_par, sym_w, sym_h) = match &sym_meta {
+        let (sym_view_box, sym_par, sym_w, sym_h, sym_ref_x, sym_ref_y) = match &sym_meta {
             Some(s) => (
                 s.view_box,
                 s.preserve_aspect_ratio,
                 s.intrinsic_width,
                 s.intrinsic_height,
+                s.ref_x,
+                s.ref_y,
             ),
             None => (
                 None,
                 crate::filter::PreserveAspectRatio::default(),
+                None,
+                None,
                 None,
                 None,
             ),
@@ -5522,7 +5537,21 @@ pub fn parse_use_element(
             if vb.width > 0.0 && vb.height > 0.0 && w > 0.0 && h > 0.0 {
                 // Spec algorithm 8.2 — viewport rect (0..w × 0..h)
                 // mapping to viewBox rect.
-                viewport_transform = Some(symbol_viewport_transform(w, h, vb, sym_par));
+                let mut vp = symbol_viewport_transform(w, h, vb, sym_par);
+                // SVG 2 §5.5 — `refX` / `refY` align the symbol's
+                // reference point (given in the symbol's own coordinate
+                // system) with the use's `x` / `y`. Mirroring the
+                // `<marker>` rule, the reference point is mapped through
+                // the viewport transform and the result is subtracted so
+                // that point lands at the viewport origin (which the
+                // outer group's `translate(x, y)` then positions).
+                if sym_ref_x.is_some() || sym_ref_y.is_some() {
+                    let rx = sym_ref_x.unwrap_or(0.0);
+                    let ry = sym_ref_y.unwrap_or(0.0);
+                    let mapped = apply_xform(&vp, rx, ry);
+                    vp = Transform2D::translate(-mapped.x, -mapped.y).compose(&vp);
+                }
+                viewport_transform = Some(vp);
             }
         }
         for child in &source.children {

@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- round 375 — SVG 2 §5.5 `<symbol>` `refX` / `refY` reference point.
+  SVG 2 added these attributes to `<symbol>` ("Added to make it easier
+  to align symbols to a particular point, as is often done in maps;
+  Similar to the matching attributes on `marker`"). The reference point
+  — given in the symbol's own coordinate system, accepting a `<length>`
+  or the geometric keywords (`left` / `center` / `right` for `refX`;
+  `top` / `center` / `bottom` for `refY`, resolved against the `viewBox`
+  extent via the existing `<marker>` helper) — is now aligned with the
+  instantiating `<use>`'s `x` / `y`: the point is mapped through the
+  §8.2 viewport transform and the result subtracted so it lands at the
+  viewport origin (which the use placement then positions). Before this
+  round the attributes were ignored and a `<symbol refX refY>` was
+  positioned by its top-left corner. New `SymbolDef::{ref_x, ref_y}`
+  fields; new `tests/round375_symbol_ref.rs` (4 tests).
+
 ### Fixed
 
 - round 375 — the `<symbol>` / `<use>` §8.2 viewport transform
