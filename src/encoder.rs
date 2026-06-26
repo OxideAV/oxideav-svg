@@ -170,6 +170,14 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
     for entry in &extras.dominant_baselines {
         path_to_dominant_baseline.insert(entry.path.clone(), entry.dominant_baseline.as_str());
     }
+    // Round 372 — index `<use>` reference bindings (SVG 2 §5.6) by
+    // scene-graph tree-path so `write_node` can collapse the matching
+    // instantiated `Node::Group` back to `<use href="#id" …/>` (and
+    // skip its flattened children) on round-trip.
+    let mut path_to_use: HashMap<Vec<usize>, &crate::preserved::UseBinding> = HashMap::new();
+    for entry in &extras.uses {
+        path_to_use.insert(entry.path.clone(), entry);
+    }
     // Round 122 — index `<title>` / `<desc>` bindings (SVG 2 §5.8) by
     // their *parent* container's scene-graph tree-path so `write_node`
     // can re-emit them as the first children of the matching `<g>` on
@@ -260,9 +268,20 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
         || !extras.filters.is_empty()
         || !extras.patterns.is_empty()
         || !extras.markers.is_empty()
-        || !extras.gradients.is_empty();
+        || !extras.gradients.is_empty()
+        || !extras.defs_targets.is_empty();
     if has_defs {
         out.push_str("  <defs>\n");
+        // Round 372 — re-emit verbatim `<defs>`-housed reference targets
+        // (id-bearing shapes / `<g>` / `<symbol>`) first so a `<use>`
+        // the scene-walk produces below resolves against a defined
+        // target. SVG resolves `url(#id)` / `href="#id"` references
+        // document-wide regardless of declaration order, but emitting
+        // the targets at the head of `<defs>` keeps the output's
+        // structure aligned with typical authoring.
+        for target in &extras.defs_targets {
+            write_raw_element(&mut out, target, 2);
+        }
         for body in &extras.styles {
             // Wrap in CDATA so any `>` / `&` inside the CSS body
             // doesn't trip the parser. Rare for plain selectors, but
@@ -366,6 +385,7 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
         &path_to_pointer_events,
         &path_to_cursor,
         &path_to_dominant_baseline,
+        &path_to_use,
         &parent_to_titles,
         &parent_to_descs,
         &anim_by_parent,
@@ -594,6 +614,7 @@ fn write_group_children(
     path_to_pointer_events: &HashMap<Vec<usize>, &str>,
     path_to_cursor: &HashMap<Vec<usize>, &str>,
     path_to_dominant_baseline: &HashMap<Vec<usize>, &str>,
+    path_to_use: &HashMap<Vec<usize>, &crate::preserved::UseBinding>,
     parent_to_titles: &HashMap<Vec<usize>, &DescriptiveBinding>,
     parent_to_descs: &HashMap<Vec<usize>, &DescriptiveBinding>,
     anim_by_parent: &HashMap<String, Vec<&AnimationFragment>>,
@@ -621,6 +642,7 @@ fn write_group_children(
             path_to_pointer_events,
             path_to_cursor,
             path_to_dominant_baseline,
+            path_to_use,
             parent_to_titles,
             parent_to_descs,
             anim_by_parent,
@@ -651,12 +673,21 @@ fn write_node(
     path_to_pointer_events: &HashMap<Vec<usize>, &str>,
     path_to_cursor: &HashMap<Vec<usize>, &str>,
     path_to_dominant_baseline: &HashMap<Vec<usize>, &str>,
+    path_to_use: &HashMap<Vec<usize>, &crate::preserved::UseBinding>,
     parent_to_titles: &HashMap<Vec<usize>, &DescriptiveBinding>,
     parent_to_descs: &HashMap<Vec<usize>, &DescriptiveBinding>,
     anim_by_parent: &HashMap<String, Vec<&AnimationFragment>>,
     path_stack: &mut Vec<usize>,
 ) {
     let indent = "  ".repeat(depth);
+    // Round 372 — does this scene-graph position carry a recorded
+    // `<use>` reference (SVG 2 §5.6)? If so the `Node::Group` arm emits
+    // `<use href="#id" …/>` and skips re-walking the instantiated
+    // children, collapsing the flattened geometry back to the source
+    // reference. Checked before the per-attribute lookups so the use
+    // short-circuit can return early.
+    let use_here: Option<&crate::preserved::UseBinding> =
+        path_to_use.get(path_stack.as_slice()).copied();
     // Round 13 — does this scene-graph position carry a recorded
     // source id? If so we emit `id="..."` and inline its
     // `<animate>` / `<set>` / `<animateTransform>` fragments.
@@ -739,6 +770,60 @@ fn write_node(
         .unwrap_or(&[]);
     match node {
         Node::Group(g) => {
+            // Round 372 — SVG 2 §5.6: if this group is the instantiated
+            // body of a `<use>` reference, collapse it back to a single
+            // `<use href="#id" …/>` element and skip re-walking the
+            // flattened children entirely. The decoder baked the
+            // reference target's geometry into `g.children`; re-emitting
+            // them would (a) lose the reference identity and (b) inline
+            // the target N times for an N-instance document. Emitting
+            // `<use>` instead keeps the output structurally faithful and
+            // compact. Any `<animate>` whose parent id is the `<use>`'s
+            // own id is inlined as a child so SMIL on the instance
+            // survives.
+            if let Some(u) = use_here {
+                out.push_str(&indent);
+                out.push_str("<use");
+                // Emit ONLY the `<use>`'s own `id` (from the binding) —
+                // NOT the generic `id_here` from the round-13 id_paths
+                // table. When the `<use>` instantiates an id-bearing
+                // target, the id_paths recorder fires on this same
+                // scene-graph slot carrying the *target's* id (e.g.
+                // `#r1`); emitting that here would make the round-tripped
+                // `<use href="#r1" id="r1">` self-reference, which the
+                // re-parse drops as a cycle. The use's structural
+                // identity is the binding's `id` field alone.
+                if let Some(id) = &u.id {
+                    out.push_str(&format!(" id=\"{}\"", escape_attr(id)));
+                }
+                out.push_str(&format!(" href=\"{}\"", escape_attr(&u.href)));
+                if let Some(x) = &u.x {
+                    out.push_str(&format!(" x=\"{}\"", escape_attr(x)));
+                }
+                if let Some(y) = &u.y {
+                    out.push_str(&format!(" y=\"{}\"", escape_attr(y)));
+                }
+                if let Some(w) = &u.width {
+                    out.push_str(&format!(" width=\"{}\"", escape_attr(w)));
+                }
+                if let Some(h) = &u.height {
+                    out.push_str(&format!(" height=\"{}\"", escape_attr(h)));
+                }
+                if let Some(t) = &u.transform {
+                    out.push_str(&format!(" transform=\"{}\"", escape_attr(t)));
+                }
+                if inline_anims.is_empty() {
+                    out.push_str("/>\n");
+                } else {
+                    out.push_str(">\n");
+                    for anim in inline_anims {
+                        write_raw_element(out, &anim.element, depth + 1);
+                    }
+                    out.push_str(&indent);
+                    out.push_str("</use>\n");
+                }
+                return;
+            }
             // Round 115 — open the wrapping `<a>` element if this group
             // came from an `<a>` in the source. The hyperlink attributes
             // ride on the `<a>`; the group's own transform / opacity /
@@ -901,6 +986,7 @@ fn write_node(
                 path_to_pointer_events,
                 path_to_cursor,
                 path_to_dominant_baseline,
+                path_to_use,
                 parent_to_titles,
                 parent_to_descs,
                 anim_by_parent,
@@ -1090,6 +1176,7 @@ fn write_node(
                 path_to_pointer_events,
                 path_to_cursor,
                 path_to_dominant_baseline,
+                path_to_use,
                 parent_to_titles,
                 parent_to_descs,
                 anim_by_parent,
@@ -1628,6 +1715,7 @@ fn write_mask(
     let empty_path_to_pointer_events: HashMap<Vec<usize>, &str> = HashMap::new();
     let empty_path_to_cursor: HashMap<Vec<usize>, &str> = HashMap::new();
     let empty_path_to_dominant_baseline: HashMap<Vec<usize>, &str> = HashMap::new();
+    let empty_path_to_use: HashMap<Vec<usize>, &crate::preserved::UseBinding> = HashMap::new();
     let empty_titles: HashMap<Vec<usize>, &DescriptiveBinding> = HashMap::new();
     let empty_descs: HashMap<Vec<usize>, &DescriptiveBinding> = HashMap::new();
     let empty_anims: HashMap<String, Vec<&AnimationFragment>> = HashMap::new();
@@ -1652,6 +1740,7 @@ fn write_mask(
         &empty_path_to_pointer_events,
         &empty_path_to_cursor,
         &empty_path_to_dominant_baseline,
+        &empty_path_to_use,
         &empty_titles,
         &empty_descs,
         &empty_anims,

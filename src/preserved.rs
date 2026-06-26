@@ -353,6 +353,38 @@ pub struct PreservedExtras {
     /// construction + glyph positioning live in `oxideav-scribe` /
     /// `oxideav-raster`.
     pub dominant_baselines: Vec<DominantBaselineBinding>,
+    /// Round 372 — SVG 2 §5.6 `<use>` reference bindings, recorded per
+    /// emitted [`oxideav_core::Node::Group`] (the decoder instantiates
+    /// each `<use>` as a `Group` wrapping the referenced element's
+    /// flattened geometry). `oxideav_core::Group` has no "this group is
+    /// a `<use>` instance of #id" field, so the structural reference
+    /// identity (`href` + `x`/`y`/`width`/`height` + the `<use>`'s own
+    /// `transform`) is stowed here keyed by the group's scene-graph
+    /// tree-path (same layout as [`id_paths`](Self::id_paths)). The
+    /// encoder, when it reaches a group whose path matches a binding,
+    /// emits `<use href="#id" …/>` and **skips re-walking the
+    /// instantiated children** — collapsing the flattened geometry back
+    /// to the source `<use>` so a `parse_svg_with_extras →
+    /// write_svg_with_extras` cycle preserves the reference structure
+    /// (and the document stays small instead of inlining the target N
+    /// times). Populated only by
+    /// [`crate::decoder::parse_svg_with_extras`].
+    pub uses: Vec<UseBinding>,
+    /// Round 372 — verbatim `<defs>`-housed reference targets that
+    /// produce no scene-graph node of their own (SVG 1.1 §5.5). A
+    /// `<defs>` block holds never-rendered definitions; the typed
+    /// side-channels already carry gradients / filters / patterns /
+    /// markers / `<style>` verbatim, but a plain id-bearing shape /
+    /// `<g>` / `<symbol>` inside `<defs>` (the canonical `<use>` target)
+    /// has no other round-trip carrier — the decoder registers it in
+    /// `ctx.defs.elements` for `<use>` resolution and emits nothing.
+    ///
+    /// Each captured element is re-emitted inside the output `<defs>`
+    /// block so a `<use href="#id">` the encoder produces (see
+    /// [`Self::uses`]) still resolves after round-trip. Captured
+    /// verbatim (attribute ordering + descendant structure preserved).
+    /// Populated only by [`crate::decoder::parse_svg_with_extras`].
+    pub defs_targets: Vec<Element>,
 }
 
 /// One captured animation child of a known-id parent element.
@@ -465,7 +497,52 @@ impl PreservedExtras {
             && self.pointer_eventss.is_empty()
             && self.cursors.is_empty()
             && self.dominant_baselines.is_empty()
+            && self.uses.is_empty()
+            && self.defs_targets.is_empty()
     }
+}
+
+/// Round 372 — one captured `<use>` element, keyed by the scene-graph
+/// tree-path of the [`oxideav_core::Node::Group`] the decoder produced
+/// for it. SVG 2 §5.6 defines `<use>` as a reference that instantiates
+/// the target element (`href` / deprecated `xlink:href`) at an
+/// additive `x`/`y` translate, with an optional `transform` and (for
+/// `<symbol>` / `<svg>` targets) `width`/`height` overrides. The
+/// decoder flattens the instance into the scene graph, so this binding
+/// is the only round-trip carrier of the source reference identity.
+#[derive(Clone, Debug, Default)]
+pub struct UseBinding {
+    /// Tree-path through the scene graph; matches the layout of
+    /// [`IdScenePath::path`]. Identifies the `<g>` the encoder replaces
+    /// with `<use>…/>` (skipping its instantiated children).
+    pub path: Vec<usize>,
+    /// `href` target with its leading `#` preserved (SVG 2 `href`,
+    /// falling back to the deprecated SVG 1.1 `xlink:href`). Always a
+    /// local fragment reference — the decoder only instantiates
+    /// in-document targets, so an external `other.svg#id` `<use>` is
+    /// never recorded here (it parses to nothing and round-trips via no
+    /// binding).
+    pub href: String,
+    /// Verbatim `x` attribute source text (e.g. `"10"`, `"2em"`). `None`
+    /// when the source `<use>` omitted it (initial value `0`).
+    pub x: Option<String>,
+    /// Verbatim `y` attribute source text. `None` = attribute absent.
+    pub y: Option<String>,
+    /// Verbatim `width` attribute source text (SVG 2 §5.6 viewport
+    /// override for `<symbol>` / `<svg>` targets). `None` = absent.
+    pub width: Option<String>,
+    /// Verbatim `height` attribute source text. `None` = absent.
+    pub height: Option<String>,
+    /// Verbatim `transform` attribute source text (e.g.
+    /// `"rotate(45)"`). `None` = absent. Preserved verbatim rather than
+    /// re-serialised from the composed matrix so author-authored
+    /// `rotate` / `scale` / `translate` lists round-trip in their
+    /// original spelling.
+    pub transform: Option<String>,
+    /// Verbatim `id` attribute source text on the `<use>` element
+    /// itself (distinct from the referenced target id in
+    /// [`Self::href`]). `None` = the `<use>` had no `id`.
+    pub id: Option<String>,
 }
 
 /// Round 205 — one (scene-graph tree-path, author `paint-order`

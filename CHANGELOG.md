@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- round 372 — `<use>` reference + `<defs>` target round-trip fidelity
+  (SVG 2 §5.6 / SVG 1.1 §5.5). The decoder flattens every `<use>` into
+  the instantiated geometry, so before this round a `parse → write`
+  re-emitted the inlined shapes and lost the reference identity entirely
+  (inlining the target N times for an N-instance document), and the
+  `<defs>`-housed target shape was dropped on write. Two new
+  `PreservedExtras` side-channels close the gap:
+  * `uses: Vec<UseBinding>` — recorded per instantiated instance group
+    keyed by scene-graph tree-path, carrying the `href` (with `#`),
+    `x`/`y`/`width`/`height`, the `<use>`'s own `transform`, and its own
+    `id` (verbatim source text). On write the encoder collapses the
+    matching `Node::Group` back to a single `<use href="#id" …/>` and
+    skips re-walking the flattened children. The use's own `id` is
+    emitted — never the round-13 `id_paths` value (which carries the
+    *target's* id and would self-reference).
+  * `defs_targets: Vec<Element>` — verbatim id-bearing reference targets
+    housed in `<defs>` (plain shapes / `<g>`) plus any id-bearing
+    `<symbol>`, which produce no scene-graph node and had no other
+    round-trip carrier. Re-emitted at the head of the output `<defs>`
+    block so a round-tripped `<use href="#id">` still resolves. Gradients
+    / filters / patterns / markers / `<style>` are skipped (they ride
+    their own side-channels). New `tests/round372_use_roundtrip.rs`
+    (6 tests) covers defs-rect, symbol, multi-instance, transform, and
+    own-id cases, plus a `parse → write → re-parse` instance-count
+    invariant and a no-`<use>` no-op guard.
 - round 367 — §9.4 filter-primitive subregion *resolution*: the missing
   half of round 361's clip arithmetic. `resolve_subregions(graph, ctx)`
   turns each primitive's `x` / `y` / `width` / `height` into the

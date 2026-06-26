@@ -2241,6 +2241,13 @@ pub struct ParseContext {
     /// immediately so a `display:none` *descendant* inside the
     /// instantiated subtree still drops, matching a direct render.
     pub use_instance_root_pending: bool,
+    /// Round 372 — collected `(scene_path, <use> reference)` bindings
+    /// (SVG 2 §5.6). Populated only when the caller opted in via
+    /// [`crate::decoder::parse_svg_with_extras`] (same gate as
+    /// [`Self::track_id_paths`]). The encoder replaces the matching
+    /// `<g>` (the instantiated instance) with `<use href="#id" …/>` on
+    /// round-trip, skipping the flattened children.
+    pub uses: Vec<crate::preserved::UseBinding>,
 }
 
 impl Default for ParseContext {
@@ -2288,7 +2295,21 @@ impl ParseContext {
             pending_cursor: None,
             dominant_baselines: Vec::new(),
             pending_dominant_baseline: None,
+            uses: Vec::new(),
         }
+    }
+
+    /// Round 372 — record a `<use>` reference binding at the current
+    /// scene-graph path (SVG 2 §5.6). Same [`Self::track_id_paths`] gate
+    /// as the other side-channel recorders. The encoder replaces the
+    /// matching instantiated `Node::Group` with `<use href="#id" …/>` on
+    /// round-trip, skipping the flattened children.
+    pub fn record_use(&mut self, mut binding: crate::preserved::UseBinding) {
+        if !self.track_id_paths {
+            return;
+        }
+        binding.path = self.current_path.clone();
+        self.uses.push(binding);
     }
 
     /// Round 98 — bind the user-preferred language list consulted by
@@ -2617,6 +2638,36 @@ fn parse_link_binding(el: &Element) -> crate::preserved::LinkBinding {
         type_: attr(el, "type").map(str::to_string),
         referrerpolicy: attr(el, "referrerpolicy").map(str::to_string),
     }
+}
+
+/// Round 372 — extract the SVG 2 §5.6 `<use>` reference identity into a
+/// [`crate::preserved::UseBinding`] (the `path` is filled in by the
+/// caller via [`ParseContext::record_use`]). `href` prefers the SVG-2
+/// `href` and falls back to the deprecated SVG-1.1 `xlink:href`.
+///
+/// Returns `None` when the source carried no local fragment reference
+/// (no `href`/`xlink:href`, or an external `other.svg#id` target the
+/// decoder never instantiates) — those `<use>` elements produce no
+/// scene-graph node, so there is nothing to collapse on round-trip.
+fn parse_use_binding(el: &Element) -> Option<crate::preserved::UseBinding> {
+    let href = attr(el, "href").or_else(|| attr(el, "xlink:href"))?;
+    let href = href.trim();
+    // Only local `#id` references instantiate; an external reference is
+    // dropped by `parse_use_element`, so we don't record a binding for
+    // it (it has no emit site to collapse).
+    if !href.starts_with('#') {
+        return None;
+    }
+    Some(crate::preserved::UseBinding {
+        path: Vec::new(),
+        href: href.to_string(),
+        x: attr(el, "x").map(str::to_string),
+        y: attr(el, "y").map(str::to_string),
+        width: attr(el, "width").map(str::to_string),
+        height: attr(el, "height").map(str::to_string),
+        transform: attr(el, "transform").map(str::to_string),
+        id: attr(el, "id").map(str::to_string),
+    })
 }
 
 /// Parse `<linearGradient id="...">` into a [`Paint`] entry. Returns
@@ -4006,6 +4057,18 @@ pub fn parse_element_to_node_ctx(
     // a clip group.
     if let Some(id) = attr(el, "id") {
         ctx.record_id_path(id);
+    }
+    // Round 372 — SVG 2 §5.6: record the `<use>` reference identity at
+    // the current scene-graph path so the encoder can collapse the
+    // instantiated `Node::Group` back to `<use href="#id" …/>` on
+    // round-trip. Only fires for a `<use>` that produced a node (an
+    // unresolved / cyclic / external reference returned `None` above
+    // and short-circuited before reaching here, so no binding is
+    // recorded for those — they round-trip via the absence of a node).
+    if tag_local(&el.name) == "use" {
+        if let Some(b) = parse_use_binding(el) {
+            ctx.record_use(b);
+        }
     }
     // Round 21 — drain the shape branch's pending `pathLength` (if
     // any) and record it at the **inner Path's** scene-graph slot.

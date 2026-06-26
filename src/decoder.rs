@@ -23,7 +23,7 @@ use crate::preserved::{
     AnimationFragment, ClipRuleBinding, ColorInterpolationBinding, ColorRenderingBinding,
     CursorBinding, DescriptiveBinding, DominantBaselineBinding, IdScenePath, LinkBinding,
     OverflowBinding, PaintOrderBinding, PathLengthBinding, PointerEventsBinding, PreservedExtras,
-    ShapeRenderingBinding, TextRenderingBinding, VectorEffectBinding,
+    ShapeRenderingBinding, TextRenderingBinding, UseBinding, VectorEffectBinding,
 };
 
 /// Codec id string for SVG vector frames.
@@ -80,7 +80,7 @@ pub fn parse_svg_at_with_languages(
     let svg =
         find_svg_root(&nodes).ok_or_else(|| Error::invalid("SVG: missing <svg> root element"))?;
     let langs: Vec<String> = system_language.iter().map(|s| s.to_string()).collect();
-    let (frame, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =
+    let (frame, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =
         parse_svg_root(svg, t_seconds, false, &langs)?;
     Ok(frame)
 }
@@ -136,6 +136,7 @@ pub fn parse_svg_with_extras(bytes: &[u8]) -> Result<(VectorFrame, PreservedExtr
         pointer_eventss,
         cursors,
         dominant_baselines,
+        uses,
     ) = parse_svg_root(svg, 0.0, true, &[])?;
     extras.id_paths = id_paths;
     extras.path_lengths = path_lengths;
@@ -152,6 +153,7 @@ pub fn parse_svg_with_extras(bytes: &[u8]) -> Result<(VectorFrame, PreservedExtr
     extras.pointer_eventss = pointer_eventss;
     extras.cursors = cursors;
     extras.dominant_baselines = dominant_baselines;
+    extras.uses = uses;
     Ok((frame, extras))
 }
 
@@ -256,6 +258,36 @@ fn collect_extras(el: &Element, extras: &mut PreservedExtras, current_id: Option
             // `write_svg_with_extras`.
             extras.views.push(el.clone());
         }
+        "defs" => {
+            // Round 372 — capture id-bearing reference targets housed in
+            // `<defs>` that produce no scene-graph node and have no other
+            // typed round-trip carrier (SVG 1.1 §5.5). The canonical
+            // `<use>` target is a plain shape / `<g>` / `<symbol>` inside
+            // `<defs>`; without this capture a round-tripped
+            // `<use href="#id">` would dangle. Gradients / filters /
+            // patterns / markers / `<style>` are skipped by
+            // `capture_defs_target` because they already ride their own
+            // side-channels (the recursion below still reaches them).
+            for child in &el.children {
+                if let XmlNode::Element(c) = child {
+                    capture_defs_target(c, extras);
+                }
+            }
+            // Fall through to the generic recursion below so nested
+            // `<style>` / `<filter>` inside `<defs>` reach their own
+            // arms.
+        }
+        // Round 372 — a `<symbol>` is itself a valid `<use>` target
+        // (SVG 2 §5.6) and produces no scene-graph node, so capture it
+        // whole (its children come along verbatim) when it has an `id`.
+        // A bare id-less `<symbol>` cannot be referenced, so it is
+        // skipped (the match guard). The recursion below still descends
+        // so nested `<style>` / `<filter>` inside the symbol reach their
+        // arms, but the symbol's own shape children are NOT recorded as
+        // independent targets (they're part of the captured symbol).
+        "symbol" if attr(el, "id").is_some() => {
+            extras.defs_targets.push(el.clone());
+        }
         "metadata" => {
             // Round 122 — SVG 2 §5.9 `<metadata>` content model is "any
             // elements or character data" (typically RDF / Dublin Core
@@ -355,6 +387,61 @@ fn collect_one_clip_rule_binding(el: &Element, extras: &mut PreservedExtras) {
     });
 }
 
+/// Round 372 — record a single `<defs>` / `<symbol>` child as a verbatim
+/// reference target when it is an id-bearing shape / container that has
+/// no other typed round-trip carrier. Used by [`collect_extras`] so a
+/// `<use href="#id">` the encoder re-emits still resolves after a
+/// `parse_svg_with_extras → write_svg_with_extras` cycle.
+///
+/// The typed kinds (`linearGradient` / `radialGradient` / `filter` /
+/// `pattern` / `marker` / `mask` / `clipPath` / `style` / `view`) are
+/// skipped — they already round-trip via their own side-channels and
+/// the [`collect_extras`] recursion reaches them independently. An
+/// id-less child is skipped (it can never be a `<use>` target).
+fn capture_defs_target(el: &Element, extras: &mut PreservedExtras) {
+    let local = tag_local(&el.name);
+    // Skip kinds that already have a dedicated verbatim carrier, plus
+    // never-target metadata kinds.
+    if matches!(
+        local.as_str(),
+        "lineargradient"
+            | "radialgradient"
+            | "filter"
+            | "pattern"
+            | "marker"
+            | "mask"
+            | "clippath"
+            | "style"
+            | "view"
+            | "metadata"
+            | "title"
+            | "desc"
+            // `<symbol>` rides the dedicated `"symbol"` arm in
+            // `collect_extras` (the recursion reaches it), so skip it
+            // here to avoid a duplicate capture.
+            | "symbol"
+            // These ride their own verbatim carriers + the recursion
+            // reaches them independently.
+            | "foreignobject"
+            | "script"
+            | "image"
+            | "animate"
+            | "set"
+            | "animatetransform"
+            | "animatemotion"
+            // A nested `<defs>` is walked by the recursion's `"defs"`
+            // arm (its own id-bearing children get captured there).
+            | "defs"
+    ) {
+        return;
+    }
+    // Only id-bearing elements can be referenced by `<use>`.
+    if attr(el, "id").is_none() {
+        return;
+    }
+    extras.defs_targets.push(el.clone());
+}
+
 fn find_svg_root(nodes: &[XmlNode]) -> Option<&Element> {
     for n in nodes {
         if let XmlNode::Element(e) = n {
@@ -383,6 +470,7 @@ type SvgRootParse = (
     Vec<PointerEventsBinding>,
     Vec<CursorBinding>,
     Vec<DominantBaselineBinding>,
+    Vec<UseBinding>,
 );
 
 fn parse_svg_root(
@@ -572,6 +660,7 @@ fn parse_svg_root(
         ctx.pointer_eventss,
         ctx.cursors,
         ctx.dominant_baselines,
+        ctx.uses,
     ))
 }
 

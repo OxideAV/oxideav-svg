@@ -25,7 +25,14 @@ the IR cannot model directly via a `PreservedExtras` side-channel.
   caller installs a font resolver once at startup. Gated behind the
   default-on `text` feature.
 * **References** — `<use href="#id">` (SVG 2 `href` + SVG 1.1
-  `xlink:href`), with cycle detection.
+  `xlink:href`), with cycle detection. The decoder flattens each `<use>`
+  into the instantiated geometry for rendering, but a
+  `parse_svg_with_extras → write_svg_with_extras` round-trip *collapses*
+  the instance back to a single `<use href="#id" …/>` (preserving the
+  reference identity + `x`/`y`/`width`/`height`/`transform`/own-`id`)
+  instead of inlining the target N times, and re-emits the
+  `<defs>`-housed target (plain shape / `<g>` / `<symbol>`) so the
+  reference still resolves.
 * **Masking / clipping** — `<mask>` → `oxideav_core::Node::SoftMask`
   honouring `mask-type`; `<clipPath>` collapsed into the group's `clip`.
 * **Filters** — `<filter>` primitive graphs (`feGaussianBlur`,
