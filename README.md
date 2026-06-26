@@ -19,9 +19,10 @@ the IR cannot model directly via a `PreservedExtras` side-channel.
   descendant percentage lengths resolve against the nested viewport and
   a zero-size nested `<svg>` drops its subtree. A `<symbol>` instantiated
   via `<use>` honours its `viewBox` / `preserveAspectRatio` / intrinsic
-  size and the SVG 2 §5.5 `refX` / `refY` reference point (`<length>` or
-  the `left`/`center`/`right` · `top`/`center`/`bottom` keywords),
-  aligning that point with the use's `x` / `y`.
+  size, the SVG 2 §5.5 `x` / `y` geometry properties (positioning the
+  instantiated viewport), and the §5.5 `refX` / `refY` reference point
+  (`<length>` or the `left`/`center`/`right` · `top`/`center`/`bottom`
+  keywords), aligning that point with the use's `x` / `y`.
 * **Shapes** — `<rect>` (incl. `rx`/`ry`), `<circle>`, `<ellipse>`,
   `<line>`, `<polyline>`, `<polygon>`, `<path>` (full `d` mini-language:
   M/m L/l H/h V/v C/c S/s Q/q T/t A/a Z/z, smooth-curve reflection),

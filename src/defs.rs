@@ -375,6 +375,14 @@ pub struct SymbolDef {
     pub preserve_aspect_ratio: PreserveAspectRatio,
     pub intrinsic_width: Option<f32>,
     pub intrinsic_height: Option<f32>,
+    /// SVG 2 §5.5 `x` / `y` geometry properties — "have the same effect
+    /// as on an `svg` element, when the `symbol` is instantiated by a
+    /// `use` element". They position the symbol's viewport inside the
+    /// `<use>`'s coordinate system (the use's own `x` / `y` translate is
+    /// applied on top). `None` (treated as 0) when the attribute was
+    /// absent. New in SVG 2.
+    pub intrinsic_x: Option<f32>,
+    pub intrinsic_y: Option<f32>,
     /// SVG 2 §5.5 `refX` / `refY` — the symbol's reference point, given
     /// in the symbol's own (post-`viewBox`) coordinate system. When a
     /// `<use>` instantiates the symbol, this point is aligned with the

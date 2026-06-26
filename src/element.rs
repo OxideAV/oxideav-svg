@@ -5069,6 +5069,10 @@ pub fn parse_symbol_def(
     };
     let intrinsic_width = parse_optional_length(attr(el, "width"))?;
     let intrinsic_height = parse_optional_length(attr(el, "height"))?;
+    // SVG 2 §5.5 — `x` / `y` geometry properties position the symbol's
+    // viewport. Absent → `None` (treated as 0 at instantiation).
+    let intrinsic_x = parse_optional_length(attr(el, "x"))?;
+    let intrinsic_y = parse_optional_length(attr(el, "y"))?;
     // SVG 2 §5.5 — `refX` / `refY` reference point. Absent → `None`
     // (no reference-point offset). The geometric keywords resolve
     // against the `viewBox` extent, reusing the `<marker>` helper; a
@@ -5086,6 +5090,8 @@ pub fn parse_symbol_def(
             preserve_aspect_ratio,
             intrinsic_width,
             intrinsic_height,
+            intrinsic_x,
+            intrinsic_y,
             ref_x,
             ref_y,
         },
@@ -5511,24 +5517,29 @@ pub fn parse_use_element(
         // The defs.elements clone is the verbatim XML; the SymbolDef
         // is the structured form built during register_all_defs.
         let sym_meta = ctx.defs.symbols.get(id).cloned();
-        let (sym_view_box, sym_par, sym_w, sym_h, sym_ref_x, sym_ref_y) = match &sym_meta {
-            Some(s) => (
-                s.view_box,
-                s.preserve_aspect_ratio,
-                s.intrinsic_width,
-                s.intrinsic_height,
-                s.ref_x,
-                s.ref_y,
-            ),
-            None => (
-                None,
-                crate::filter::PreserveAspectRatio::default(),
-                None,
-                None,
-                None,
-                None,
-            ),
-        };
+        let (sym_view_box, sym_par, sym_w, sym_h, sym_x, sym_y, sym_ref_x, sym_ref_y) =
+            match &sym_meta {
+                Some(s) => (
+                    s.view_box,
+                    s.preserve_aspect_ratio,
+                    s.intrinsic_width,
+                    s.intrinsic_height,
+                    s.intrinsic_x,
+                    s.intrinsic_y,
+                    s.ref_x,
+                    s.ref_y,
+                ),
+                None => (
+                    None,
+                    crate::filter::PreserveAspectRatio::default(),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                ),
+            };
         // SVG 2 §5.6 — the use's width / height fall through to the
         // symbol's intrinsic width / height when the use omits them.
         let dst_w = use_width.or(sym_w);
@@ -5550,6 +5561,17 @@ pub fn parse_use_element(
                     let ry = sym_ref_y.unwrap_or(0.0);
                     let mapped = apply_xform(&vp, rx, ry);
                     vp = Transform2D::translate(-mapped.x, -mapped.y).compose(&vp);
+                }
+                // SVG 2 §5.5 — the symbol's own `x` / `y` geometry
+                // properties position its viewport inside the use's
+                // coordinate system ("the same effect as on an `svg`
+                // element"). Applied outside the viewport transform; the
+                // use's own `x` / `y` translate is layered on top by the
+                // outer group below.
+                if sym_x.is_some() || sym_y.is_some() {
+                    let sx = sym_x.unwrap_or(0.0);
+                    let sy = sym_y.unwrap_or(0.0);
+                    vp = Transform2D::translate(sx, sy).compose(&vp);
                 }
                 viewport_transform = Some(vp);
             }

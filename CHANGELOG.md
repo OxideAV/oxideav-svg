@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- round 375 — SVG 2 §5.5 `<symbol>` `x` / `y` geometry properties.
+  "The x, y, width, and height geometry properties have the same effect
+  as on an `svg` element, when the `symbol` is instantiated by a `use`
+  element" (new in SVG 2). The symbol's `x` / `y` now position its
+  viewport inside the `<use>`'s coordinate system (the use's own
+  `x` / `y` translate is layered on top); they were previously ignored.
+  New `SymbolDef::{intrinsic_x, intrinsic_y}` fields; new
+  `tests/round375_symbol_xy.rs` (3 tests).
+
 - round 375 — SVG 2 §5.5 `<symbol>` `refX` / `refY` reference point.
   SVG 2 added these attributes to `<symbol>` ("Added to make it easier
   to align symbols to a particular point, as is often done in maps;
