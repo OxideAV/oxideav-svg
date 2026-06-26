@@ -12,7 +12,12 @@ the IR cannot model directly via a `PreservedExtras` side-channel.
 ## Elements
 
 * **Containers** — `<svg>` (`viewBox` / `width` / `height` / `xmlns`),
-  `<g>` (with `transform`), `<defs>`, `<symbol>`.
+  `<g>` (with `transform`), `<defs>`, `<symbol>`. A *nested* `<svg>`
+  establishes a new viewport per §8.2 — its `x` / `y` place the
+  viewport, `width` / `height` (default `100%`) size it, and an optional
+  `viewBox` + `preserveAspectRatio` re-map the inner coordinate system;
+  descendant percentage lengths resolve against the nested viewport and
+  a zero-size nested `<svg>` drops its subtree.
 * **Shapes** — `<rect>` (incl. `rx`/`ry`), `<circle>`, `<ellipse>`,
   `<line>`, `<polyline>`, `<polygon>`, `<path>` (full `d` mini-language:
   M/m L/l H/h V/v C/c S/s Q/q T/t A/a Z/z, smooth-curve reflection),

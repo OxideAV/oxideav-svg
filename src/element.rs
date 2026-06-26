@@ -3827,6 +3827,112 @@ pub fn parse_element_to_node_ctx(
             ctx.resolve_ctx = saved_ctx;
             Some(Node::Group(group))
         }
+        // Round 375 — a *nested* `<svg>` element (SVG 1.1 §7.10 /
+        // SVG 2 §8.2). Unlike the outermost `<svg>` (handled by the
+        // decoder before the element walk begins), an inner `<svg>`
+        // establishes a brand-new viewport: it carries its own
+        // `x` / `y` / `width` / `height` (placing + sizing the new
+        // viewport in the *current* user space) and, optionally, a
+        // `viewBox` + `preserveAspectRatio` that re-maps the new
+        // viewport's coordinate system. Before this round an inner
+        // `<svg>` fell through to the `_ => None` deferral and was
+        // silently dropped along with its entire subtree.
+        //
+        // We model it as a `Node::Group` whose transform is
+        //   translate(x, y) ∘ viewport_transform(viewBox → w×h)
+        // and whose children are walked with the inner viewport's
+        // dimensions installed on the resolve context (so a child's
+        // `width="50%"` resolves against the nested viewport, per
+        // §7.10). When there is no `viewBox` the viewport transform is
+        // the identity and only the `x`/`y` placement applies.
+        "svg" => {
+            let state = parent_state.merged_with_mctx(mctx, &ctx.stylesheet)?;
+            // §8.2: `x` / `y` default to 0; `width` / `height` default
+            // to `100%` (the full parent viewport). Resolve percentages
+            // against the *parent* viewport axes that are live on the
+            // current resolve context.
+            let saved_ctx = ctx.resolve_ctx;
+            let x = parse_length_attr(attr(el, "x"), 0.0, LengthAxis::X, &saved_ctx)?;
+            let y = parse_length_attr(attr(el, "y"), 0.0, LengthAxis::Y, &saved_ctx)?;
+            let width = parse_length_attr(
+                attr(el, "width"),
+                saved_ctx.viewport_w,
+                LengthAxis::X,
+                &saved_ctx,
+            )?;
+            let height = parse_length_attr(
+                attr(el, "height"),
+                saved_ctx.viewport_h,
+                LengthAxis::Y,
+                &saved_ctx,
+            )?;
+            // §8.2 step 1: a zero (or negative) width / height disables
+            // rendering of the element and its children. Drop the whole
+            // subtree in that case.
+            if width <= 0.0 || height <= 0.0 {
+                None
+            } else {
+                let view_box = attr(el, "viewBox").and_then(parse_symbol_view_box);
+                let par = match attr(el, "preserveAspectRatio") {
+                    Some(s) => crate::filter::PreserveAspectRatio::from_str(s),
+                    None => crate::filter::PreserveAspectRatio::default(),
+                };
+                // The viewport transform maps the `viewBox` rectangle
+                // onto the `width × height` viewport per §8.2; with no
+                // `viewBox` (or a degenerate one) it is the identity.
+                let viewport_t = match view_box {
+                    Some(vb) if vb.width > 0.0 && vb.height > 0.0 => {
+                        nested_svg_viewport_transform(width, height, vb, par)
+                    }
+                    _ => Transform2D::identity(),
+                };
+                let transform = Transform2D::translate(x, y).compose(&viewport_t);
+                // Install the nested viewport's dimensions so descendant
+                // percentage lengths resolve against it (§7.10). When a
+                // `viewBox` is present the inner user-space extent is the
+                // viewBox width / height; otherwise it is the viewport
+                // `width` / `height`.
+                let inner = match view_box {
+                    Some(vb) if vb.width > 0.0 && vb.height > 0.0 => (vb.width, vb.height),
+                    _ => (width, height),
+                };
+                ctx.resolve_ctx = ResolveContext {
+                    viewport_w: inner.0,
+                    viewport_h: inner.1,
+                    ..saved_ctx
+                };
+                let mut group = Group {
+                    transform,
+                    opacity: state.opacity,
+                    clip: None,
+                    children: Vec::new(),
+                    cache_key: None,
+                };
+                let (total, tag_totals) = child_sibling_totals(el);
+                let mut child_idx = 0usize;
+                let mut tag_seen: HashMap<String, usize> = HashMap::new();
+                for child in &el.children {
+                    if let XmlNode::Element(c) = child {
+                        let lower = tag_local(&c.name).to_ascii_lowercase();
+                        let of_idx = *tag_seen.entry(lower.clone()).or_insert(0);
+                        *tag_seen.get_mut(&lower).unwrap() += 1;
+                        let of_count = *tag_totals.get(&lower).unwrap_or(&0);
+                        let cmctx =
+                            child_match_context(mctx, c, child_idx, of_idx, total, of_count);
+                        let scene_idx = group.children.len();
+                        ctx.current_path.push(scene_idx);
+                        let result = parse_element_to_node_ctx(c, &state, ctx, &cmctx);
+                        ctx.current_path.pop();
+                        if let Some(node) = result? {
+                            group.children.push(node);
+                        }
+                        child_idx += 1;
+                    }
+                }
+                ctx.resolve_ctx = saved_ctx;
+                Some(Node::Group(group))
+            }
+        }
         "defs" => {
             // Walk children — gradient defs (round 1) plus filter /
             // mask / clipPath / symbol defs (round 2). Pre-walk in
@@ -5550,6 +5656,88 @@ fn symbol_viewport_transform(
     }
     // viewport_transform = translate(tx, ty) * scale(sx, sy) *
     //                      translate(-vb.min_x, -vb.min_y)
+    Transform2D::translate(tx, ty)
+        .compose(&Transform2D::scale(sx, sy))
+        .compose(&Transform2D::translate(-vb.min_x, -vb.min_y))
+}
+
+/// Round 375 — the SVG 2 §8.2 "equivalent transform" that maps a
+/// `viewBox` rectangle onto a `width × height` viewport, honouring
+/// `preserveAspectRatio`. Used by the *nested* `<svg>` arm.
+///
+/// Unlike [`symbol_viewport_transform`] (whose translate term folds the
+/// `-min·scale` into the alignment translate *and* keeps a trailing
+/// `translate(-min)`), this builds the canonical single-chain form
+///   `translate(tx, ty) ∘ scale(sx, sy) ∘ translate(-min_x, -min_y)`
+/// where `tx` / `ty` carry *only* the §8.2 meet/slice alignment offset
+/// (`dx/2`, `dx`, …). With `align=none` or a viewBox whose aspect
+/// already matches the viewport, `tx = ty = 0`, so the viewBox-min
+/// corner maps exactly to the viewport origin — the §8.6 requirement
+/// ("map the specified rectangle to the bounds of the viewport").
+fn nested_svg_viewport_transform(
+    width: f32,
+    height: f32,
+    vb: oxideav_core::ViewBox,
+    par: crate::filter::PreserveAspectRatio,
+) -> Transform2D {
+    use crate::filter::{MeetOrSlice, PreserveAspectRatioAlign};
+    let nat_sx = width / vb.width;
+    let nat_sy = height / vb.height;
+    let (sx, sy) = if matches!(par.align, PreserveAspectRatioAlign::None) {
+        (nat_sx, nat_sy)
+    } else {
+        match par.meet_or_slice {
+            MeetOrSlice::Meet => {
+                let s = nat_sx.min(nat_sy);
+                (s, s)
+            }
+            MeetOrSlice::Slice => {
+                let s = nat_sx.max(nat_sy);
+                (s, s)
+            }
+        }
+    };
+    // §8.2 alignment translate — only the leftover gap after the
+    // (possibly uniform) scale, never the `-min·scale` term.
+    let (mut tx, mut ty) = (0.0_f32, 0.0_f32);
+    if !matches!(par.align, PreserveAspectRatioAlign::None) {
+        let dx = width - vb.width * sx;
+        let dy = height - vb.height * sy;
+        let x_mid = matches!(
+            par.align,
+            PreserveAspectRatioAlign::XMidYMin
+                | PreserveAspectRatioAlign::XMidYMid
+                | PreserveAspectRatioAlign::XMidYMax
+        );
+        let x_max = matches!(
+            par.align,
+            PreserveAspectRatioAlign::XMaxYMin
+                | PreserveAspectRatioAlign::XMaxYMid
+                | PreserveAspectRatioAlign::XMaxYMax
+        );
+        let y_mid = matches!(
+            par.align,
+            PreserveAspectRatioAlign::XMinYMid
+                | PreserveAspectRatioAlign::XMidYMid
+                | PreserveAspectRatioAlign::XMaxYMid
+        );
+        let y_max = matches!(
+            par.align,
+            PreserveAspectRatioAlign::XMinYMax
+                | PreserveAspectRatioAlign::XMidYMax
+                | PreserveAspectRatioAlign::XMaxYMax
+        );
+        if x_mid {
+            tx += dx / 2.0;
+        } else if x_max {
+            tx += dx;
+        }
+        if y_mid {
+            ty += dy / 2.0;
+        } else if y_max {
+            ty += dy;
+        }
+    }
     Transform2D::translate(tx, ty)
         .compose(&Transform2D::scale(sx, sy))
         .compose(&Transform2D::translate(-vb.min_x, -vb.min_y))

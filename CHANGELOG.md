@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- round 375 — *nested* `<svg>` viewport establishment (SVG 1.1 §7.10 /
+  SVG 2 §8.2). An inner `<svg>` previously fell through the
+  element-dispatch deferral (`_ => None`) and was dropped together with
+  its entire subtree. The new `"svg"` arm models it as a `Node::Group`
+  whose transform is `translate(x, y) ∘ viewport_transform(viewBox →
+  width × height)`: `x` / `y` (default 0) place the new viewport in the
+  current user space, `width` / `height` (default `100%` of the parent
+  viewport, resolved through the existing length machinery) size it, and
+  an optional `viewBox` + `preserveAspectRatio` re-map the inner
+  coordinate system via a new `nested_svg_viewport_transform` (the
+  canonical §8.2 single-chain form `translate(align) ∘ scale ∘
+  translate(-min)`, so the viewBox-min corner maps exactly to the
+  viewport origin). Descendant percentage lengths now resolve against
+  the nested viewport (the resolve context's `viewport_w` /
+  `viewport_h` are swapped to the inner viewBox extent for the child
+  walk and restored after). A zero or negative `width` / `height`
+  disables rendering of the element and its children per §8.2 step 1.
+  New `tests/round375_nested_svg.rs` (6 tests).
 - round 372 — `marker-start` / `marker-mid` / `marker-end` (and the
   `marker` shorthand) reference round-trip fidelity (SVG 2 §13.7.4).
   `oxideav_core::Node` has no marker construct (vertex placement is
