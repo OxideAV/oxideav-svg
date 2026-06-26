@@ -23,8 +23,8 @@ use crate::preserved::{
     AnimationFragment, ClipRuleBinding, ColorInterpolationBinding, ColorRenderingBinding,
     CursorBinding, DescriptiveBinding, DominantBaselineBinding, FilterRefBinding, IdScenePath,
     LinkBinding, OverflowBinding, PaintOrderBinding, PathLengthBinding, PointerEventsBinding,
-    PreservedExtras, ShapeRenderingBinding, SwitchBinding, TextRenderingBinding, UseBinding,
-    VectorEffectBinding,
+    PreservedExtras, RefBinding, ShapeRenderingBinding, SwitchBinding, TextRenderingBinding,
+    UseBinding, VectorEffectBinding,
 };
 
 /// Codec id string for SVG vector frames.
@@ -112,6 +112,12 @@ pub fn parse_svg_with_extras(bytes: &[u8]) -> Result<(VectorFrame, PreservedExtr
     // §14.3.5 initial value `nonzero` OR whose author explicitly wrote
     // a `clip-rule=` keyword anywhere in the subtree.
     collect_clip_rule_bindings(svg, &mut extras);
+    // Round 372 — SVG 1.1 §14.3.1 / §14.4: record the original
+    // `clip-path` / `mask` reference ids keyed by the encoder's dedup
+    // fingerprint so a `parse → write` round-trip re-emits the source
+    // `url(#id)` (against the verbatim `<clipPath>` / `<mask>` def)
+    // instead of the synthesised `clip{N}` / `mask{N}`.
+    collect_clip_mask_ref_bindings(svg, &mut extras);
     extras.root_preserve_aspect_ratio = attr(svg, "preserveAspectRatio").map(str::to_string);
     // Round 95 — independent of the scene-graph build, walk the source
     // XML for every id-bearing `<view>` so a caller resolving an SVG
@@ -221,6 +227,26 @@ fn collect_extras(el: &Element, extras: &mut PreservedExtras, current_id: Option
             // element is the round-trip source of truth (attribute
             // ordering, descriptive children, content shapes).
             extras.markers.push(el.clone());
+        }
+        "clippath" => {
+            // Round 372 — capture the verbatim <clipPath> (SVG 1.1
+            // §14.3) for round-trip re-emission. The decoder collapses
+            // the referenced clip into a single merged Path on
+            // `Group.clip`; this verbatim element preserves the original
+            // id / `clipPathUnits` / multiple shapes / per-shape
+            // transforms so a bound `clip-path="url(#id)"` reference (see
+            // `clip_refs`) round-trips against the source def rather than
+            // a synthesised `clip{N}`.
+            extras.clip_paths_raw.push(el.clone());
+        }
+        "mask" => {
+            // Round 372 — capture the verbatim <mask> (SVG 1.1 §14.4)
+            // for round-trip re-emission. Analogue of the <clipPath>
+            // capture above for the soft-mask path: preserves the
+            // original id / `maskUnits` / `maskContentUnits` / region so
+            // a bound `mask="url(#id)"` reference round-trips against the
+            // source def rather than a synthesised `mask{N}`.
+            extras.masks_raw.push(el.clone());
         }
         "lineargradient" | "radialgradient" => {
             // Round 81 — verbatim gradient capture. The typed view on
@@ -445,6 +471,92 @@ fn capture_defs_target(el: &Element, extras: &mut PreservedExtras) {
         return;
     }
     extras.defs_targets.push(el.clone());
+}
+
+/// Round 372 — SVG 1.1 §14.3.1 / §14.4: walk the source XML for every
+/// element carrying a `clip-path="url(#id)"` / `mask="url(#id)"`
+/// reference, resolve the referenced def, compute the encoder's dedup
+/// fingerprint for the merged clip path / mask subtree, and record a
+/// [`RefBinding`] so the encoder re-emits the original `url(#id)`
+/// (against the verbatim def) instead of the synthesised
+/// `clip{N}` / `mask{N}`.
+///
+/// Dedup: a given `(fingerprint, ref_id)` pair is recorded once. The
+/// fingerprint is the same value the encoder's `ClipPathCollector` /
+/// `MaskCollector` produce from the scene-graph node, so the encoder's
+/// substitution lookup is a direct hit.
+fn collect_clip_mask_ref_bindings(root: &Element, extras: &mut PreservedExtras) {
+    use std::collections::HashSet;
+    let mut clip_seen: HashSet<String> = HashSet::new();
+    let mut mask_seen: HashSet<String> = HashSet::new();
+    // `root` is the document `<svg>`; we walk it to find every
+    // referencing element and resolve each referenced def against the
+    // whole `root` subtree (defs can be declared anywhere in the
+    // document, so the lookup always re-roots at `root`).
+    collect_clip_mask_ref_bindings_inner(root, root, extras, &mut clip_seen, &mut mask_seen);
+}
+
+fn collect_clip_mask_ref_bindings_inner(
+    root: &Element,
+    el: &Element,
+    extras: &mut PreservedExtras,
+    clip_seen: &mut std::collections::HashSet<String>,
+    mask_seen: &mut std::collections::HashSet<String>,
+) {
+    if let Some(id) = attr(el, "clip-path").and_then(crate::defs::parse_url_ref) {
+        if clip_seen.insert(id.to_string()) {
+            // Re-parse the referenced `<clipPath>` into the merged Path
+            // the encoder fingerprints. A fresh ParseContext keeps this
+            // side pass from mutating the main walk's defs. The def is
+            // resolved against the whole document `root` (it lives in a
+            // `<defs>` elsewhere, not in `el`'s subtree).
+            if let Some(clip_el) = find_def_element(root, "clippath", id) {
+                let mut ctx = ParseContext::new();
+                if let Ok(Some((_, def))) = parse_clip_path_def(clip_el, &mut ctx) {
+                    extras.clip_refs.push(RefBinding {
+                        fingerprint: crate::encoder::path_fingerprint(&def.path),
+                        ref_id: id.to_string(),
+                    });
+                }
+            }
+        }
+    }
+    if let Some(id) = attr(el, "mask").and_then(crate::defs::parse_url_ref) {
+        if mask_seen.insert(id.to_string()) {
+            if let Some(mask_el) = find_def_element(root, "mask", id) {
+                let mut ctx = ParseContext::new();
+                if let Ok(Some((_, def))) = parse_mask_def(mask_el, &mut ctx) {
+                    let node = oxideav_core::Node::Group(def.content.clone());
+                    extras.mask_refs.push(RefBinding {
+                        fingerprint: crate::encoder::mask_fingerprint(def.mask_kind, &node),
+                        ref_id: id.to_string(),
+                    });
+                }
+            }
+        }
+    }
+    for child in &el.children {
+        if let XmlNode::Element(c) = child {
+            collect_clip_mask_ref_bindings_inner(root, c, extras, clip_seen, mask_seen);
+        }
+    }
+}
+
+/// Round 372 — find the first `<clipPath>` / `<mask>` def element with
+/// the given `id` anywhere in the document `root` subtree (defs can be
+/// declared in any `<defs>` / container, so the lookup scans globally).
+fn find_def_element<'a>(root: &'a Element, local: &str, id: &str) -> Option<&'a Element> {
+    if tag_local(&root.name) == local && attr(root, "id") == Some(id) {
+        return Some(root);
+    }
+    for child in &root.children {
+        if let XmlNode::Element(c) = child {
+            if let Some(found) = find_def_element(c, local, id) {
+                return Some(found);
+            }
+        }
+    }
+    None
 }
 
 fn find_svg_root(nodes: &[XmlNode]) -> Option<&Element> {

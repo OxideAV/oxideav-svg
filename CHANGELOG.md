@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- round 372 — `<clipPath>` / `<mask>` reference-identity round-trip
+  fidelity (SVG 1.1 §14.3 / §14.4). The decoder collapses a
+  `clip-path="url(#id)"` into a single merged `Path` on `Group.clip`
+  (baking per-shape transforms in, dropping `clipPathUnits`, the
+  original id, and the multi-shape structure) and a `mask="url(#id)"`
+  into a `Node::SoftMask` with flattened content (dropping the original
+  id / `maskUnits` / region). The encoder used to re-synthesise a
+  single-shape `<clipPath id="clip1">` / `<mask id="mask1">` and
+  reference the synthesised id. New side-channels:
+  `clip_paths_raw` / `masks_raw` (verbatim `<clipPath>` / `<mask>` defs)
+  plus `clip_refs` / `mask_refs: Vec<RefBinding>` keyed by the encoder's
+  own dedup fingerprint (`path_fingerprint` for clips,
+  `mask_fingerprint` for masks — the latter newly exposed). On write,
+  when a synthesised clip / mask's fingerprint is bound *and* the
+  verbatim source def was captured, the encoder re-emits the source def
+  (original id + units + every shape) via a per-collector `id_override`,
+  and `ClipPathCollector`/`MaskCollector::lookup` substitutes the
+  original id into the `clip-path=` / `mask=` reference — falling back to
+  the old synthesis when no verbatim def is available. New
+  `tests/round372_clip_mask_roundtrip.rs` (6 tests): id/units survival,
+  multi-shape survival, mask id/units, clip+mask stacking, idempotent
+  re-parse, and a no-op guard.
 - round 372 — `filter="url(#id)"` reference round-trip fidelity (SVG 1.1
   §15). The decoder wraps a filtered element in a pass-through `Group`
   and preserves the `<filter>` def verbatim in `PreservedExtras::filters`,

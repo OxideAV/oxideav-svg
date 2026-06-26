@@ -35,6 +35,12 @@ the IR cannot model directly via a `PreservedExtras` side-channel.
   reference still resolves.
 * **Masking / clipping** — `<mask>` → `oxideav_core::Node::SoftMask`
   honouring `mask-type`; `<clipPath>` collapsed into the group's `clip`.
+  A `parse_svg_with_extras → write_svg_with_extras` round-trip preserves
+  the *reference identity*: the verbatim `<clipPath>` / `<mask>` def
+  (original id, `clipPathUnits` / `maskUnits`, and every clip shape) is
+  re-emitted and the `clip-path=` / `mask=` reference re-points at the
+  source id, instead of the flattened single-shape synthesis the render
+  path uses.
 * **Filters** — `<filter>` primitive graphs (`feGaussianBlur`,
   `feOffset`, `feFlood`, `feComposite`, `feBlend`, `feMorphology`,
   `feColorMatrix`, `feComponentTransfer`, `feDropShadow`, …) parsed into

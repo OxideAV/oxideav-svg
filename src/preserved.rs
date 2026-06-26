@@ -418,6 +418,64 @@ pub struct PreservedExtras {
     /// preserved filter. Populated only by
     /// [`crate::decoder::parse_svg_with_extras`].
     pub filter_refs: Vec<FilterRefBinding>,
+    /// Round 372 — verbatim `<clipPath>` def elements (SVG 1.1 §14.3).
+    /// The decoder collapses each referenced clip path into a single
+    /// merged `oxideav_core::Path` on `Group.clip` (baking per-shape
+    /// transforms in, dropping `clipPathUnits`, the original `id`, and
+    /// the multi-shape structure). The encoder normally re-synthesises a
+    /// `<clipPath id="clip{N}">` from that merged path; when a clip
+    /// reference is bound (see [`Self::clip_refs`]) it instead re-emits
+    /// the verbatim def captured here so the original id / units /
+    /// shapes survive. Populated only by
+    /// [`crate::decoder::parse_svg_with_extras`].
+    pub clip_paths_raw: Vec<Element>,
+    /// Round 372 — verbatim `<mask>` def elements (SVG 1.1 §14.4). Same
+    /// role as [`Self::clip_paths_raw`] for the soft-mask path: the
+    /// decoder turns a `mask="url(#id)"` into a `Node::SoftMask` whose
+    /// mask subtree is the flattened mask content (losing the original
+    /// `id` / `maskUnits` / `maskContentUnits` / `x`/`y`/`width`/`height`
+    /// region). When the mask reference is bound (see [`Self::mask_refs`])
+    /// the encoder re-emits this verbatim def instead of the synthesised
+    /// `<mask id="mask{N}">`. Populated only by
+    /// [`crate::decoder::parse_svg_with_extras`].
+    pub masks_raw: Vec<Element>,
+    /// Round 372 — `clip-path="url(#id)"` reference bindings (SVG 1.1
+    /// §14.3.1), keyed by the **merged-clip-path fingerprint** the
+    /// encoder's `ClipPathCollector` uses for its own dedup. When the
+    /// encoder is about to synthesise a `<clipPath id="clip{N}">` for a
+    /// merged path whose fingerprint matches a binding here, it instead
+    /// re-emits the verbatim [`Self::clip_paths_raw`] def with the
+    /// original `id` and references it as `url(#id)` — so the original
+    /// id / `clipPathUnits` / multi-shape structure survive. Routing by
+    /// fingerprint (not tree-path) naturally handles the
+    /// `filter(mask(clip(node)))` wrapper stack where the clip group's
+    /// scene-graph path is aliased. Populated only by
+    /// [`crate::decoder::parse_svg_with_extras`].
+    pub clip_refs: Vec<RefBinding>,
+    /// Round 372 — `mask="url(#id)"` reference bindings (SVG 1.1 §14.4),
+    /// the soft-mask analogue of [`Self::clip_refs`]. Keyed by the
+    /// **mask-subtree fingerprint** the encoder's `MaskCollector` uses
+    /// for its dedup (`"{MaskKind:?}:{node_fingerprint}"`). Populated
+    /// only by [`crate::decoder::parse_svg_with_extras`].
+    pub mask_refs: Vec<RefBinding>,
+}
+
+/// Round 372 — one (encoder dedup fingerprint, `url(#id)` reference)
+/// pair for the `clip-path` / `mask` carriers. The encoder matches
+/// `fingerprint` against the synthesised def it was about to emit and,
+/// on a hit, re-emits the verbatim source def with `ref_id` instead.
+#[derive(Clone, Debug)]
+pub struct RefBinding {
+    /// The encoder dedup fingerprint of the merged clip path
+    /// (`ClipPathCollector`) or mask subtree (`MaskCollector`) this
+    /// reference resolves to. Used to route the verbatim-def
+    /// substitution.
+    pub fingerprint: String,
+    /// The referenced def id (no `#`, no `url(...)` wrapper), e.g.
+    /// `"myclip"`. The encoder re-emits `clip-path="url(#myclip)"` /
+    /// `mask="url(#myclip)"` from this and looks up the verbatim def by
+    /// it.
+    pub ref_id: String,
 }
 
 /// Round 372 — one (scene-graph tree-path, `filter` url-ref) pair (SVG
@@ -569,6 +627,10 @@ impl PreservedExtras {
             && self.defs_targets.is_empty()
             && self.switches.is_empty()
             && self.filter_refs.is_empty()
+            && self.clip_paths_raw.is_empty()
+            && self.masks_raw.is_empty()
+            && self.clip_refs.is_empty()
+            && self.mask_refs.is_empty()
     }
 }
 

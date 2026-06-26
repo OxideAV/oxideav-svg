@@ -260,6 +260,74 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
     let mut masks: MaskCollector = MaskCollector::default();
     walk_collect_defs(&frame.root, &mut gradients, &mut clips, &mut masks);
 
+    // Round 372 — SVG 1.1 §14.3.1 / §14.4: map each synthesised
+    // `clip{N}` / `mask{N}` id to the original `clip-path` / `mask`
+    // reference id (when the decoder recorded a fingerprint binding for
+    // it). Built from the collectors' fingerprint indices so the
+    // mapping is exact. `clip_synth_to_orig[synth]` → original ref id;
+    // used both to substitute the reference attribute in `write_node`
+    // and to re-emit the verbatim source def in the `<defs>` block.
+    let clip_orig_by_fp: HashMap<&str, &str> = extras
+        .clip_refs
+        .iter()
+        .map(|b| (b.fingerprint.as_str(), b.ref_id.as_str()))
+        .collect();
+    let mask_orig_by_fp: HashMap<&str, &str> = extras
+        .mask_refs
+        .iter()
+        .map(|b| (b.fingerprint.as_str(), b.ref_id.as_str()))
+        .collect();
+    // Only bind to a verbatim source def when that def was actually
+    // captured (it carries an `id`); otherwise fall back to synthesis so
+    // the reference still resolves.
+    let clip_raw_ids: std::collections::HashSet<&str> = extras
+        .clip_paths_raw
+        .iter()
+        .filter_map(|el| {
+            el.attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("id"))
+                .map(|(_, v)| v.as_str())
+        })
+        .collect();
+    let mask_raw_ids: std::collections::HashSet<&str> = extras
+        .masks_raw
+        .iter()
+        .filter_map(|el| {
+            el.attrs
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("id"))
+                .map(|(_, v)| v.as_str())
+        })
+        .collect();
+    let clip_entry_ids: Vec<(String, String)> = clips
+        .entries
+        .iter()
+        .filter_map(|(synth_id, path)| {
+            clip_orig_by_fp
+                .get(path_fingerprint(path).as_str())
+                .filter(|orig| clip_raw_ids.contains(**orig))
+                .map(|orig| (synth_id.clone(), orig.to_string()))
+        })
+        .collect();
+    for (synth, orig) in clip_entry_ids {
+        clips.id_override.insert(synth, orig);
+    }
+    let mask_entry_ids: Vec<(String, String)> = masks
+        .entries
+        .iter()
+        .filter_map(|(synth_id, kind, content)| {
+            let fp = mask_fingerprint(*kind, content);
+            mask_orig_by_fp
+                .get(fp.as_str())
+                .filter(|orig| mask_raw_ids.contains(**orig))
+                .map(|orig| (synth_id.clone(), orig.to_string()))
+        })
+        .collect();
+    for (synth, orig) in mask_entry_ids {
+        masks.id_override.insert(synth, orig);
+    }
+
     // Round 81 — collect the set of gradient ids carried by the
     // preserved-extras side-channel so we skip the scene-walk's
     // flattened emission for any id the author originally provided
@@ -348,13 +416,57 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
             .iter()
             .map(|b| (b.path_fingerprint.as_str(), b.clip_rule.as_str()))
             .collect();
+        // Round 372 — SVG 1.1 §14.3.1 / §14.4: index the verbatim
+        // `<clipPath>` / `<mask>` defs by id, and the reference bindings
+        // by fingerprint. When a synthesised clip / mask's fingerprint
+        // is bound, re-emit the verbatim source def (preserving the
+        // original id / `clipPathUnits` / multi-shape structure /
+        // `maskUnits` / region) instead of the flattened synthesis, and
+        // the matching `clip-path=` / `mask=` reference below substitutes
+        // the original id (see `clip_synth_to_orig` / `mask_synth_to_orig`).
+        let clip_raw_by_id: HashMap<&str, &Element> = extras
+            .clip_paths_raw
+            .iter()
+            .filter_map(|el| {
+                el.attrs
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("id"))
+                    .map(|(_, v)| (v.as_str(), el))
+            })
+            .collect();
+        let mask_raw_by_id: HashMap<&str, &Element> = extras
+            .masks_raw
+            .iter()
+            .filter_map(|el| {
+                el.attrs
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("id"))
+                    .map(|(_, v)| (v.as_str(), el))
+            })
+            .collect();
         for (id, path) in &clips.entries {
+            // Round 372 — bound to a verbatim source `<clipPath>` def?
+            // Re-emit it verbatim (original id / units / shapes) and the
+            // `clip-path=` reference attribute already substitutes the
+            // same original id via `ClipPathCollector::lookup`.
+            if let Some(orig) = clips.id_override.get(id) {
+                if let Some(raw) = clip_raw_by_id.get(orig.as_str()) {
+                    write_raw_element(&mut out, raw, 2);
+                    continue;
+                }
+            }
             let rule = clip_rule_by_fp
                 .get(path_fingerprint(path).as_str())
                 .copied();
             write_clip_path(&mut out, id, path, rule);
         }
         for (id, kind, content) in &masks.entries {
+            if let Some(orig) = masks.id_override.get(id) {
+                if let Some(raw) = mask_raw_by_id.get(orig.as_str()) {
+                    write_raw_element(&mut out, raw, 2);
+                    continue;
+                }
+            }
             write_mask(&mut out, id, *kind, content, &gradients);
         }
         out.push_str("  </defs>\n");
@@ -1589,6 +1701,11 @@ fn walk_collect_defs_node(
 struct ClipPathCollector {
     entries: Vec<(String, Path)>,
     by_fp: HashMap<String, String>,
+    /// Round 372 — synth-id → original-`clip-path`-ref-id overrides. When
+    /// a clip's fingerprint is bound to a source `<clipPath id="...">`,
+    /// the encoder re-emits that original id everywhere (reference
+    /// attribute + verbatim def) instead of the synthesised `clip{N}`.
+    id_override: HashMap<String, String>,
 }
 
 impl ClipPathCollector {
@@ -1603,7 +1720,10 @@ impl ClipPathCollector {
     }
 
     fn lookup(&self, path: &Path) -> Option<&str> {
-        self.by_fp.get(&path_fingerprint(path)).map(String::as_str)
+        let synth = self.by_fp.get(&path_fingerprint(path))?;
+        // Round 372 — prefer the original source id when this clip is
+        // bound to a verbatim `<clipPath>` def.
+        Some(self.id_override.get(synth).unwrap_or(synth).as_str())
     }
 }
 
@@ -1613,6 +1733,9 @@ impl ClipPathCollector {
 struct MaskCollector {
     entries: Vec<(String, MaskKind, Node)>,
     by_fp: HashMap<String, String>,
+    /// Round 372 — synth-id → original-`mask`-ref-id overrides (see
+    /// [`ClipPathCollector::id_override`]).
+    id_override: HashMap<String, String>,
 }
 
 impl MaskCollector {
@@ -1628,8 +1751,18 @@ impl MaskCollector {
 
     fn lookup(&self, kind: MaskKind, node: &Node) -> Option<&str> {
         let fp = format!("{:?}:{}", kind, node_fingerprint(node));
-        self.by_fp.get(&fp).map(String::as_str)
+        let synth = self.by_fp.get(&fp)?;
+        Some(self.id_override.get(synth).unwrap_or(synth).as_str())
     }
+}
+
+/// Round 372 — the [`MaskCollector`] dedup key for a `(kind, mask
+/// subtree)` pair, exposed so [`crate::decoder`] can pre-compute the
+/// fingerprint for a `mask="url(#id)"` reference binding and route the
+/// verbatim-`<mask>`-def substitution. Must stay byte-identical to the
+/// `format!` in [`MaskCollector::ensure`] / `lookup`.
+pub(crate) fn mask_fingerprint(kind: MaskKind, node: &Node) -> String {
+    format!("{:?}:{}", kind, node_fingerprint(node))
 }
 
 pub(crate) fn path_fingerprint(p: &Path) -> String {
