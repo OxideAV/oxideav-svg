@@ -2248,6 +2248,13 @@ pub struct ParseContext {
     /// `<g>` (the instantiated instance) with `<use href="#id" …/>` on
     /// round-trip, skipping the flattened children.
     pub uses: Vec<crate::preserved::UseBinding>,
+    /// Round 372 — collected `(scene_path, verbatim <switch>)` bindings
+    /// (SVG 2 §5.7). Populated only when the caller opted in via
+    /// [`crate::decoder::parse_svg_with_extras`] (same gate as
+    /// [`Self::track_id_paths`]). The encoder replaces the matching
+    /// `<g>` (the selected branch) with the verbatim `<switch>` on
+    /// round-trip, skipping the selected child.
+    pub switches: Vec<crate::preserved::SwitchBinding>,
 }
 
 impl Default for ParseContext {
@@ -2296,7 +2303,23 @@ impl ParseContext {
             dominant_baselines: Vec::new(),
             pending_dominant_baseline: None,
             uses: Vec::new(),
+            switches: Vec::new(),
         }
+    }
+
+    /// Round 372 — record a `<switch>` verbatim binding at the current
+    /// scene-graph path (SVG 2 §5.7). Same [`Self::track_id_paths`] gate
+    /// as the other side-channel recorders. The encoder replaces the
+    /// matching selected-branch `Node::Group` with the verbatim
+    /// `<switch>` on round-trip, skipping the selected child.
+    pub fn record_switch(&mut self, element: Element) {
+        if !self.track_id_paths {
+            return;
+        }
+        self.switches.push(crate::preserved::SwitchBinding {
+            path: self.current_path.clone(),
+            element,
+        });
     }
 
     /// Round 372 — record a `<use>` reference binding at the current
@@ -4069,6 +4092,17 @@ pub fn parse_element_to_node_ctx(
         if let Some(b) = parse_use_binding(el) {
             ctx.record_use(b);
         }
+    }
+    // Round 372 — SVG 2 §5.7: record the verbatim `<switch>` at the
+    // current scene-graph path so the encoder can collapse the selected
+    // branch `Node::Group` back to the full `<switch>` (all
+    // alternatives) on round-trip. Only fires for a `<switch>` that
+    // produced a node (an all-fail switch returned `None` above and
+    // short-circuited before reaching here, so no binding is recorded;
+    // it round-trips via the absence of a node — matching the empty
+    // render).
+    if tag_local(&el.name) == "switch" {
+        ctx.record_switch(el.clone());
     }
     // Round 21 — drain the shape branch's pending `pathLength` (if
     // any) and record it at the **inner Path's** scene-graph slot.

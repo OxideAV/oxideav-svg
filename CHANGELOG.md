@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- round 372 — `<switch>` verbatim round-trip fidelity (SVG 2 §5.7). The
+  decoder renders the first child whose conditional-processing
+  attributes test true and wraps it in a `Group`, discarding the
+  unselected alternatives + the `<switch>` identity; before this round
+  `parse → write` re-emitted a plain `<g>` with only the selected child,
+  freezing the decode-time selection and losing the alternatives. New
+  `PreservedExtras::switches: Vec<SwitchBinding>` captures the whole
+  `<switch>` verbatim keyed by the selected branch's scene-graph
+  tree-path; on write the encoder replaces the matching `Group` with the
+  verbatim `<switch>` and skips re-walking the selected child, so a
+  re-parse under a *different* `systemLanguage` re-selects correctly.
+  New `tests/round372_switch_roundtrip.rs` (4 tests): all-alternatives
+  preservation, faithful re-selection on re-parse, switch-transform, and
+  a no-`<switch>` no-op guard.
 - round 372 — `<use>` reference + `<defs>` target round-trip fidelity
   (SVG 2 §5.6 / SVG 1.1 §5.5). The decoder flattens every `<use>` into
   the instantiated geometry, so before this round a `parse → write`

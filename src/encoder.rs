@@ -178,6 +178,14 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
     for entry in &extras.uses {
         path_to_use.insert(entry.path.clone(), entry);
     }
+    // Round 372 — index `<switch>` verbatim bindings (SVG 2 §5.7) by
+    // scene-graph tree-path so `write_node` can collapse the selected-
+    // branch `Node::Group` back to the verbatim `<switch>` (all
+    // alternatives) on round-trip.
+    let mut path_to_switch: HashMap<Vec<usize>, &crate::preserved::SwitchBinding> = HashMap::new();
+    for entry in &extras.switches {
+        path_to_switch.insert(entry.path.clone(), entry);
+    }
     // Round 122 — index `<title>` / `<desc>` bindings (SVG 2 §5.8) by
     // their *parent* container's scene-graph tree-path so `write_node`
     // can re-emit them as the first children of the matching `<g>` on
@@ -386,6 +394,7 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
         &path_to_cursor,
         &path_to_dominant_baseline,
         &path_to_use,
+        &path_to_switch,
         &parent_to_titles,
         &parent_to_descs,
         &anim_by_parent,
@@ -615,6 +624,7 @@ fn write_group_children(
     path_to_cursor: &HashMap<Vec<usize>, &str>,
     path_to_dominant_baseline: &HashMap<Vec<usize>, &str>,
     path_to_use: &HashMap<Vec<usize>, &crate::preserved::UseBinding>,
+    path_to_switch: &HashMap<Vec<usize>, &crate::preserved::SwitchBinding>,
     parent_to_titles: &HashMap<Vec<usize>, &DescriptiveBinding>,
     parent_to_descs: &HashMap<Vec<usize>, &DescriptiveBinding>,
     anim_by_parent: &HashMap<String, Vec<&AnimationFragment>>,
@@ -643,6 +653,7 @@ fn write_group_children(
             path_to_cursor,
             path_to_dominant_baseline,
             path_to_use,
+            path_to_switch,
             parent_to_titles,
             parent_to_descs,
             anim_by_parent,
@@ -674,12 +685,20 @@ fn write_node(
     path_to_cursor: &HashMap<Vec<usize>, &str>,
     path_to_dominant_baseline: &HashMap<Vec<usize>, &str>,
     path_to_use: &HashMap<Vec<usize>, &crate::preserved::UseBinding>,
+    path_to_switch: &HashMap<Vec<usize>, &crate::preserved::SwitchBinding>,
     parent_to_titles: &HashMap<Vec<usize>, &DescriptiveBinding>,
     parent_to_descs: &HashMap<Vec<usize>, &DescriptiveBinding>,
     anim_by_parent: &HashMap<String, Vec<&AnimationFragment>>,
     path_stack: &mut Vec<usize>,
 ) {
     let indent = "  ".repeat(depth);
+    // Round 372 — does this scene-graph position carry a recorded
+    // `<switch>` (SVG 2 §5.7)? If so the `Node::Group` arm emits the
+    // verbatim `<switch>` (all alternatives) and skips the selected
+    // child, collapsing the decode-time selection back to the
+    // first-match container. Checked alongside `use_here`.
+    let switch_here: Option<&crate::preserved::SwitchBinding> =
+        path_to_switch.get(path_stack.as_slice()).copied();
     // Round 372 — does this scene-graph position carry a recorded
     // `<use>` reference (SVG 2 §5.6)? If so the `Node::Group` arm emits
     // `<use href="#id" …/>` and skips re-walking the instantiated
@@ -770,6 +789,20 @@ fn write_node(
         .unwrap_or(&[]);
     match node {
         Node::Group(g) => {
+            // Round 372 — SVG 2 §5.7: if this group is the selected
+            // branch of a `<switch>`, re-emit the verbatim `<switch>`
+            // (every conditional alternative) and skip the selected
+            // child. Re-parsing the output re-runs the conditional
+            // selection, so the round-trip preserves the first-match
+            // container rather than freezing the decode-time choice.
+            // Checked before the `<use>` collapse: a `<switch>` whose
+            // selected branch is itself a `<use>` instance still
+            // round-trips as `<switch>` (the inner `<use>` rides inside
+            // the verbatim element).
+            if let Some(s) = switch_here {
+                write_raw_element(out, &s.element, depth);
+                return;
+            }
             // Round 372 — SVG 2 §5.6: if this group is the instantiated
             // body of a `<use>` reference, collapse it back to a single
             // `<use href="#id" …/>` element and skip re-walking the
@@ -987,6 +1020,7 @@ fn write_node(
                 path_to_cursor,
                 path_to_dominant_baseline,
                 path_to_use,
+                path_to_switch,
                 parent_to_titles,
                 parent_to_descs,
                 anim_by_parent,
@@ -1177,6 +1211,7 @@ fn write_node(
                 path_to_cursor,
                 path_to_dominant_baseline,
                 path_to_use,
+                path_to_switch,
                 parent_to_titles,
                 parent_to_descs,
                 anim_by_parent,
@@ -1716,6 +1751,8 @@ fn write_mask(
     let empty_path_to_cursor: HashMap<Vec<usize>, &str> = HashMap::new();
     let empty_path_to_dominant_baseline: HashMap<Vec<usize>, &str> = HashMap::new();
     let empty_path_to_use: HashMap<Vec<usize>, &crate::preserved::UseBinding> = HashMap::new();
+    let empty_path_to_switch: HashMap<Vec<usize>, &crate::preserved::SwitchBinding> =
+        HashMap::new();
     let empty_titles: HashMap<Vec<usize>, &DescriptiveBinding> = HashMap::new();
     let empty_descs: HashMap<Vec<usize>, &DescriptiveBinding> = HashMap::new();
     let empty_anims: HashMap<String, Vec<&AnimationFragment>> = HashMap::new();
@@ -1741,6 +1778,7 @@ fn write_mask(
         &empty_path_to_cursor,
         &empty_path_to_dominant_baseline,
         &empty_path_to_use,
+        &empty_path_to_switch,
         &empty_titles,
         &empty_descs,
         &empty_anims,

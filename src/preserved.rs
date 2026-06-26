@@ -385,6 +385,41 @@ pub struct PreservedExtras {
     /// verbatim (attribute ordering + descendant structure preserved).
     /// Populated only by [`crate::decoder::parse_svg_with_extras`].
     pub defs_targets: Vec<Element>,
+    /// Round 372 — SVG 2 §5.7 `<switch>` verbatim bindings, recorded per
+    /// emitted [`oxideav_core::Node::Group`] (the decoder renders the
+    /// first child whose conditional-processing attributes test true and
+    /// wraps it in a `Group`, discarding the unselected alternatives and
+    /// the `<switch>` element identity). `oxideav_core::Group` cannot
+    /// represent "first-match container", so the whole `<switch>`
+    /// subtree — every alternative + their `requiredExtensions` /
+    /// `requiredFeatures` / `systemLanguage` conditional attributes — is
+    /// stowed here verbatim keyed by the group's scene-graph tree-path
+    /// (same layout as [`id_paths`](Self::id_paths)). On write the
+    /// encoder replaces the matching `Group` with the verbatim
+    /// `<switch>` and skips re-walking the selected child, so a
+    /// `parse_svg_with_extras → write_svg_with_extras` cycle preserves
+    /// the conditional structure (and re-parsing under a *different*
+    /// `systemLanguage` re-selects correctly rather than being frozen on
+    /// the first decode's choice). Populated only by
+    /// [`crate::decoder::parse_svg_with_extras`].
+    pub switches: Vec<SwitchBinding>,
+}
+
+/// Round 372 — one captured `<switch>` element, keyed by the
+/// scene-graph tree-path of the [`oxideav_core::Node::Group`] the
+/// decoder produced for the selected branch (SVG 2 §5.7). The element
+/// is captured whole (every conditional alternative + the switch's own
+/// `transform` / conditional attributes) so the round-trip preserves
+/// the first-match container rather than freezing the decode-time
+/// selection.
+#[derive(Clone, Debug)]
+pub struct SwitchBinding {
+    /// Tree-path through the scene graph; matches the layout of
+    /// [`IdScenePath::path`]. Identifies the `<g>` the encoder replaces
+    /// with the verbatim `<switch>…</switch>`.
+    pub path: Vec<usize>,
+    /// The verbatim `<switch>` element (all children + attributes).
+    pub element: Element,
 }
 
 /// One captured animation child of a known-id parent element.
@@ -499,6 +534,7 @@ impl PreservedExtras {
             && self.dominant_baselines.is_empty()
             && self.uses.is_empty()
             && self.defs_targets.is_empty()
+            && self.switches.is_empty()
     }
 }
 

@@ -110,8 +110,12 @@ the IR cannot model directly via a `PreservedExtras` side-channel.
   `parse_svg` snapshots first-paint at `t = 0`.
 * **Conditional processing** — `<switch>` evaluates
   `requiredExtensions` / `systemLanguage` and renders the first passing
-  child; `<view>` definitions + `resolve_fragment` honour both bare-name
-  and `svgView(...)` fragment identifiers.
+  child; a `parse_svg_with_extras → write_svg_with_extras` round-trip
+  re-emits the whole `<switch>` verbatim (every alternative + the
+  conditional attributes) rather than freezing the decode-time
+  selection, so a re-parse under a different `systemLanguage` re-selects
+  correctly. `<view>` definitions + `resolve_fragment` honour both
+  bare-name and `svgView(...)` fragment identifiers.
 * **Graceful handling** — `<foreignObject>` parses to an empty group;
   unknown content survives the verbatim round-trip via `PreservedExtras`.
 
