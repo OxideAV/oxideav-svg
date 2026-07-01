@@ -2720,6 +2720,29 @@ fn parse_descriptive_text(el: &Element) -> crate::preserved::DescriptiveText {
 /// caller via [`ParseContext::record_link`]). `href` prefers the SVG-2
 /// `href` and falls back to the deprecated SVG-1.1 `xlink:href`.
 fn parse_link_binding(el: &Element) -> crate::preserved::LinkBinding {
+    // Round 382 — sweep up every attribute the typed link fields below
+    // don't model, preserving document order, so the `<a>`-wrapper round
+    // trip keeps `id` / `class` / `style` / `transform` / presentation /
+    // conditional-processing attributes.
+    let extra_attrs: Vec<(String, String)> = el
+        .attrs
+        .iter()
+        .filter(|(k, _)| {
+            !matches!(
+                k.as_str(),
+                "href"
+                    | "xlink:href"
+                    | "target"
+                    | "download"
+                    | "ping"
+                    | "rel"
+                    | "hreflang"
+                    | "type"
+                    | "referrerpolicy"
+            )
+        })
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
     crate::preserved::LinkBinding {
         path: Vec::new(),
         href: attr(el, "href")
@@ -2732,6 +2755,7 @@ fn parse_link_binding(el: &Element) -> crate::preserved::LinkBinding {
         hreflang: attr(el, "hreflang").map(str::to_string),
         type_: attr(el, "type").map(str::to_string),
         referrerpolicy: attr(el, "referrerpolicy").map(str::to_string),
+        extra_attrs,
     }
 }
 

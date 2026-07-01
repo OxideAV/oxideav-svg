@@ -619,6 +619,13 @@ fn write_link_attrs(out: &mut String, link: &LinkBinding) {
     if let Some(rp) = &link.referrerpolicy {
         out.push_str(&format!(" referrerpolicy=\"{}\"", escape_attr(rp)));
     }
+    // Round 382 — re-emit the verbatim-captured attributes the typed link
+    // fields don't model (`id`, `class`, `style`, `transform`,
+    // presentation properties, conditional-processing, …) in their
+    // original document order.
+    for (k, v) in &link.extra_attrs {
+        out.push_str(&format!(" {}=\"{}\"", k, escape_attr(v)));
+    }
 }
 
 /// Round 372 — emit the SVG 2 §13.7.4 `marker-start` / `marker-mid` /

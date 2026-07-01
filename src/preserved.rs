@@ -620,6 +620,15 @@ pub struct LinkBinding {
     pub type_: Option<String>,
     /// `referrerpolicy` — referrer-policy string (HTML link attribute).
     pub referrerpolicy: Option<String>,
+    /// Round 382 — every `<a>` source attribute the typed link fields
+    /// above don't model, captured verbatim in document order so the
+    /// `<a>`-wrapper round-trip preserves them. Covers the SVG 2 §16.5
+    /// `<a>` core / styling / conditional-processing attributes the
+    /// encoder doesn't otherwise re-emit — `id`, `class`, `style`,
+    /// `transform`, presentation properties, `requiredExtensions`,
+    /// `systemLanguage`, `data-*`, … The `href` / `xlink:href` pair and
+    /// the modelled HTML-link attributes are *not* stored here.
+    pub extra_attrs: Vec<(String, String)>,
 }
 
 impl PreservedExtras {
