@@ -106,6 +106,15 @@ pub struct SvgImage {
     /// pair is *not* stored here (it is re-derived from [`Self::href`]);
     /// neither are the fields with dedicated slots.
     pub extra_attrs: Vec<(String, String)>,
+    /// Round 382 — the `<image>` element's child nodes, captured
+    /// verbatim. Per SVG 2 §6 the `<image>` content model allows
+    /// descriptive elements (`<title>` / `<desc>` / `<metadata>`) and
+    /// animation elements (`<animate>` / `<set>` / `<animateMotion>` /
+    /// `<animateTransform>` / `<discard>`). Previously the encoder emitted
+    /// `<image .../>` self-closing and dropped these; capturing them here
+    /// makes the round-trip lossless. Empty for the common childless
+    /// `<image>`, in which case the encoder keeps the self-closing form.
+    pub children: Vec<crate::parser::Node>,
 }
 
 /// An `<image>` element's `href` resolved into one of the two
@@ -234,6 +243,9 @@ impl SvgImage {
             image_rendering,
             crossorigin,
             extra_attrs,
+            // Round 382 — capture the descriptive / animation children
+            // verbatim so `<image><title>…</title></image>` round-trips.
+            children: el.children.clone(),
         })
     }
 
@@ -320,7 +332,30 @@ impl SvgImage {
         }
         let href_value = self.to_href_attr();
         out.push_str(&format!(" href=\"{}\"", escape_attr(&href_value)));
-        out.push_str("/>\n");
+        // Round 382 — emit any captured descriptive / animation children
+        // (SVG 2 §6 content model). A childless `<image>` — or one whose
+        // only children are whitespace text — keeps the self-closing
+        // form; otherwise the tag opens and each element child is
+        // re-serialised verbatim via `write_element_verbatim`.
+        let has_element_child = self
+            .children
+            .iter()
+            .any(|n| matches!(n, crate::parser::Node::Element(_)));
+        if !has_element_child {
+            out.push_str("/>\n");
+            return;
+        }
+        out.push_str(">\n");
+        // Derive nesting depth from the caller's indent (two spaces per
+        // level) so children align one level deeper.
+        let depth = indent.len() / 2;
+        for child in &self.children {
+            if let crate::parser::Node::Element(el) = child {
+                crate::encoder::write_element_verbatim(out, el, depth + 1);
+            }
+        }
+        out.push_str(indent);
+        out.push_str("</image>\n");
     }
 }
 

@@ -667,6 +667,14 @@ fn write_descriptive(out: &mut String, tag: &str, item: &DescriptiveText, depth:
 
 /// Serialise an [`Element`] verbatim. Used to re-emit preserved-XML
 /// fragments. `depth` is the indent level (in `"  "` units).
+/// Round 382 — crate-internal verbatim element serialiser, exposed so
+/// `image::SvgImage::write_to` can re-emit captured `<image>` children
+/// (`<title>` / `<desc>` / animation elements) with the same escaping
+/// and indentation rules the rest of the encoder uses.
+pub(crate) fn write_element_verbatim(out: &mut String, el: &Element, depth: usize) {
+    write_raw_element(out, el, depth);
+}
+
 fn write_raw_element(out: &mut String, el: &Element, depth: usize) {
     let indent = "  ".repeat(depth);
     out.push_str(&indent);
