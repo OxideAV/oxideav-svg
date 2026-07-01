@@ -711,6 +711,17 @@ pub struct UseBinding {
     /// itself (distinct from the referenced target id in
     /// [`Self::href`]). `None` = the `<use>` had no `id`.
     pub id: Option<String>,
+    /// Round 382 — every `<use>` source attribute the typed fields above
+    /// don't model, captured verbatim in document order so a round-trip
+    /// preserves them. Covers the SVG 2 §5.6 `<use>` core / styling /
+    /// conditional-processing attributes the collapse-to-`<use>` encoder
+    /// path doesn't otherwise re-emit — `class`, `style`, presentation
+    /// properties (`opacity`, `clip-path`, `mask`, `filter`,
+    /// `visibility`, `fill`, `stroke`, …), `requiredExtensions`,
+    /// `systemLanguage`, `data-*`, and so on. The `href` / `xlink:href`
+    /// pair and the modelled `x` / `y` / `width` / `height` / `transform`
+    /// / `id` attributes are *not* stored here.
+    pub extra_attrs: Vec<(String, String)>,
 }
 
 /// Round 205 — one (scene-graph tree-path, author `paint-order`

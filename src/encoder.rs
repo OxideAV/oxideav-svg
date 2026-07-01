@@ -1018,6 +1018,13 @@ fn write_node(
                 if let Some(t) = &u.transform {
                     out.push_str(&format!(" transform=\"{}\"", escape_attr(t)));
                 }
+                // Round 382 — re-emit the verbatim-captured attributes
+                // the typed slots don't model (`class`, `style`,
+                // presentation properties, conditional-processing, …) in
+                // their original document order.
+                for (k, v) in &u.extra_attrs {
+                    out.push_str(&format!(" {}=\"{}\"", k, escape_attr(v)));
+                }
                 if inline_anims.is_empty() {
                     out.push_str("/>\n");
                 } else {

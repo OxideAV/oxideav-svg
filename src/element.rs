@@ -2753,6 +2753,21 @@ fn parse_use_binding(el: &Element) -> Option<crate::preserved::UseBinding> {
     if !href.starts_with('#') {
         return None;
     }
+    // Round 382 — sweep up every attribute the typed slots below don't
+    // model, preserving document order, so a collapse-to-`<use>` round
+    // trip doesn't drop `class` / `style` / presentation / conditional-
+    // processing attributes.
+    let extra_attrs: Vec<(String, String)> = el
+        .attrs
+        .iter()
+        .filter(|(k, _)| {
+            !matches!(
+                k.as_str(),
+                "href" | "xlink:href" | "x" | "y" | "width" | "height" | "transform" | "id"
+            )
+        })
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
     Some(crate::preserved::UseBinding {
         path: Vec::new(),
         href: href.to_string(),
@@ -2762,6 +2777,7 @@ fn parse_use_binding(el: &Element) -> Option<crate::preserved::UseBinding> {
         height: attr(el, "height").map(str::to_string),
         transform: attr(el, "transform").map(str::to_string),
         id: attr(el, "id").map(str::to_string),
+        extra_attrs,
     })
 }
 
