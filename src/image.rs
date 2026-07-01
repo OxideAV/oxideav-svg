@@ -81,6 +81,16 @@ pub struct SvgImage {
     /// canonicalises to `anonymous` on re-emit, matching the HTML
     /// CORS-settings-attribute state machine.
     pub crossorigin: Option<crate::filter::CrossOrigin>,
+    /// Round 382 — every source attribute the typed fields above do not
+    /// model, captured verbatim in document order so the round-trip
+    /// preserves them. This covers the SVG 2 §6 `<image>` core / styling
+    /// / conditional-processing attributes the crate does not otherwise
+    /// interpret — `class`, `style`, `opacity`, `clip-path`, `mask`,
+    /// `filter`, `visibility`, `requiredExtensions`, `systemLanguage`,
+    /// `xlink:title`, `data-*`, and so on. The `href` / `xlink:href`
+    /// pair is *not* stored here (it is re-derived from [`Self::href`]);
+    /// neither are the fields with dedicated slots.
+    pub extra_attrs: Vec<(String, String)>,
 }
 
 /// An `<image>` element's `href` resolved into one of the two
@@ -143,6 +153,35 @@ impl SvgImage {
         // (SVG 2 §6). The bare `crossorigin` form parses as the empty
         // string, which the HTML rules map to `anonymous`.
         let crossorigin = attr(el, "crossorigin").and_then(crate::filter::CrossOrigin::parse_attr);
+        // Round 382 — sweep up every attribute the typed slots above
+        // don't model, preserving document order. `href` / `xlink:href`
+        // are re-derived from `self.href`; the modelled attributes have
+        // dedicated slots. `crossorigin` is only skipped when it parsed
+        // into a typed keyword — an *invalid* `crossorigin` token (which
+        // records no binding) still round-trips through `extra_attrs`
+        // rather than being silently dropped.
+        let crossorigin_modelled = crossorigin.is_some();
+        let extra_attrs: Vec<(String, String)> = el
+            .attrs
+            .iter()
+            .filter(|(k, _)| {
+                let has_dedicated_slot = matches!(
+                    k.as_str(),
+                    "href"
+                        | "xlink:href"
+                        | "x"
+                        | "y"
+                        | "width"
+                        | "height"
+                        | "transform"
+                        | "id"
+                        | "preserveAspectRatio"
+                        | "image-rendering"
+                ) || (k == "crossorigin" && crossorigin_modelled);
+                !has_dedicated_slot
+            })
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
         Some(Self {
             href,
             x,
@@ -155,6 +194,7 @@ impl SvgImage {
             preserve_aspect_ratio,
             image_rendering,
             crossorigin,
+            extra_attrs,
         })
     }
 
@@ -218,6 +258,14 @@ impl SvgImage {
         // (the bare / empty-value form round-trips as `anonymous`).
         if let Some(co) = self.crossorigin {
             out.push_str(&format!(" crossorigin=\"{}\"", co.as_canonical_str()));
+        }
+        // Round 382 — re-emit the verbatim-captured attributes the typed
+        // slots don't model (`class`, `style`, `opacity`, `clip-path`,
+        // `mask`, `filter`, `visibility`, `requiredExtensions`,
+        // `systemLanguage`, `xlink:title`, …) in their original document
+        // order. Values are attribute-escaped on the way out.
+        for (k, v) in &self.extra_attrs {
+            out.push_str(&format!(" {}=\"{}\"", k, escape_attr(v)));
         }
         let href_value = self.to_href_attr();
         out.push_str(&format!(" href=\"{}\"", escape_attr(&href_value)));
