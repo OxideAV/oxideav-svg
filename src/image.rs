@@ -41,14 +41,29 @@ pub struct SvgImage {
     /// Where the raster bytes live — inline data URI (decoded) or
     /// external URL (caller fetches).
     pub href: ImageHref,
-    /// `x="..."` attribute value (defaults to 0 per §6).
+    /// `x="..."` attribute value in user units (defaults to 0 per §6).
+    /// This is the best-effort numeric projection; see [`Self::x_raw`]
+    /// for the source string that round-trips units / percentages.
     pub x: f32,
-    /// `y="..."` attribute value (defaults to 0 per §6).
+    /// `y="..."` attribute value in user units (defaults to 0 per §6).
     pub y: f32,
-    /// `width="..."` attribute value, when explicitly set.
+    /// `width="..."` numeric value, when explicitly set.
     pub width: Option<f32>,
-    /// `height="..."` attribute value, when explicitly set.
+    /// `height="..."` numeric value, when explicitly set.
     pub height: Option<f32>,
+    /// Round 382 — the *verbatim* geometry-attribute strings, when the
+    /// source set them. `<image>`'s `x` / `y` / `width` / `height` are
+    /// `<length>` values (SVG 2 §6, Geometry properties) that may carry
+    /// a unit (`px`, `em`, …) or be a percentage of the viewport. The
+    /// numeric fields above drop that unit; these slots preserve the
+    /// exact source token so a `width="50%"` round-trips as `50%`, not a
+    /// semantics-changing `50`. `None` means the source omitted the
+    /// attribute (so the round-trip omits it too). The encoder prefers
+    /// the raw string when present and falls back to the numeric field.
+    pub x_raw: Option<String>,
+    pub y_raw: Option<String>,
+    pub width_raw: Option<String>,
+    pub height_raw: Option<String>,
     /// Optional `transform=` attribute (parsed via the same
     /// `parse_transform` the rest of the SVG decoder uses).
     pub transform: Option<oxideav_core::Transform2D>,
@@ -129,6 +144,26 @@ impl SvgImage {
         let y = parse_optional_number(attr(el, "y")).unwrap_or(0.0);
         let width = parse_optional_number(attr(el, "width"));
         let height = parse_optional_number(attr(el, "height"));
+        // Round 382 — capture the verbatim geometry strings so a
+        // unit-bearing / percentage `<length>` survives the round-trip.
+        // Only record a raw slot when the source token differs from the
+        // canonical numeric re-emit, so an initial-value document doesn't
+        // bloat and a plain `x="10"` still emits via the numeric path.
+        let raw_geom = |name: &str, num: f32| -> Option<String> {
+            let src = attr(el, name)?.trim();
+            if src.is_empty() {
+                return None;
+            }
+            if src == trim_float(num) {
+                None
+            } else {
+                Some(src.to_string())
+            }
+        };
+        let x_raw = raw_geom("x", x);
+        let y_raw = raw_geom("y", y);
+        let width_raw = width.and_then(|w| raw_geom("width", w));
+        let height_raw = height.and_then(|h| raw_geom("height", h));
         let transform = match attr(el, "transform") {
             Some(s) => parse_transform(s).ok(),
             None => None,
@@ -188,6 +223,10 @@ impl SvgImage {
             y,
             width,
             height,
+            x_raw,
+            y_raw,
+            width_raw,
+            height_raw,
             transform,
             id,
             parent_id: parent_id.map(str::to_string),
@@ -227,16 +266,28 @@ impl SvgImage {
         if let Some(id) = &self.id {
             out.push_str(&format!(" id=\"{}\"", escape_attr(id)));
         }
-        if self.x != 0.0 {
+        // Round 382 — prefer the verbatim source token (unit /
+        // percentage preserving) when captured, else fall back to the
+        // canonical numeric re-emit. `x` / `y` still suppress an
+        // initial-value `0` when no raw token was recorded.
+        if let Some(raw) = &self.x_raw {
+            out.push_str(&format!(" x=\"{}\"", escape_attr(raw)));
+        } else if self.x != 0.0 {
             out.push_str(&format!(" x=\"{}\"", trim_float(self.x)));
         }
-        if self.y != 0.0 {
+        if let Some(raw) = &self.y_raw {
+            out.push_str(&format!(" y=\"{}\"", escape_attr(raw)));
+        } else if self.y != 0.0 {
             out.push_str(&format!(" y=\"{}\"", trim_float(self.y)));
         }
-        if let Some(w) = self.width {
+        if let Some(raw) = &self.width_raw {
+            out.push_str(&format!(" width=\"{}\"", escape_attr(raw)));
+        } else if let Some(w) = self.width {
             out.push_str(&format!(" width=\"{}\"", trim_float(w)));
         }
-        if let Some(h) = self.height {
+        if let Some(raw) = &self.height_raw {
+            out.push_str(&format!(" height=\"{}\"", escape_attr(raw)));
+        } else if let Some(h) = self.height {
             out.push_str(&format!(" height=\"{}\"", trim_float(h)));
         }
         if let Some(t) = &self.transform {
