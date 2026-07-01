@@ -534,13 +534,30 @@ pub enum CrossOrigin {
 }
 
 impl CrossOrigin {
-    fn from_str(s: &str) -> Option<Self> {
+    /// Parse a `crossorigin` attribute value into a typed variant.
+    ///
+    /// Per the HTML CORS-settings-attribute rules an empty value (the
+    /// bare `crossorigin` form) and the explicit `anonymous` keyword
+    /// both map to [`CrossOrigin::Anonymous`]; `use-credentials` maps
+    /// to [`CrossOrigin::UseCredentials`]. Any other token is an
+    /// invalid value that the HTML rules coerce to the anonymous state,
+    /// but for a *round-trip* parser we return `None` so the caller can
+    /// decide whether to drop or preserve the raw attribute.
+    pub fn parse_attr(s: &str) -> Option<Self> {
         match s.trim() {
-            // Per HTML §2.7: empty value or `anonymous` both map to
-            // anonymous.
             "" | "anonymous" => Some(Self::Anonymous),
             "use-credentials" => Some(Self::UseCredentials),
             _ => None,
+        }
+    }
+
+    /// The canonical serialised form of this keyword. The empty-value
+    /// `anonymous` alias canonicalises to the explicit `anonymous`
+    /// token on re-emit.
+    pub fn as_canonical_str(self) -> &'static str {
+        match self {
+            Self::Anonymous => "anonymous",
+            Self::UseCredentials => "use-credentials",
         }
     }
 }
@@ -1538,7 +1555,7 @@ fn parse_image(el: &Element) -> FilterPrimitive {
     let preserve_aspect_ratio = attr(el, "preserveAspectRatio")
         .map(PreserveAspectRatio::from_str)
         .unwrap_or_default();
-    let crossorigin = attr(el, "crossorigin").and_then(CrossOrigin::from_str);
+    let crossorigin = attr(el, "crossorigin").and_then(CrossOrigin::parse_attr);
     FilterPrimitive::Image {
         href,
         preserve_aspect_ratio,

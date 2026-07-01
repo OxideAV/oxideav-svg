@@ -73,6 +73,14 @@ pub struct SvgImage {
     /// in those cases. Round-trip is byte-faithful: source
     /// `OPTIMIZEQUALITY` round-trips as `optimizeQuality`.
     pub image_rendering: Option<String>,
+    /// Round 382 — SVG 2 §6 (embedded content) `crossorigin` presentation
+    /// attribute captured off the source `<image>` element when present
+    /// and recognised (`anonymous` / the bare `crossorigin` form / the
+    /// `use-credentials` keyword). `None` for an absent attribute or an
+    /// unrecognised token. The bare `crossorigin` / empty-value form
+    /// canonicalises to `anonymous` on re-emit, matching the HTML
+    /// CORS-settings-attribute state machine.
+    pub crossorigin: Option<crate::filter::CrossOrigin>,
 }
 
 /// An `<image>` element's `href` resolved into one of the two
@@ -131,6 +139,10 @@ impl SvgImage {
             let ir = crate::element::ImageRendering::parse_keyword(trimmed)?;
             Some(ir.as_canonical_str().to_string())
         });
+        // Round 382 — capture the `crossorigin` CORS-settings attribute
+        // (SVG 2 §6). The bare `crossorigin` form parses as the empty
+        // string, which the HTML rules map to `anonymous`.
+        let crossorigin = attr(el, "crossorigin").and_then(crate::filter::CrossOrigin::parse_attr);
         Some(Self {
             href,
             x,
@@ -142,6 +154,7 @@ impl SvgImage {
             parent_id: parent_id.map(str::to_string),
             preserve_aspect_ratio,
             image_rendering,
+            crossorigin,
         })
     }
 
@@ -200,6 +213,11 @@ impl SvgImage {
         // an initial-value document).
         if let Some(ir) = &self.image_rendering {
             out.push_str(&format!(" image-rendering=\"{}\"", escape_attr(ir)));
+        }
+        // Round 382 — SVG 2 §6 `crossorigin`. Emit the canonical keyword
+        // (the bare / empty-value form round-trips as `anonymous`).
+        if let Some(co) = self.crossorigin {
+            out.push_str(&format!(" crossorigin=\"{}\"", co.as_canonical_str()));
         }
         let href_value = self.to_href_attr();
         out.push_str(&format!(" href=\"{}\"", escape_attr(&href_value)));
