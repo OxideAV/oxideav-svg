@@ -140,6 +140,21 @@ the IR cannot model directly via a `PreservedExtras` side-channel.
   selection, so a re-parse under a different `systemLanguage` re-selects
   correctly. `<view>` definitions + `resolve_fragment` honour both
   bare-name and `svgView(...)` fragment identifiers.
+* **`<image>` capture** — the SVG 2 §6 `<image>` element is captured
+  into `PreservedExtras::images` as a typed `SvgImage`: inline
+  `data:` payloads are base64-decoded (MIME recorded), external URLs
+  preserved verbatim (the decoder never fetches). A
+  `parse_svg_with_extras → write_svg_with_extras` round-trip is
+  lossless — the geometry `x` / `y` / `width` / `height` keep their
+  source `<length>` unit / percentage token (`width="50%"` survives as
+  `50%`), `preserveAspectRatio` / `image-rendering` / `crossorigin` are
+  preserved, every unmodelled core / styling / conditional-processing
+  attribute (`class`, `style`, `opacity`, `clip-path`, `mask`, `filter`,
+  `visibility`, `requiredExtensions`, `systemLanguage`, `xlink:title`,
+  `data-*`) round-trips through `SvgImage::extra_attrs` in document
+  order, and the §6 child content (`<title>` / `<desc>` / `<metadata>`
+  + animation elements) is re-emitted verbatim. Painting the decoded
+  raster into vector space remains `oxideav-raster` work.
 * **Graceful handling** — `<foreignObject>` parses to an empty group;
   unknown content survives the verbatim round-trip via `PreservedExtras`.
 
@@ -176,8 +191,10 @@ Rust, no C dependencies.
   operators (whose mixing formulae live in the un-staged `[COMPOSITING-1]`
   / `[PORTERDUFF]` companion specs) and `feImage` external-reference
   resolution also remain rasteriser work.
-* Marker rendering, `textPath method="stretch"` per-glyph warping, the
-  `<image>` element, and live pseudo-element / stateful pseudo-class
+* Marker rendering, `textPath method="stretch"` per-glyph warping,
+  *painting* the captured `<image>` raster into vector space (the
+  element itself is parsed + losslessly round-tripped — see **`<image>`
+  capture** above), and live pseudo-element / stateful pseudo-class
   evaluation (selectors parse + round-trip; the synthesised-box renderer
   is `oxideav-raster` work).
 
