@@ -1,5 +1,7 @@
 # oxideav-svg
 
+[![CI](https://github.com/OxideAV/oxideav-svg/actions/workflows/ci.yml/badge.svg)](https://github.com/OxideAV/oxideav-svg/actions/workflows/ci.yml) [![crates.io](https://img.shields.io/crates/v/oxideav-svg.svg)](https://crates.io/crates/oxideav-svg) [![docs.rs](https://docs.rs/oxideav-svg/badge.svg)](https://docs.rs/oxideav-svg) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Pure-Rust SVG read + write for the
 [`oxideav`](https://github.com/OxideAV/oxideav) framework. Implements a
 focused subset of SVG 1.1 / 2.0 — enough to load the great majority of
