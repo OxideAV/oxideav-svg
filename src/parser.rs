@@ -43,13 +43,27 @@ pub fn parse_xml(src: &str) -> Result<Vec<Node>> {
     p.skip_prolog();
     let mut out: Vec<Node> = Vec::new();
     while p.pos < p.src.len() {
-        match p.parse_node()? {
+        match p.parse_node(0)? {
             Some(node) => out.push(node),
             None => break,
         }
     }
     Ok(out)
 }
+
+/// Maximum XML element nesting the parser will descend into before it
+/// returns a typed error instead of recursing further. Both this parser
+/// and the model-builder that walks its output are recursive, so an
+/// adversarial document with tens of thousands of nested `<g>` elements
+/// would otherwise overflow the native stack and abort the whole
+/// process. This guard runs first — during the lightweight tree build,
+/// where each frame is tiny — and rejects the document before the much
+/// heavier model-builder descent is ever reached, so bounding the parse
+/// depth transitively bounds the decode depth. Real-world SVG nests only
+/// a few dozen levels deep (grouped editor exports rarely pass ~40), so
+/// 128 leaves a wide margin for legitimate content while keeping the
+/// deepest accepted tree comfortably inside a default thread stack.
+pub const MAX_XML_DEPTH: usize = 128;
 
 struct XmlParser<'a> {
     src: &'a [u8],
@@ -94,7 +108,7 @@ impl<'a> XmlParser<'a> {
         }
     }
 
-    fn parse_node(&mut self) -> Result<Option<Node>> {
+    fn parse_node(&mut self, depth: usize) -> Result<Option<Node>> {
         // Collect leading text up to `<`.
         let start = self.pos;
         while self.pos < self.src.len() && self.src[self.pos] != b'<' {
@@ -117,7 +131,7 @@ impl<'a> XmlParser<'a> {
                 .map(|e| e + 3)
                 .unwrap_or(self.src.len());
             self.pos = end;
-            return self.parse_node();
+            return self.parse_node(depth);
         }
         if self.src[self.pos..].starts_with(b"<![CDATA[") {
             let data_start = self.pos + b"<![CDATA[".len();
@@ -133,17 +147,20 @@ impl<'a> XmlParser<'a> {
                 .map(|e| e + 2)
                 .unwrap_or(self.src.len());
             self.pos = end;
-            return self.parse_node();
+            return self.parse_node(depth);
         }
         if self.src[self.pos..].starts_with(b"</") {
             // Caller will handle the close.
             return Ok(None);
         }
-        let element = self.parse_element()?;
+        let element = self.parse_element(depth)?;
         Ok(Some(Node::Element(element)))
     }
 
-    fn parse_element(&mut self) -> Result<Element> {
+    fn parse_element(&mut self, depth: usize) -> Result<Element> {
+        if depth >= MAX_XML_DEPTH {
+            return Err(Error::invalid("XML: element nesting too deep"));
+        }
         debug_assert_eq!(self.src[self.pos], b'<');
         self.pos += 1;
         let name_start = self.pos;
@@ -178,7 +195,7 @@ impl<'a> XmlParser<'a> {
                 let children = if is_raw_text_element(&name) {
                     self.parse_raw_text_until_close(&name)?
                 } else {
-                    self.parse_children(&name)?
+                    self.parse_children(&name, depth + 1)?
                 };
                 return Ok(Element {
                     name,
@@ -306,7 +323,7 @@ impl<'a> XmlParser<'a> {
         }
     }
 
-    fn parse_children(&mut self, name: &str) -> Result<Vec<Node>> {
+    fn parse_children(&mut self, name: &str, depth: usize) -> Result<Vec<Node>> {
         let mut children: Vec<Node> = Vec::new();
         while self.pos < self.src.len() {
             if self.src[self.pos..].starts_with(b"</") {
@@ -324,7 +341,7 @@ impl<'a> XmlParser<'a> {
                 // document than fail the round-trip on a stray tag.
                 return Ok(children);
             }
-            match self.parse_node()? {
+            match self.parse_node(depth)? {
                 Some(node) => children.push(node),
                 None => break,
             }
