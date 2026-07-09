@@ -410,16 +410,34 @@ pub fn is_gzip(bytes: &[u8]) -> bool {
     bytes.len() >= 2 && bytes[0] == 0x1f && bytes[1] == 0x8b
 }
 
+/// Upper bound on the inflated size of an `.svgz` payload. A gzip stream
+/// can expand by ~1000× (a few KiB of input inflating to gigabytes of
+/// output — a classic "decompression bomb"), so a maliciously-crafted
+/// `.svgz` could exhaust memory before the XML parser ever ran. SVG is a
+/// text format; even an implausibly large real document stays well under
+/// this ceiling, so refusing to inflate past it costs nothing legitimate.
+pub const MAX_SVGZ_INFLATED: u64 = 128 * 1024 * 1024;
+
 /// Inflate a gzip-compressed SVG payload (`.svgz`) into the raw XML
-/// bytes the rest of the parser expects. Returns an error when the
-/// input is not a valid gzip stream.
+/// bytes the rest of the parser expects. Returns an error when the input
+/// is not a valid gzip stream, or when it would inflate past
+/// [`MAX_SVGZ_INFLATED`] (a decompression-bomb guard: the read is capped
+/// so the huge buffer is never materialised).
 pub fn inflate_gzip(bytes: &[u8]) -> Result<Vec<u8>> {
     use std::io::Read;
-    let mut decoder = flate2::read::GzDecoder::new(bytes);
-    let mut out = Vec::with_capacity(bytes.len() * 4);
-    decoder
+    let decoder = flate2::read::GzDecoder::new(bytes);
+    // Read at most one byte past the cap so an over-limit stream is
+    // detected without ever allocating the full bomb payload.
+    let mut limited = decoder.take(MAX_SVGZ_INFLATED + 1);
+    let mut out = Vec::with_capacity((bytes.len() * 4).min(1 << 20));
+    limited
         .read_to_end(&mut out)
         .map_err(|e| Error::invalid(format!("SVG: gzip inflate failed: {e}")))?;
+    if out.len() as u64 > MAX_SVGZ_INFLATED {
+        return Err(Error::invalid(
+            "SVG: gzip inflate exceeded the decompression-size limit",
+        ));
+    }
     Ok(out)
 }
 
