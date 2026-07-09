@@ -1000,6 +1000,15 @@ impl Stylesheet {
                     }
                     i += 1;
                 }
+                // An unterminated block (`@media {…` with no closing `}`
+                // before EOF) exits the scan with `block_body_end` still
+                // at its `0` initialiser while `block_body_start` points
+                // past the `{`. Treat the remainder of the input as the
+                // block body so every `stripped[start..end]` slice below
+                // stays ordered instead of panicking on `begin > end`.
+                if had_block && block_body_end < block_body_start {
+                    block_body_end = bytes.len();
+                }
                 if had_block {
                     // Block-style @-rule. Route `@font-face`,
                     // `@keyframes`, `@media`, and `@supports` to
@@ -1760,7 +1769,13 @@ fn parse_at_import(raw: &str) -> Option<String> {
     let r = raw.trim();
     let r = r.strip_prefix('@')?;
     // Match the `import` keyword case-insensitively per CSS3 §3.1.
-    if r.len() < 6 || !r[..6].eq_ignore_ascii_case("import") {
+    // `get(..6)` (rather than `r[..6]`) yields `None` when byte 6 falls
+    // inside a multi-byte char — that input can't be the ASCII keyword
+    // anyway, so it is correctly rejected instead of panicking.
+    if !r
+        .get(..6)
+        .is_some_and(|kw| kw.eq_ignore_ascii_case("import"))
+    {
         return None;
     }
     let rest = r[6..].trim_start_matches(|c: char| c.is_whitespace() || c == ';');
