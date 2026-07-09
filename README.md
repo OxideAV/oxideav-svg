@@ -184,6 +184,34 @@ the IR cannot model directly via a `PreservedExtras` side-channel.
 read; `write_svgz()` and the `svgz` muxer produce gzipped output. Pure
 Rust, no C dependencies.
 
+## Robustness
+
+The parse/model surface is hardened against adversarial input — every
+public parser returns a typed `oxideav_core::Error` (or a value) and
+never panics or aborts, and every unbounded-resource path carries an
+explicit ceiling:
+
+* **Nesting depth** — the SAX parser refuses to descend past
+  `parser::MAX_XML_DEPTH` (128) and the model-builder past
+  `element::MAX_RENDER_DEPTH` (128), so a document with tens of
+  thousands of nested `<g>` elements is rejected with an error instead
+  of overflowing the native stack.
+* **`<use>` expansion** — beyond the existing cycle guard, a global
+  instantiation budget (`element::MAX_USE_EXPANSIONS`) caps *diamond*
+  blow-up (`#n0 → #n1 ×2 → …`, 2ⁿ nodes with no repeated id), and the
+  render-depth guard caps a *linear* `<use>` chain (a decode recursion
+  as deep as the chain even though the XML is flat).
+* **`.svgz` inflation** — gzip input is inflated through a limited
+  reader capped at `parser::MAX_SVGZ_INFLATED` (128 MiB), so a
+  decompression bomb is refused before its payload is ever materialised.
+* **Reference chains** — gradient/pattern template inheritance and
+  `<filter>` `href` inheritance each combine a visited-set cycle guard
+  with an eight-hop depth cap.
+
+A curated adversarial corpus plus a seeded byte-mutation fuzzer over the
+path/transform/length/paint/XML/document parsers (see
+`tests/round403_parser_robustness.rs`) enforce the no-panic invariant.
+
 ## Not yet supported
 
 * Supplying the standard-input slots `BackgroundImage` / `FillPaint` /
