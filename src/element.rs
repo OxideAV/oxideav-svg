@@ -2034,6 +2034,24 @@ pub struct ParseContext {
     pub gradients: GradientTable,
     pub defs: DefsTables,
     pub use_stack: HashSet<String>,
+    /// Round 403 — running total of `<use>` instantiations performed
+    /// during this decode. The path-based [`Self::use_stack`] prevents a
+    /// self-referential *cycle*, but not a *diamond*: a `<g id="a">` that
+    /// references `<g id="b">` twice, where `b` references `c` twice, and
+    /// so on, expands 2ⁿ nodes with no id ever appearing twice on the
+    /// instantiation path. This global counter caps the total expansion
+    /// at [`MAX_USE_EXPANSIONS`], turning that exponential blow-up into a
+    /// bounded, quickly-terminating decode.
+    pub use_expansions: usize,
+    /// Round 403 — current model-builder recursion depth. Unlike the
+    /// parse-time [`crate::parser::MAX_XML_DEPTH`] guard (which bounds
+    /// the *lexical* nesting of the source tree), this bounds the
+    /// *decode* recursion — which can run far deeper than the XML tree
+    /// through `<use>` chains: a flat list of groups where `#n0` uses
+    /// `#n1` uses `#n2` … instantiates a decode stack as deep as the
+    /// chain even though the XML nests only two levels. Capped at
+    /// [`MAX_RENDER_DEPTH`].
+    pub render_depth: usize,
     /// Round 4: CSS rules collected from every `<style>` block in the
     /// document. Threaded through `merged_with_css` so each element
     /// pulls matched declarations during property resolution.
@@ -2283,6 +2301,8 @@ impl ParseContext {
             gradients: GradientTable::new(),
             defs: DefsTables::new(),
             use_stack: HashSet::new(),
+            use_expansions: 0,
+            render_depth: 0,
             stylesheet: Stylesheet::new(),
             animation_t: 0.0,
             current_path: Vec::new(),
@@ -3491,10 +3511,42 @@ fn child_match_context<'a>(
     }
 }
 
+/// Round 403 — the maximum model-builder recursion depth. The heavy
+/// per-element decode frame limits how deep the native stack can go, and
+/// `<use>` chains can drive that recursion arbitrarily deep independent
+/// of the (parse-time-bounded) XML nesting, so this guard converts a
+/// pathologically deep decode into a typed error rather than a stack
+/// overflow / abort. Real SVG decode never nests anywhere near this far.
+pub const MAX_RENDER_DEPTH: usize = 128;
+
 /// Round-5 entry point. Same as [`parse_element_to_node`] but takes a
 /// fully-chained [`MatchContext`] so the CSS cascade can resolve
 /// combinator selectors and structural pseudo-classes.
+///
+/// Round 403 — thin depth-guarding wrapper around the recursive body
+/// ([`parse_element_to_node_ctx_inner`]). Every recursive descent — a
+/// nested `<g>`, an instantiated `<use>` target, a `<switch>` branch —
+/// re-enters through here, so incrementing the shared counter on the way
+/// in and decrementing on the way out bounds the total decode recursion
+/// at [`MAX_RENDER_DEPTH`] regardless of which recursion source drove it.
 pub fn parse_element_to_node_ctx(
+    el: &Element,
+    parent_state: &PaintState,
+    ctx: &mut ParseContext,
+    mctx: &MatchContext<'_>,
+) -> Result<Option<Node>> {
+    if ctx.render_depth >= MAX_RENDER_DEPTH {
+        return Err(Error::invalid(
+            "SVG: element tree too deeply nested to decode",
+        ));
+    }
+    ctx.render_depth += 1;
+    let result = parse_element_to_node_ctx_inner(el, parent_state, ctx, mctx);
+    ctx.render_depth -= 1;
+    result
+}
+
+fn parse_element_to_node_ctx_inner(
     el: &Element,
     parent_state: &PaintState,
     ctx: &mut ParseContext,
@@ -5496,6 +5548,14 @@ fn register_def(el: &Element, ctx: &mut ParseContext) -> Result<()> {
 /// §5.5: `<use>` of a symbol does *not* re-instantiate the symbol's
 /// own attrs, only its content). Cycles are detected via
 /// `ctx.use_stack` and silently dropped.
+///
+/// Round 403 — the total number of `<use>` instantiations one decode
+/// will perform. Guards against exponential diamond-expansion (see
+/// [`ParseContext::use_expansions`]). Set generously — real documents
+/// instantiate at most a few thousand instances — while still cutting a
+/// 2ⁿ blow-up short after a bounded amount of work.
+pub const MAX_USE_EXPANSIONS: usize = 100_000;
+
 pub fn parse_use_element(
     el: &Element,
     parent_state: &PaintState,
@@ -5543,6 +5603,17 @@ pub fn parse_use_element(
     let use_width = parse_optional_length(attr(el, "width"))?;
     let use_height = parse_optional_length(attr(el, "height"))?;
 
+    // Round 403 — bound the total `<use>` expansion. A diamond of
+    // mutually-referencing `<use>`s expands exponentially even though no
+    // id repeats on the instantiation path (so `use_stack` never trips).
+    // Once the running total reaches the budget, stop instantiating
+    // further references: the partial tree is a bounded, safe result for
+    // what is invariably an adversarial document (real SVG never nests
+    // this many instances).
+    if ctx.use_expansions >= MAX_USE_EXPANSIONS {
+        return Ok(None);
+    }
+    ctx.use_expansions += 1;
     ctx.use_stack.insert(id.to_string());
     // For `<symbol>` references, instantiate the symbol's children
     // directly (skip the `<symbol>` wrapper — symbols are by-spec
