@@ -151,6 +151,37 @@ corpus_gate!(gate_css, "css");
 corpus_gate!(gate_hints, "hints", no_shape_census);
 corpus_gate!(gate_links_desc, "links_desc");
 corpus_gate!(gate_view_script_fo, "view_script_fo");
+corpus_gate!(gate_display_none, "display_none");
+
+/// Focused checks for the inline-`display:none` verbatim carrier
+/// (CSS 2.1 §9.2.4): the hidden subtrees survive with their
+/// suppression attributes intact, and stay hidden on re-parse.
+#[test]
+fn display_none_subtrees_survive_verbatim() {
+    let src = include_bytes!("fixtures/corpus/display_none.svg");
+    let w1 = rt(src);
+    let s1 = String::from_utf8_lossy(&w1).to_string();
+    assert!(
+        s1.contains("display=\"none\""),
+        "the display=\"none\" attribute survives:\n{s1}"
+    );
+    assert!(
+        s1.contains("hidden label"),
+        "text inside the hidden group survives:\n{s1}"
+    );
+    assert!(
+        s1.contains("display: none"),
+        "the style-attribute spelling survives:\n{s1}"
+    );
+    // The hidden elements still generate no boxes on re-parse: the
+    // flattened scene carries only the two visible shapes.
+    let flat = String::from_utf8_lossy(&write_svg(&parse_svg(&w1).unwrap())).to_string();
+    assert_eq!(
+        flat.matches("<path").count(),
+        2,
+        "only the two visible shapes render:\n{flat}"
+    );
+}
 
 /// The pre-round-449 real-world fixture rides the same gate.
 #[test]

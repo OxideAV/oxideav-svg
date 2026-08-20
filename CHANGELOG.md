@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- round 449 — inline-`display:none` subtree round-trip (CSS 2.1
+  §9.2.4). A renderable element carrying `display="none"` (or a
+  `display: none` declaration in its own `style="…"`) generates no
+  boxes, so the decoder builds no scene node for it and the whole
+  subtree vanished on write. New
+  `PreservedExtras::unrendered: Vec<UnrenderedBinding>` captures each
+  such element verbatim, keyed by the parent container's scene-graph
+  tree-path; the encoder re-emits it at the tail of the matching group
+  (document tail for root-level entries), and the XML-walk extras pass
+  skips hidden subtrees with the same inline-only detection so nested
+  animations / paint servers are never double-captured (referenced
+  defs inside a hidden subtree still resolve on re-parse —
+  `register_all_defs` scans the whole tree). Stylesheet-driven
+  `display:none` remains a documented drop (the XML-walk pass cannot
+  see the cascade, so a symmetric capture is impossible there). New
+  `display_none.svg` corpus document + focused assertions in the
+  conformance gate.
+
 - round 449 — write-side conformance gate + four fixed-point defects it
   flushed. New `tests/round449_write_conformance.rs` runs a
   per-feature corpus (`tests/fixtures/corpus/*.svg` — 16 documents

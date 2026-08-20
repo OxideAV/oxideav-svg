@@ -2297,6 +2297,14 @@ pub struct ParseContext {
     /// … tag with the verbatim geometry attributes instead of the
     /// flattened `<path d="…">`.
     pub shapes: Vec<crate::preserved::ShapeBinding>,
+    /// Round 449 — collected `(parent scene_path, verbatim element)`
+    /// bindings for renderable elements suppressed by an inline
+    /// `display:none` (CSS 2.1 §9.2.4). Populated only when the caller
+    /// opted in via [`crate::decoder::parse_svg_with_extras`] (same
+    /// gate as [`Self::track_id_paths`]). The encoder re-emits each at
+    /// the tail of the matching parent group so the hidden subtree
+    /// survives the round-trip.
+    pub unrendered: Vec<crate::preserved::UnrenderedBinding>,
     /// Round 372 — collected `(scene_path, filter url-ref)` bindings
     /// (SVG 1.1 §15). Populated only when the caller opted in via
     /// [`crate::decoder::parse_svg_with_extras`] (same gate as
@@ -2365,6 +2373,7 @@ impl ParseContext {
             texts: Vec::new(),
             anim_targets: Vec::new(),
             shapes: Vec::new(),
+            unrendered: Vec::new(),
             filter_refs: Vec::new(),
             marker_refs: Vec::new(),
         }
@@ -3634,7 +3643,76 @@ pub fn parse_element_to_node_ctx(
     ctx.render_depth += 1;
     let result = parse_element_to_node_ctx_inner(el, parent_state, ctx, mctx);
     ctx.render_depth -= 1;
+    // Round 449 — CSS 2.1 §9.2.4: a renderable element carrying an
+    // *inline* `display:none` generates no boxes, so the dispatch above
+    // produced no scene node and the subtree used to vanish on write.
+    // Capture it verbatim, keyed by the parent container's scene-graph
+    // path (`current_path` still carries this element's would-be child
+    // index — the parent path is everything above it). Only the inline
+    // spellings are captured so the XML-walk extras pass (which cannot
+    // see the CSS cascade) can symmetrically skip the same subtrees,
+    // keeping every side-channel single-emission. Skipped inside
+    // `<use>` instantiation (the collapsed instance never emits).
+    if matches!(result, Ok(None))
+        && ctx.track_id_paths
+        && ctx.use_stack.is_empty()
+        && is_unrendered_capture_tag(&tag_local(&el.name))
+        && element_has_inline_display_none(el)
+    {
+        let mut parent_path = ctx.current_path.clone();
+        parent_path.pop();
+        ctx.unrendered.push(crate::preserved::UnrenderedBinding {
+            parent_path,
+            element: el.clone(),
+        });
+    }
     result
+}
+
+/// Round 449 — the renderable tags eligible for the inline
+/// `display:none` verbatim capture. Non-renderable elements
+/// (`<defs>`, `<style>`, animation elements, …) return no node for
+/// their own reasons and ride their own side-channels.
+fn is_unrendered_capture_tag(local: &str) -> bool {
+    matches!(
+        local,
+        "rect"
+            | "circle"
+            | "ellipse"
+            | "line"
+            | "polyline"
+            | "polygon"
+            | "path"
+            | "g"
+            | "text"
+            | "a"
+            | "svg"
+            | "use"
+            | "image"
+    )
+}
+
+/// Round 449 — does the element's own markup carry `display:none`
+/// (presentation attribute or a declaration inside its `style="…"`)?
+/// Deliberately ignores the CSS cascade — see
+/// [`crate::preserved::PreservedExtras::unrendered`].
+pub(crate) fn element_has_inline_display_none(el: &Element) -> bool {
+    if let Some(v) = attr(el, "display") {
+        if v.trim().eq_ignore_ascii_case("none") {
+            return true;
+        }
+    }
+    if let Some(style) = attr(el, "style") {
+        for decl in style.split(';') {
+            if let Some((k, v)) = decl.split_once(':') {
+                if k.trim().eq_ignore_ascii_case("display") && v.trim().eq_ignore_ascii_case("none")
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 fn parse_element_to_node_ctx_inner(

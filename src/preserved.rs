@@ -539,6 +539,20 @@ pub struct PreservedExtras {
     /// synthesised twin def is skipped. Populated only by
     /// [`crate::decoder::parse_svg_with_extras`].
     pub gradient_refs: Vec<RefBinding>,
+    /// Round 449 — verbatim renderable elements suppressed by an
+    /// *inline* `display:none` (a `display="none"` presentation
+    /// attribute or a `display: none` declaration in the element's own
+    /// `style="…"`; CSS 2.1 §9.2.4 — the element generates no boxes,
+    /// so the decoder builds no scene node for it and the subtree used
+    /// to vanish on write). Keyed by the scene-graph tree-path of the
+    /// element's *parent* container; the encoder re-emits each subtree
+    /// verbatim at the tail of the matching group (or of the document
+    /// for root-level entries). Only elements whose own markup carries
+    /// the suppression are captured — a stylesheet-driven
+    /// `display:none` cannot be detected symmetrically by the XML-walk
+    /// capture pass, so those still drop (documented limitation).
+    /// Populated only by [`crate::decoder::parse_svg_with_extras`].
+    pub unrendered: Vec<UnrenderedBinding>,
 }
 
 /// Round 372 — one (scene-graph tree-path, `marker-*` references) entry
@@ -595,6 +609,17 @@ pub struct FilterRefBinding {
     /// filter-list (SVG 2 chained references) round-trips unchanged even
     /// though the decoder only wraps a single pass-through group.
     pub filter: String,
+}
+
+/// Round 449 — one verbatim `display:none`-suppressed renderable
+/// element, keyed by its parent container's scene-graph tree-path. See
+/// [`PreservedExtras::unrendered`].
+#[derive(Clone, Debug)]
+pub struct UnrenderedBinding {
+    /// Tree-path of the parent container (empty = document root).
+    pub parent_path: Vec<usize>,
+    /// The verbatim suppressed element (whole subtree).
+    pub element: Element,
 }
 
 /// Round 449 — one basic shape's native identity (SVG 2 §9.2–§9.7),
@@ -799,6 +824,7 @@ impl PreservedExtras {
             && self.anim_targets.is_empty()
             && self.shapes.is_empty()
             && self.gradient_refs.is_empty()
+            && self.unrendered.is_empty()
     }
 }
 

@@ -61,6 +61,7 @@ struct EmitIndex<'a> {
     path_to_text: HashMap<Vec<usize>, &'a crate::preserved::TextBinding>,
     anim_by_path: HashMap<Vec<usize>, &'a crate::preserved::AnimTargetBinding>,
     path_to_shape: HashMap<Vec<usize>, &'a crate::preserved::ShapeBinding>,
+    unrendered_by_parent: HashMap<Vec<usize>, Vec<&'a Element>>,
     path_to_filter_ref: HashMap<Vec<usize>, &'a str>,
     path_to_marker: HashMap<Vec<usize>, &'a crate::preserved::MarkerRefBinding>,
     parent_to_titles: HashMap<Vec<usize>, &'a DescriptiveBinding>,
@@ -278,6 +279,17 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
     for entry in &extras.shapes {
         path_to_shape.insert(entry.path.clone(), entry);
     }
+    // Round 449 — index the inline-`display:none` verbatim captures by
+    // parent scene-graph path; the `Node::Group` arm re-emits each at
+    // the tail of the matching `<g>` (root-level entries are emitted
+    // at the document tail below).
+    let mut unrendered_by_parent: HashMap<Vec<usize>, Vec<&Element>> = HashMap::new();
+    for entry in &extras.unrendered {
+        unrendered_by_parent
+            .entry(entry.parent_path.clone())
+            .or_default()
+            .push(&entry.element);
+    }
     // Round 449 — suppression multiset: every animation element that
     // already reaches the output through another channel. The XML-walk
     // capture on `extras.animations` records *every* animation in the
@@ -374,6 +386,7 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
         path_to_text,
         anim_by_path,
         path_to_shape,
+        unrendered_by_parent,
         path_to_filter_ref,
         path_to_marker,
         parent_to_titles,
@@ -725,6 +738,15 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
     for img in &extras.images {
         img.write_to(&mut out, "  ");
     }
+    // Round 449 — root-level inline-`display:none` subtrees (parent
+    // path = document root) re-emit verbatim at the trailing edge; the
+    // suppression rides the elements themselves, so a re-parse
+    // re-captures them and the write stays at its fixed point.
+    if let Some(hidden) = idx.unrendered_by_parent.get(&root_path) {
+        for el in hidden {
+            write_mixed_content_element(&mut out, el, 1);
+        }
+    }
     // Round 13: animations whose parent_id was tracked in
     // `extras.id_paths` are inlined inside the matching scene-graph
     // emit site by `write_node`. Anything that didn't match (no
@@ -1044,6 +1066,7 @@ fn write_node(
         path_to_text,
         anim_by_path,
         path_to_shape,
+        unrendered_by_parent,
         path_to_filter_ref,
         path_to_marker,
         parent_to_titles,
@@ -1439,6 +1462,16 @@ fn write_node(
             // sibling shapes and animation elements; emitting last
             // matches the order browsers typically produce on
             // serialisation and keeps the static visual identical.
+            // Round 449 — inline-`display:none` subtrees whose parent
+            // is this group re-emit verbatim at its tail (CSS 2.1
+            // §9.2.4 suppression is a property of the child, so
+            // placement inside the same parent preserves the cascade
+            // context on re-parse).
+            if let Some(hidden) = unrendered_by_parent.get(path_stack.as_slice()) {
+                for el in hidden {
+                    write_mixed_content_element(out, el, g_depth + 1);
+                }
+            }
             for anim in inline_anims {
                 write_raw_element(out, &anim.element, g_depth + 1);
             }

@@ -25,7 +25,7 @@ use crate::preserved::{
     FilterRefBinding, IdScenePath, LinkBinding, MarkerRefBinding, OverflowBinding,
     PaintOrderBinding, PathLengthBinding, PointerEventsBinding, PreservedExtras, RefBinding,
     ShapeBinding, ShapeRenderingBinding, SwitchBinding, TextBinding, TextRenderingBinding,
-    UseBinding, VectorEffectBinding,
+    UnrenderedBinding, UseBinding, VectorEffectBinding,
 };
 
 /// Codec id string for SVG vector frames.
@@ -151,6 +151,7 @@ pub fn parse_svg_with_extras(bytes: &[u8]) -> Result<(VectorFrame, PreservedExtr
         anim_targets,
         shapes,
         gradient_refs,
+        unrendered,
     ) = parse_svg_root(svg, 0.0, true, &[])?;
     extras.id_paths = id_paths;
     extras.path_lengths = path_lengths;
@@ -175,6 +176,7 @@ pub fn parse_svg_with_extras(bytes: &[u8]) -> Result<(VectorFrame, PreservedExtr
     extras.anim_targets = anim_targets;
     extras.shapes = shapes;
     extras.gradient_refs = gradient_refs;
+    extras.unrendered = unrendered;
     Ok((frame, extras))
 }
 
@@ -202,6 +204,17 @@ fn collect_typed_views(
 /// element. `current_id` carries the nearest ancestor's id so animation
 /// fragments know which emit-site they belong to.
 fn collect_extras(el: &Element, extras: &mut PreservedExtras, current_id: Option<&str>) {
+    // Round 449 — a subtree suppressed by an inline `display:none`
+    // rides `PreservedExtras::unrendered` verbatim (recorded by the
+    // scene-graph build); capturing its contents here too would emit
+    // every nested animation / gradient / pattern / … twice. The same
+    // inline-only detection is used on both sides so the two passes
+    // stay symmetric. Referenced defs inside the hidden subtree still
+    // resolve on re-parse: `register_all_defs` scans the whole tree,
+    // hidden or not.
+    if crate::element::element_has_inline_display_none(el) {
+        return;
+    }
     let local = tag_local(&el.name);
     let id = attr(el, "id").map(str::to_string);
     let next_id = id.as_deref().or(current_id);
@@ -605,6 +618,7 @@ type SvgRootParse = (
     Vec<AnimTargetBinding>,
     Vec<ShapeBinding>,
     Vec<RefBinding>,
+    Vec<UnrenderedBinding>,
 );
 
 fn parse_svg_root(
@@ -816,6 +830,7 @@ fn parse_svg_root(
         ctx.anim_targets,
         ctx.shapes,
         gradient_refs,
+        ctx.unrendered,
     ))
 }
 
