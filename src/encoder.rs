@@ -498,6 +498,29 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
                 .map(|(_, v)| v.as_str())
         })
         .collect();
+    // Round 449 — bind each synthesised scene-walk gradient back to
+    // the source gradient id whose flattened paint it matches (see
+    // `GradientCollector::id_override`), gated on the verbatim def
+    // actually being captured so the substituted reference resolves.
+    let grad_orig_by_fp: HashMap<&str, &str> = extras
+        .gradient_refs
+        .iter()
+        .map(|b| (b.fingerprint.as_str(), b.ref_id.as_str()))
+        .collect();
+    let grad_entry_ids: Vec<(String, String)> = gradients
+        .entries
+        .iter()
+        .filter_map(|(synth_id, paint)| {
+            let fp = paint_fingerprint(paint)?;
+            grad_orig_by_fp
+                .get(fp.as_str())
+                .filter(|orig| extras_gradient_ids.contains(**orig))
+                .map(|orig| (synth_id.clone(), orig.to_string()))
+        })
+        .collect();
+    for (synth, orig) in grad_entry_ids {
+        gradients.id_override.insert(synth, orig);
+    }
 
     let has_defs = !gradients.entries.is_empty()
         || !clips.entries.is_empty()
@@ -555,6 +578,13 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
         for (id, paint) in &gradients.entries {
             if extras_gradient_ids.contains(id.as_str()) {
                 // Already emitted verbatim above — don't duplicate.
+                continue;
+            }
+            // Round 449 — bound to a verbatim source gradient def?
+            // The reference attribute already substitutes the source
+            // id via `GradientCollector::lookup`, and the verbatim def
+            // was emitted above, so the synthesised twin is skipped.
+            if gradients.id_override.contains_key(id.as_str()) {
                 continue;
             }
             write_gradient(&mut out, id, paint);
@@ -1234,27 +1264,29 @@ fn write_node(
                 }
                 return;
             }
-            // Round 115 — open the wrapping `<a>` element if this group
-            // came from an `<a>` in the source. The hyperlink attributes
-            // ride on the `<a>`; the group's own transform / opacity /
-            // clip stay on the inner `<g>` so the visual nesting is
-            // identical to the source.
-            let a_indent = if let Some(link) = link_here {
-                out.push_str(&indent);
-                out.push_str("<a");
-                write_link_attrs(out, link);
-                out.push_str(">\n");
-                "  ".repeat(depth + 1)
+            // Round 115 / round 449 — a group that came from an `<a>`
+            // in the source emits AS the `<a>` element itself: the
+            // hyperlink attributes and the group's own transform /
+            // opacity / clip all ride the one container (`<a>` is a
+            // container element per SVG 2 §16.5 and accepts them all).
+            // The former `<a><g …>` double structure re-parsed into a
+            // link group *containing* a plain group, so every
+            // parse → write cycle nested one more `<g>` and the write
+            // side never reached a fixed point.
+            let a_indent = indent.clone();
+            let g_depth = depth;
+            let close_tag = if link_here.is_some() {
+                "</a>\n"
             } else {
-                indent.clone()
-            };
-            let g_depth = if link_here.is_some() {
-                depth + 1
-            } else {
-                depth
+                "</g>\n"
             };
             out.push_str(&a_indent);
-            out.push_str("<g");
+            if let Some(link) = link_here {
+                out.push_str("<a");
+                write_link_attrs(out, link);
+            } else {
+                out.push_str("<g");
+            }
             if let Some(id) = id_here {
                 out.push_str(&format!(" id=\"{}\"", escape_attr(id)));
             }
@@ -1417,12 +1449,7 @@ fn write_node(
                 write_raw_element(out, anim, g_depth + 1);
             }
             out.push_str(&a_indent);
-            out.push_str("</g>\n");
-            // Round 115 — close the wrapping `<a>`.
-            if link_here.is_some() {
-                out.push_str(&indent);
-                out.push_str("</a>\n");
-            }
+            out.push_str(close_tag);
         }
         Node::Path(p) => {
             // Round 449 — SVG 2 §9.2–§9.7 native shape identity: when
@@ -1453,7 +1480,24 @@ fn write_node(
                 write_path_d(out, &p.path.commands);
                 out.push('"');
             }
-            write_paint_attrs(out, p, gradients);
+            // Round 449 — when the author's `pathLength` is re-emitted
+            // below, divide the decode-time §9.6.1 dash rescale back
+            // out so the emitted `stroke-dasharray` /
+            // `stroke-dashoffset` are the author-unit values (a
+            // re-parse re-applies the same ratio and lands on the
+            // identical rendered pattern instead of compounding it).
+            let dash_unscale = match path_length_here {
+                Some(pl) if pl > 0.0 => {
+                    let geo = crate::path_length::compute_path_length(&p.path);
+                    if geo > 0.0 {
+                        pl / geo
+                    } else {
+                        1.0
+                    }
+                }
+                _ => 1.0,
+            };
+            write_paint_attrs(out, p, gradients, dash_unscale);
             // Round 21 — re-emit the author's `pathLength` (SVG 2 §9.6.1).
             if let Some(pl) = path_length_here {
                 out.push_str(&format!(" pathLength=\"{}\"", trim_float(pl)));
@@ -1603,25 +1647,81 @@ fn write_node(
                     escape_attr(&id)
                 ));
             }
-            // The masked content's scene-graph position is unchanged
-            // (SoftMask is a wrapper that doesn't add to the path
-            // index space). Don't push an extra index — the inner
-            // node sits at the same path as the SoftMask itself.
-            write_node(
-                out,
-                content,
-                depth + 1,
-                gradients,
-                clips,
-                masks,
-                idx,
-                path_stack,
-            );
-            // Round 449 — id-keyed inline animations are NOT emitted
-            // here: the wrapped content sits at the same scene-graph
-            // path as the SoftMask wrapper, so its own `Node::Group` /
-            // `Node::Path` arm performs the emission; emitting in both
-            // arms duplicated the animation.
+            // Round 449 — a *plain* wrapped `Group` (identity
+            // transform, full opacity, no clip, no cache key, no
+            // group-level carriers at this slot) merges into the mask
+            // wrapper: its children emit directly under the
+            // `<g mask="url(#…)">`. This is exactly the structure a
+            // re-parse of the encoder's own output produces
+            // (`<g mask=…>` → mask-wrapper around a plain group), and
+            // without the merge every parse → write cycle nested one
+            // more `<g>`, so the write side never reached a fixed
+            // point.
+            let plain_group: Option<&Group> = match &**content {
+                Node::Group(cg)
+                    if cg.transform.is_identity()
+                        && (cg.opacity - 1.0).abs() <= f32::EPSILON
+                        && cg.clip.is_none()
+                        && cg.cache_key.is_none()
+                        && link_here.is_none()
+                        && filter_ref_here.is_none()
+                        && marker_here.is_none()
+                        && paint_order_here.is_none()
+                        && vector_effect_here.is_none()
+                        && shape_rendering_here.is_none()
+                        && text_rendering_here.is_none()
+                        && color_rendering_here.is_none()
+                        && color_interpolation_here.is_none()
+                        && overflow_here.is_none()
+                        && pointer_events_here.is_none()
+                        && cursor_here.is_none()
+                        && dominant_baseline_here.is_none() =>
+                {
+                    Some(cg)
+                }
+                _ => None,
+            };
+            if let Some(cg) = plain_group {
+                // SVG 2 §5.8 descriptive children recorded against
+                // this slot ride the merged wrapper.
+                if let Some(b) = parent_to_titles.get(path_stack.as_slice()) {
+                    for item in &b.items {
+                        write_descriptive(out, "title", item, depth + 1);
+                    }
+                }
+                if let Some(b) = parent_to_descs.get(path_stack.as_slice()) {
+                    for item in &b.items {
+                        write_descriptive(out, "desc", item, depth + 1);
+                    }
+                }
+                write_group_children(out, cg, depth + 1, gradients, clips, masks, idx, path_stack);
+                for anim in inline_anims {
+                    write_raw_element(out, &anim.element, depth + 1);
+                }
+                for anim in path_anims {
+                    write_raw_element(out, anim, depth + 1);
+                }
+            } else {
+                // The masked content's scene-graph position is
+                // unchanged (SoftMask is a wrapper that doesn't add to
+                // the path index space). Don't push an extra index —
+                // the inner node sits at the same path as the SoftMask
+                // itself. Id-keyed inline animations are NOT emitted on
+                // this branch: the wrapped content shares the wrapper's
+                // path and its own `Node::Group` / `Node::Path` arm
+                // performs the emission; emitting in both arms
+                // duplicated the animation.
+                write_node(
+                    out,
+                    content,
+                    depth + 1,
+                    gradients,
+                    clips,
+                    masks,
+                    idx,
+                    path_stack,
+                );
+            }
             out.push_str(&indent);
             out.push_str("</g>\n");
         }
@@ -1635,7 +1735,21 @@ fn write_node(
     }
 }
 
-fn write_paint_attrs(out: &mut String, node: &PathNode, gradients: &GradientCollector) {
+/// Round 449 — paint-attribute emission with a dash un-scale factor.
+/// The decoder multiplies `stroke-dasharray` / `stroke-dashoffset` by
+/// `geometric_length / pathLength` at parse time (SVG 2 §9.6.1) so
+/// rasterisers that only know user units paint the correct pattern.
+/// When the encoder also re-emits the author's `pathLength=`, the dash
+/// values must be divided back to author units — otherwise every
+/// parse → write cycle re-applies the ratio and the dash pattern
+/// drifts multiplicatively (the round-trip never reaches a fixed
+/// point).
+fn write_paint_attrs(
+    out: &mut String,
+    node: &PathNode,
+    gradients: &GradientCollector,
+    dash_scale: f32,
+) {
     match &node.fill {
         Some(p) => out.push_str(&format!(" fill=\"{}\"", paint_to_attr(p, gradients))),
         None => out.push_str(" fill=\"none\""),
@@ -1664,7 +1778,15 @@ fn write_paint_attrs(out: &mut String, node: &PathNode, gradients: &GradientColl
             ));
         }
         if let Some(dash) = &stroke.dash {
-            write_dash(out, dash);
+            if (dash_scale - 1.0).abs() > f32::EPSILON {
+                let scaled = DashPattern {
+                    array: dash.array.iter().map(|n| n * dash_scale).collect(),
+                    offset: dash.offset * dash_scale,
+                };
+                write_dash(out, &scaled);
+            } else {
+                write_dash(out, dash);
+            }
         }
     }
     if node.fill_rule == FillRule::EvenOdd {
@@ -1834,6 +1956,17 @@ struct GradientCollector {
     /// assigned. Round 1 dedupes by structural equality so a
     /// gradient referenced twice serialises once.
     by_fingerprint: HashMap<String, String>,
+    /// Round 449 — synth-id → original-gradient-id overrides. When a
+    /// flattened scene-walk gradient's fingerprint matches the paint a
+    /// verbatim-captured source `<linearGradient id="…">` /
+    /// `<radialGradient id="…">` flattens to, the encoder re-emits the
+    /// source id in the `fill=` / `stroke=` reference and skips the
+    /// synthesised def — before this override the output carried BOTH
+    /// the orphaned verbatim def and a synthesised `grad{N}` twin, and
+    /// the shape referenced the twin (the reference identity and the
+    /// author's `gradientUnits` / `href` chain were disconnected from
+    /// the rendering).
+    id_override: HashMap<String, String>,
 }
 
 impl GradientCollector {
@@ -1857,7 +1990,22 @@ impl GradientCollector {
             Paint::RadialGradient(g) => radial_fingerprint(g),
             _ => return None,
         };
-        self.by_fingerprint.get(&fp).map(String::as_str)
+        self.by_fingerprint
+            .get(&fp)
+            .map(|synth| self.id_override.get(synth).unwrap_or(synth).as_str())
+    }
+}
+
+/// Round 449 — the structural fingerprint of a gradient [`Paint`]
+/// (`None` for non-gradient paints). Exposed crate-internally so the
+/// decoder can key each source gradient id by the paint its definition
+/// flattens to; the encoder then substitutes the source id for the
+/// synthesised `grad{N}` (see `GradientCollector::id_override`).
+pub(crate) fn paint_fingerprint(paint: &Paint) -> Option<String> {
+    match paint {
+        Paint::LinearGradient(g) => Some(linear_fingerprint(g)),
+        Paint::RadialGradient(g) => Some(radial_fingerprint(g)),
+        _ => None,
     }
 }
 

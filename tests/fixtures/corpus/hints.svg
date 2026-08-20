@@ -1,0 +1,7 @@
+<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120">
+  <g color-rendering="optimizeQuality" shape-rendering="crispEdges" text-rendering="optimizeLegibility" image-rendering="optimizeSpeed" color-interpolation="linearRGB" pointer-events="none" cursor="pointer" overflow="hidden">
+    <rect x="4" y="4" width="30" height="30" fill="#204060" paint-order="stroke" vector-effect="non-scaling-stroke" stroke="#111"/>
+  </g>
+  <rect x="50" y="4" width="30" height="30" fill="#803020" pointer-events="visibleFill"/>
+</svg>

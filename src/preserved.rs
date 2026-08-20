@@ -525,6 +525,20 @@ pub struct PreservedExtras {
     /// identically on re-parse because the viewport attributes and any
     /// `<style>` sheet round-trip alongside.
     pub shapes: Vec<ShapeBinding>,
+    /// Round 449 — (flattened-paint fingerprint → source gradient id)
+    /// bindings. The decoder resolves `fill="url(#id)"` /
+    /// `stroke="url(#id)"` through the §14.1.1 template chain into a
+    /// flattened legacy `Paint`, and the encoder's scene walk used to
+    /// synthesise a fresh `grad{N}` def for that paint — while the
+    /// author's verbatim `<linearGradient id>` / `<radialGradient id>`
+    /// (carried on [`Self::gradients`]) sat orphaned in the output and
+    /// the shape referenced the synthetic twin. Keyed by the encoder's
+    /// gradient dedup fingerprint (same routing design as the
+    /// round-372 [`Self::clip_refs`] / [`Self::mask_refs`]); on write
+    /// the reference attribute substitutes the source id and the
+    /// synthesised twin def is skipped. Populated only by
+    /// [`crate::decoder::parse_svg_with_extras`].
+    pub gradient_refs: Vec<RefBinding>,
 }
 
 /// Round 372 — one (scene-graph tree-path, `marker-*` references) entry
@@ -784,6 +798,7 @@ impl PreservedExtras {
             && self.texts.is_empty()
             && self.anim_targets.is_empty()
             && self.shapes.is_empty()
+            && self.gradient_refs.is_empty()
     }
 }
 

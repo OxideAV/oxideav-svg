@@ -1,0 +1,7 @@
+<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120">
+  <rect x="4" y="4" width="20" height="20" fill="#204060"><animate attributeName="x" values="4;40;4" keyTimes="0;0.5;1" calcMode="spline" keySplines="0.4 0 0.6 1;0.4 0 0.6 1" dur="3s" repeatCount="indefinite"/></rect>
+  <circle cx="60" cy="20" r="8" fill="#803020"><set attributeName="r" to="12" begin="1s"/></circle>
+  <g id="spinner" transform="translate(60 60)"><rect x="-10" y="-10" width="20" height="20" fill="#404080"/><animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="4s" additive="sum"/></g>
+  <rect x="90" y="90" width="10" height="10" fill="#602020"><animateMotion dur="2s" path="M0 0 L20 20"/></rect>
+</svg>

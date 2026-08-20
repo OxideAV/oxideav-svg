@@ -1,0 +1,7 @@
+<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="120">
+  <defs><path id="curve" d="M10 100 C 60 20, 120 20, 170 100"/></defs>
+  <text x="10 14" y="20" dx="0 1 2" dy="0 -1" rotate="0 10 20" font-family="serif" font-size="14" fill="#204060" textLength="120" lengthAdjust="spacingAndGlyphs">Mixed <tspan dx="2" fill="#803020">runs</tspan> tail</text>
+  <text text-anchor="middle" dominant-baseline="hanging" x="120" y="40">anchored</text>
+  <text><textPath href="#curve" startOffset="25%">on a curve</textPath></text>
+</svg>

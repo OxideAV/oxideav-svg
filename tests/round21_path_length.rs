@@ -174,22 +174,27 @@ fn pathlength_round_trip_via_extras() {
         "encoder must re-emit pathLength: {out}"
     );
 
-    // Re-parsing the encoder output must recover the same scaled
-    // dashes — the round-trip is idempotent.
+    // Round 449 — re-parsing the encoder output must recover the SAME
+    // scaled dashes as the first parse: the encoder divides the §9.6.1
+    // decode-time rescale back out before writing (the emitted
+    // `stroke-dasharray` is the author-unit value, so the re-parse
+    // re-applies the identical `geometric / pathLength` ratio and
+    // lands on the same rendered pattern). Before this round the
+    // encoder emitted the *scaled* dash next to `pathLength=`, so
+    // every parse → write cycle compounded the ratio (20 → 10 → 5 →
+    // …) and the round-trip never reached a fixed point.
+    assert!(
+        out.contains("stroke-dasharray=\"20,10\""),
+        "encoder emits the author-unit dash next to pathLength: {out}"
+    );
     let frame2 = parse_svg(&bytes).unwrap();
     let stroke2 = first_path_stroke(&frame2).expect("must have a stroke");
     let dash2 = stroke2.dash.expect("dash survives");
-    // First pass scaled dasharray from (20,10) -> (10,5). Re-parsing
-    // the output (which carries pathLength=200 and the *scaled*
-    // dasharray of 10 5) re-applies the same 0.5 ratio. Result: 5
-    // 2.5. The encoder does NOT undo the scaling because the
-    // pre-scaled dash is what oxideav-core's `Stroke` carries — the
-    // re-emitted `pathLength=` is a metadata hint for downstream
-    // tooling, not a guarantee that the document is byte-identical.
-    // Round-21 documents this asymmetry openly.
+    // First parse scaled (20,10) -> (10,5); the re-parse of the
+    // emitted (20,10) + pathLength=200 lands on (10,5) again.
     assert!(
-        (dash2.array[0] - 5.0).abs() < 0.1,
-        "second pass dash[0] = {}",
+        (dash2.array[0] - 10.0).abs() < 0.1,
+        "second pass dash[0] = {} (must match the first parse)",
         dash2.array[0]
     );
 }

@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120">
+  <title>Corpus doc</title>
+  <desc lang="en">A link and descriptive metadata</desc>
+  <metadata><meta-item source="corpus"/></metadata>
+  <a href="https://example.invalid/x" target="_blank" rel="noopener"><rect x="4" y="4" width="30" height="30" fill="#204060"/></a>
+  <g><title>group title</title><circle cx="60" cy="20" r="10" fill="#803020"/></g>
+</svg>

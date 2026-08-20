@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120">
+  <style>
+    .warm { fill: #a04010; }
+    rect:first-of-type { stroke: #000; }
+    g > circle.warm { opacity: 0.5; }
+    @media (min-width: 100px) { .cold { fill: #1040a0; } }
+  </style>
+  <rect class="warm" x="4" y="4" width="30" height="30"/>
+  <g><circle class="warm" cx="60" cy="20" r="10"/></g>
+  <rect class="cold" x="4" y="44" width="30" height="30" style="stroke-width: 2"/>
+</svg>

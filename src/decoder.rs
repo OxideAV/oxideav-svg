@@ -150,6 +150,7 @@ pub fn parse_svg_with_extras(bytes: &[u8]) -> Result<(VectorFrame, PreservedExtr
         texts,
         anim_targets,
         shapes,
+        gradient_refs,
     ) = parse_svg_root(svg, 0.0, true, &[])?;
     extras.id_paths = id_paths;
     extras.path_lengths = path_lengths;
@@ -173,6 +174,7 @@ pub fn parse_svg_with_extras(bytes: &[u8]) -> Result<(VectorFrame, PreservedExtr
     extras.texts = texts;
     extras.anim_targets = anim_targets;
     extras.shapes = shapes;
+    extras.gradient_refs = gradient_refs;
     Ok((frame, extras))
 }
 
@@ -602,6 +604,7 @@ type SvgRootParse = (
     Vec<TextBinding>,
     Vec<AnimTargetBinding>,
     Vec<ShapeBinding>,
+    Vec<RefBinding>,
 );
 
 fn parse_svg_root(
@@ -697,8 +700,22 @@ fn parse_svg_root(
     // `<linearGradient id="a">`) resolves correctly.
     let mut gradient_paints: std::collections::HashMap<String, oxideav_core::Paint> =
         std::collections::HashMap::with_capacity(ctx.defs.gradients.len());
+    let mut gradient_refs: Vec<RefBinding> = Vec::new();
     for (id, def) in &ctx.defs.gradients {
-        gradient_paints.insert(id.clone(), flatten_gradient_to_paint(def, &ctx.defs));
+        let paint = flatten_gradient_to_paint(def, &ctx.defs);
+        // Round 449 — key the source gradient id by the flattened
+        // paint's structural fingerprint so the encoder can substitute
+        // the source id for its synthesised `grad{N}` twin on write
+        // (see `PreservedExtras::gradient_refs`).
+        if track_id_paths {
+            if let Some(fp) = crate::encoder::paint_fingerprint(&paint) {
+                gradient_refs.push(RefBinding {
+                    fingerprint: fp,
+                    ref_id: id.clone(),
+                });
+            }
+        }
+        gradient_paints.insert(id.clone(), paint);
     }
     for (id, paint) in gradient_paints {
         // Don't clobber a legacy `Paint` already in the table — the
@@ -798,6 +815,7 @@ fn parse_svg_root(
         ctx.texts,
         ctx.anim_targets,
         ctx.shapes,
+        gradient_refs,
     ))
 }
 

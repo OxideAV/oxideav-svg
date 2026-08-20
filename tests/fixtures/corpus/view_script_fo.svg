@@ -1,0 +1,7 @@
+<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120">
+  <view id="zoomed" viewBox="0 0 60 60" preserveAspectRatio="xMidYMid slice"/>
+  <script>var q = 1 &amp;&amp; 2; if (q &lt; 3) { q++; }</script>
+  <foreignObject x="4" y="4" width="60" height="30"><body xmlns="http://www.w3.org/1999/xhtml"><p>hi</p></body></foreignObject>
+  <rect x="4" y="60" width="30" height="30" fill="#204060"/>
+</svg>

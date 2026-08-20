@@ -4146,7 +4146,13 @@ fn parse_element_to_node_ctx_inner(
         "style" => None,
         // Round-2: <foreignObject> remains a graceful skip — the
         // contents are typically HTML / xhtml which is out of scope.
-        "foreignobject" => Some(Node::Group(Group::default())),
+        // Round 449 — no scene node either (was an empty placeholder
+        // `Group`): the element rides `PreservedExtras::foreign_objects`
+        // verbatim, and emitting a placeholder `<g></g>` alongside the
+        // verbatim re-emission made every parse → write cycle grow one
+        // empty group per `<foreignObject>`, so the write side never
+        // reached a fixed point.
+        "foreignobject" => None,
         // Round-3: animation tags don't render directly; their `t=0`
         // value has already been folded into the parent element's
         // attrs by `apply_animations_to_parent_attrs` (see

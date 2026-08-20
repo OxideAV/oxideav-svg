@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="80">
+  <defs>
+    <linearGradient id="base"><stop offset="0" stop-color="#ff0000"/><stop offset="1" stop-color="#0000ff" stop-opacity="0.5"/></linearGradient>
+    <linearGradient id="lg" href="#base" x1="0" y1="0" x2="1" y2="1" gradientUnits="objectBoundingBox" spreadMethod="reflect" gradientTransform="rotate(15)"/>
+    <radialGradient id="rg" cx="0.5" cy="0.5" r="0.6" fx="0.4" fy="0.4" spreadMethod="repeat"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#004400"/></radialGradient>
+  </defs>
+  <rect x="0" y="0" width="60" height="80" fill="url(#lg)"/>
+  <circle cx="90" cy="40" r="25" fill="url(#rg)"/>
+</svg>

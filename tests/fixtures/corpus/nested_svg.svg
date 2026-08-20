@@ -1,0 +1,7 @@
+<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 200 100" preserveAspectRatio="xMinYMid meet">
+  <svg x="10" y="10" width="80" height="80" viewBox="0 0 10 10" preserveAspectRatio="defer xMaxYMax slice">
+    <rect x="1" y="1" width="8" height="8" fill="#204060"/>
+  </svg>
+  <rect x="120" y="10" width="20%" height="50%" fill="#803020"/>
+</svg>

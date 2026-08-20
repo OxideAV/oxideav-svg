@@ -9,6 +9,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- round 449 — write-side conformance gate + four fixed-point defects it
+  flushed. New `tests/round449_write_conformance.rs` runs a
+  per-feature corpus (`tests/fixtures/corpus/*.svg` — 16 documents
+  covering shapes, gradients + template chain, pattern,
+  use/defs/symbol, switch, filter graph + href chain, clipPath/mask,
+  markers, text, all four SMIL animation elements, image, nested
+  `<svg>`, CSS + `@media`, §13.x hint carriers, `<a>` + descriptive
+  elements, view/script/foreignObject — plus the real-world
+  `icon-house.svg` and a `.svgz` write leg) through four invariants:
+  parse + re-parse succeed; the write reaches an *immediate byte fixed
+  point* (`write(parse(write(x))) == write(x)`); a 31-tag element
+  census (nothing lost, nothing duplicated); and extras-free scene
+  equivalence (`write_svg(parse_svg(src)) ==
+  write_svg(parse_svg(round_tripped))`). The gate exposed and this
+  round fixes:
+  * §9.6.1 dash-rescale compounding — the encoder emitted the
+    decode-time-scaled `stroke-dasharray` / `stroke-dashoffset` next to
+    the re-emitted `pathLength=`, so every parse → write cycle
+    re-applied the `geometric/pathLength` ratio and the dash pattern
+    drifted multiplicatively. The dash values are now divided back to
+    author units when `pathLength` is emitted (the round-21 test that
+    openly documented the compounding asymmetry is rewritten to pin
+    the stable behaviour).
+  * `<a>` wrapper growth — the encoder emitted `<a>` *plus* an inner
+    `<g>` for a hyperlink group; each re-parse nested one more `<g>`.
+    The group now emits AS the `<a>` element (SVG 2 §16.5 `<a>` is a
+    container and carries the transform / opacity / clip directly).
+  * `<g mask>` wrapper growth — re-parsing the encoder's own
+    `<g mask="url(#…)">` produced a SoftMask around a plain group,
+    which re-emitted as wrapper + inner `<g>`, growing every cycle. A
+    plain wrapped group (identity transform, full opacity, no clip, no
+    carriers) now merges into the mask wrapper.
+  * `<foreignObject>` placeholder accumulation — the element produced
+    an empty scene `Group` *and* rode the verbatim side-channel, so
+    each cycle added one empty `<g>`. It now produces no scene node.
+  * orphaned-gradient twin emission — a `fill="url(#id)"` referencing a
+    verbatim-captured gradient also produced a flattened synthesised
+    `grad{N}` def, and the shape referenced the twin while the author's
+    def (with its `gradientUnits` / `href` chain / `gradientTransform`)
+    sat orphaned. New `PreservedExtras::gradient_refs` keys each source
+    gradient id by its flattened paint's fingerprint (round-372
+    `clip_refs` / `mask_refs` design); the reference attribute now
+    substitutes the source id and the synthesised twin is skipped.
+
 - round 449 — native shape identity round-trip (SVG 2 §9.2–§9.7). The
   decoder flattens every basic shape into path commands, so the encoder
   emitted `<path d="…">` for a source `<rect>` / `<circle>` /

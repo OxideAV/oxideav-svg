@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120">
+  <defs>
+    <filter id="base" x="-20%" y="-20%" width="140%" height="140%" filterUnits="objectBoundingBox" primitiveUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="2" result="blur" edgeMode="duplicate"/>
+      <feOffset in="blur" dx="3" dy="3" result="off"/>
+      <feFlood flood-color="#000000" flood-opacity="0.5" result="fl"/>
+      <feComposite in="fl" in2="off" operator="in" result="sh"/>
+      <feMerge><feMergeNode in="sh"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="chained" href="#base" filterRes="64 64"/>
+  </defs>
+  <rect x="20" y="20" width="40" height="40" fill="#3050a0" filter="url(#base) url(#chained)"/>
+</svg>
