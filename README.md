@@ -29,14 +29,39 @@ the IR cannot model directly via a `PreservedExtras` side-channel.
 * **Shapes** — `<rect>` (incl. `rx`/`ry`), `<circle>`, `<ellipse>`,
   `<line>`, `<polyline>`, `<polygon>`, `<path>` (full `d` mini-language:
   M/m L/l H/h V/v C/c S/s Q/q T/t A/a Z/z, smooth-curve reflection),
-  plus the `pathLength` rescaling of dash patterns.
+  plus the `pathLength` rescaling of dash patterns. A
+  `parse_svg_with_extras → write_svg_with_extras` round-trip keeps each
+  basic shape's **native identity** (SVG 2 §9.2–§9.7): the encoder
+  re-emits `<rect x=… width=…>` / `<circle cx=…>` / … with the verbatim
+  geometry attributes instead of the flattened `<path d>`, so
+  attribute-targeting SMIL animations and `rect {}` type selectors
+  still resolve after a round-trip (the §13.8 stroke-first
+  `paint-order` split declines — its two single-purpose paths keep the
+  flattened form). The emitted `stroke-dasharray` / `stroke-dashoffset`
+  next to a re-emitted `pathLength=` are divided back to author units
+  so the §9.6.1 rescale is applied exactly once per parse.
 * **Paint servers** — `<linearGradient>` / `<radialGradient>` with
   `<stop>` children and `spreadMethod`, resolved via `fill="url(#id)"`.
+  A `parse_svg_with_extras → write_svg_with_extras` round-trip
+  preserves the **reference identity**: the author's verbatim gradient
+  def (original id, `gradientUnits`, `gradientTransform`, `href`
+  template chain) is re-emitted and the `fill=` / `stroke=` reference
+  re-points at the source id instead of a flattened synthesised
+  `grad{N}` twin.
 * **Text** — `<text>` / `<tspan>` (and `textPath` align-mode layout)
   rasterised vector-first through
   [`oxideav-scribe`](https://github.com/OxideAV/oxideav-scribe); the
   caller installs a font resolver once at startup. Gated behind the
-  default-on `text` feature.
+  default-on `text` feature. A
+  `parse_svg_with_extras → write_svg_with_extras` round-trip re-emits
+  the **verbatim `<text>` element** (SVG 2 §11.2) in place of the
+  flattened glyph outlines — string content, font selection properties,
+  the §11.2.2 `<tspan>` per-character positioning arrays
+  (`x`/`y`/`dx`/`dy`/`rotate`), `<textPath>` layout, and animation
+  children all survive byte-exactly through a
+  mixed-content-preserving serialiser (no synthetic indentation around
+  spans, so `xml:space="default"` collapsing cannot corrupt inter-span
+  whitespace).
 * **References** — `<use href="#id">` (SVG 2 `href` + SVG 1.1
   `xlink:href`), with cycle detection. The decoder flattens each `<use>`
   into the instantiated geometry for rendering, but a
@@ -133,7 +158,13 @@ the IR cannot model directly via a `PreservedExtras` side-channel.
   snapshotting via `parse_svg_at(bytes, t)` with the SMIL timing model
   (`begin` / `dur` / `repeatCount` / `keyTimes` / `values` /
   `from`/`to`/`by`, `calcMode` `discrete`/`linear`/`paced`/`spline`).
-  `parse_svg` snapshots first-paint at `t = 0`.
+  `parse_svg` snapshots first-paint at `t = 0`. On round-trip every
+  animation element is re-emitted **as a child of its direct XML
+  parent** (SMIL Animation §3.1 implicit targeting), keyed by
+  scene-graph path — id-less parents included — and a structural
+  suppression multiset guarantees each source animation appears exactly
+  once even when it also rides a verbatim side-channel tree (pattern /
+  defs target / `<text>` / `<switch>` / captured `<image>`).
 * **Conditional processing** — `<switch>` evaluates
   `requiredExtensions` / `systemLanguage` and renders the first passing
   child; a `parse_svg_with_extras → write_svg_with_extras` round-trip
@@ -177,6 +208,25 @@ the IR cannot model directly via a `PreservedExtras` side-channel.
   `cursor`, and `dominant-baseline` properties parse, cascade, and
   round-trip; their visual effect is consumed downstream by
   `oxideav-raster` / `oxideav-scribe`.
+
+## Round-trip conformance
+
+A write-side conformance gate
+(`tests/round449_write_conformance.rs`) runs a per-feature corpus
+(`tests/fixtures/corpus/*.svg` — shapes, gradients, pattern,
+use/defs/symbol, switch, filter chains, clip/mask, markers, text, all
+four SMIL animation elements, image, nested `<svg>`, CSS + `@media`,
+presentation-hint carriers, hyperlinks + descriptive elements,
+view/script/foreignObject, plus a real-world icon and a `.svgz` leg)
+through four invariants:
+
+1. parse and re-parse of the writer's output succeed;
+2. the write reaches an **immediate byte fixed point**
+   (`write(parse(write(x))) == write(x)`);
+3. an element **census** — occurrence counts for 31 semantically
+   countable tags survive exactly (nothing lost, nothing duplicated);
+4. **scene equivalence** — source and round-tripped documents flatten
+   to byte-identical extras-free scene serialisations.
 
 ## Compression
 
