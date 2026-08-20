@@ -188,8 +188,15 @@ the IR cannot model directly via a `PreservedExtras` side-channel.
   order, and the §6 child content (`<title>` / `<desc>` / `<metadata>`
   + animation elements) is re-emitted verbatim. Painting the decoded
   raster into vector space remains `oxideav-raster` work.
-* **Graceful handling** — `<foreignObject>` parses to an empty group;
-  unknown content survives the verbatim round-trip via `PreservedExtras`.
+* **Hidden content** — a renderable element carrying an inline
+  `display:none` (attribute or its own `style="…"` declaration; CSS 2.1
+  §9.2.4) builds no scene node but survives the
+  `parse_svg_with_extras → write_svg_with_extras` round-trip verbatim,
+  re-emitted at the tail of its parent container. Stylesheet-driven
+  `display:none` subtrees still drop (documented limitation).
+* **Graceful handling** — `<foreignObject>` contributes no scene node
+  (its verbatim capture rides `PreservedExtras`); unknown content
+  survives the verbatim round-trip via `PreservedExtras`.
 
 ## Styling
 
