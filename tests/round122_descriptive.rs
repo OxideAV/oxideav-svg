@@ -198,7 +198,8 @@ fn write_svg_with_extras_emits_root_title_first() {
     let s = String::from_utf8(bytes).unwrap();
     let title_pos = s.find("<title>").expect("title emitted");
     let desc_pos = s.find("<desc>").expect("desc emitted");
-    let rect_pos = s.find("<path").expect("rect emitted as <path>");
+    // Round 449 — the shape round-trips with its native identity.
+    let rect_pos = s.find("<rect").expect("rect emitted as <rect>");
     assert!(
         title_pos < desc_pos && desc_pos < rect_pos,
         "title precedes desc precedes rect: {title_pos} {desc_pos} {rect_pos}"
@@ -223,7 +224,8 @@ fn write_svg_with_extras_emits_group_title_inside_group() {
     let s = String::from_utf8(bytes).unwrap();
     let g_pos = s.find("<g>").expect("<g> emitted");
     let title_pos = s.find("<title>").expect("title emitted");
-    let rect_pos = s.find("<path").expect("rect emitted as <path>");
+    // Round 449 — the shape round-trips with its native identity.
+    let rect_pos = s.find("<rect").expect("rect emitted as <rect>");
     assert!(g_pos < title_pos);
     assert!(title_pos < rect_pos);
     assert!(s.contains("Inner title"));

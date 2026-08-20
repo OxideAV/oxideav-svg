@@ -60,6 +60,7 @@ struct EmitIndex<'a> {
     path_to_switch: HashMap<Vec<usize>, &'a crate::preserved::SwitchBinding>,
     path_to_text: HashMap<Vec<usize>, &'a crate::preserved::TextBinding>,
     anim_by_path: HashMap<Vec<usize>, &'a crate::preserved::AnimTargetBinding>,
+    path_to_shape: HashMap<Vec<usize>, &'a crate::preserved::ShapeBinding>,
     path_to_filter_ref: HashMap<Vec<usize>, &'a str>,
     path_to_marker: HashMap<Vec<usize>, &'a crate::preserved::MarkerRefBinding>,
     parent_to_titles: HashMap<Vec<usize>, &'a DescriptiveBinding>,
@@ -268,6 +269,15 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
     for entry in &extras.anim_targets {
         anim_by_path.insert(entry.path.clone(), entry);
     }
+    // Round 449 — index the native-shape-identity bindings (SVG 2
+    // §9.2–§9.7) by the inner geometry node's tree-path so the
+    // `Node::Path` arm emits the source `<rect>` / `<circle>` / … tag
+    // with the verbatim geometry attributes instead of the flattened
+    // `<path d="…">`.
+    let mut path_to_shape: HashMap<Vec<usize>, &crate::preserved::ShapeBinding> = HashMap::new();
+    for entry in &extras.shapes {
+        path_to_shape.insert(entry.path.clone(), entry);
+    }
     // Round 449 — suppression multiset: every animation element that
     // already reaches the output through another channel. The XML-walk
     // capture on `extras.animations` records *every* animation in the
@@ -363,6 +373,7 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
         path_to_switch,
         path_to_text,
         anim_by_path,
+        path_to_shape,
         path_to_filter_ref,
         path_to_marker,
         parent_to_titles,
@@ -1002,6 +1013,7 @@ fn write_node(
         path_to_switch,
         path_to_text,
         anim_by_path,
+        path_to_shape,
         path_to_filter_ref,
         path_to_marker,
         parent_to_titles,
@@ -1413,17 +1425,34 @@ fn write_node(
             }
         }
         Node::Path(p) => {
-            // If we have inline animations for this path, emit it as
-            // `<path ...>...</path>` (with an explicit close so
-            // children fit). Otherwise self-close.
+            // Round 449 — SVG 2 §9.2–§9.7 native shape identity: when
+            // this geometry node carries a recorded shape binding, emit
+            // the source tag (`<rect>` / `<circle>` / …) with the
+            // verbatim geometry attributes instead of the flattened
+            // `<path d="…">`, so the element identity — and everything
+            // addressing it, like an inlined
+            // `<animate attributeName="x">` or a `rect {}` type
+            // selector — survives the round-trip.
+            let shape_here: Option<&crate::preserved::ShapeBinding> =
+                path_to_shape.get(path_stack.as_slice()).copied();
+            let tag: &str = shape_here.map(|s| s.tag.as_str()).unwrap_or("path");
+            // If we have inline animations for this shape, emit it with
+            // an explicit close so children fit. Otherwise self-close.
             out.push_str(&indent);
-            out.push_str("<path");
+            out.push('<');
+            out.push_str(tag);
             if let Some(id) = id_here {
                 out.push_str(&format!(" id=\"{}\"", escape_attr(id)));
             }
-            out.push_str(" d=\"");
-            write_path_d(out, &p.path.commands);
-            out.push('"');
+            if let Some(s) = shape_here {
+                for (k, v) in &s.attrs {
+                    out.push_str(&format!(" {}=\"{}\"", k, escape_attr(v)));
+                }
+            } else {
+                out.push_str(" d=\"");
+                write_path_d(out, &p.path.commands);
+                out.push('"');
+            }
             write_paint_attrs(out, p, gradients);
             // Round 21 — re-emit the author's `pathLength` (SVG 2 §9.6.1).
             if let Some(pl) = path_length_here {
@@ -1539,7 +1568,9 @@ fn write_node(
                     write_raw_element(out, anim, depth + 1);
                 }
                 out.push_str(&indent);
-                out.push_str("</path>\n");
+                out.push_str("</");
+                out.push_str(tag);
+                out.push_str(">\n");
             }
         }
         Node::SoftMask {

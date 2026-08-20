@@ -24,8 +24,8 @@ use crate::preserved::{
     ColorRenderingBinding, CursorBinding, DescriptiveBinding, DominantBaselineBinding,
     FilterRefBinding, IdScenePath, LinkBinding, MarkerRefBinding, OverflowBinding,
     PaintOrderBinding, PathLengthBinding, PointerEventsBinding, PreservedExtras, RefBinding,
-    ShapeRenderingBinding, SwitchBinding, TextBinding, TextRenderingBinding, UseBinding,
-    VectorEffectBinding,
+    ShapeBinding, ShapeRenderingBinding, SwitchBinding, TextBinding, TextRenderingBinding,
+    UseBinding, VectorEffectBinding,
 };
 
 /// Codec id string for SVG vector frames.
@@ -149,6 +149,7 @@ pub fn parse_svg_with_extras(bytes: &[u8]) -> Result<(VectorFrame, PreservedExtr
         marker_refs,
         texts,
         anim_targets,
+        shapes,
     ) = parse_svg_root(svg, 0.0, true, &[])?;
     extras.id_paths = id_paths;
     extras.path_lengths = path_lengths;
@@ -171,6 +172,7 @@ pub fn parse_svg_with_extras(bytes: &[u8]) -> Result<(VectorFrame, PreservedExtr
     extras.marker_refs = marker_refs;
     extras.texts = texts;
     extras.anim_targets = anim_targets;
+    extras.shapes = shapes;
     Ok((frame, extras))
 }
 
@@ -599,6 +601,7 @@ type SvgRootParse = (
     Vec<MarkerRefBinding>,
     Vec<TextBinding>,
     Vec<AnimTargetBinding>,
+    Vec<ShapeBinding>,
 );
 
 fn parse_svg_root(
@@ -794,6 +797,7 @@ fn parse_svg_root(
         ctx.marker_refs,
         ctx.texts,
         ctx.anim_targets,
+        ctx.shapes,
     ))
 }
 

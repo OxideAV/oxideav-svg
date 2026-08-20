@@ -2289,6 +2289,14 @@ pub struct ParseContext {
     /// animation keeps its direct XML parent — id-bearing or not — on
     /// round-trip.
     pub anim_targets: Vec<crate::preserved::AnimTargetBinding>,
+    /// Round 449 — collected `(scene_path, native shape identity)`
+    /// bindings (SVG 2 §9.2–§9.7). Populated only when the caller
+    /// opted in via [`crate::decoder::parse_svg_with_extras`] (same
+    /// gate as [`Self::track_id_paths`]). The encoder emits the
+    /// matching geometry node as the source `<rect>` / `<circle>` /
+    /// … tag with the verbatim geometry attributes instead of the
+    /// flattened `<path d="…">`.
+    pub shapes: Vec<crate::preserved::ShapeBinding>,
     /// Round 372 — collected `(scene_path, filter url-ref)` bindings
     /// (SVG 1.1 §15). Populated only when the caller opted in via
     /// [`crate::decoder::parse_svg_with_extras`] (same gate as
@@ -2356,6 +2364,7 @@ impl ParseContext {
             switches: Vec::new(),
             texts: Vec::new(),
             anim_targets: Vec::new(),
+            shapes: Vec::new(),
             filter_refs: Vec::new(),
             marker_refs: Vec::new(),
         }
@@ -4523,6 +4532,46 @@ fn parse_element_to_node_ctx_inner(
             ctx.current_path.truncate(save);
         }
     }
+    // Round 449 — SVG 2 §9.2–§9.7 native shape identity. The shape
+    // branch flattens every basic shape into path commands, so the
+    // encoder used to emit `<path d="…">` — geometrically identical but
+    // losing the element identity (an inlined
+    // `<animate attributeName="x">` re-attached to a `<path>` targets
+    // an attribute the element doesn't have; `rect { … }` type
+    // selectors stop matching on re-parse). Record the source tag +
+    // verbatim geometry attributes at the inner geometry node's slot
+    // (same slot as the §9.6.1 `pathLength` carrier) so the encoder
+    // emits the native tag instead. Only when the shape produced a
+    // single unambiguous geometry node — the §13.8 stroke-first
+    // `paint-order` split emits two single-purpose paths and keeps the
+    // flattened form. Skipped inside `<use>` instantiation (the
+    // collapsed instance never emits).
+    if ctx.track_id_paths && ctx.use_stack.is_empty() {
+        let local = tag_local(&el.name);
+        let geom_names: Option<&[&str]> = match local.as_str() {
+            "rect" => Some(&["x", "y", "width", "height", "rx", "ry"]),
+            "circle" => Some(&["cx", "cy", "r"]),
+            "ellipse" => Some(&["cx", "cy", "rx", "ry"]),
+            "line" => Some(&["x1", "y1", "x2", "y2"]),
+            "polyline" | "polygon" => Some(&["points"]),
+            _ => None,
+        };
+        if let Some(names) = geom_names {
+            if let Some(sub) = find_sole_path_subpath(&wrapped) {
+                let attrs: Vec<(String, String)> = names
+                    .iter()
+                    .filter_map(|n| attr(el, n).map(|v| (n.to_string(), v.to_string())))
+                    .collect();
+                let mut path = ctx.current_path.clone();
+                path.extend(sub);
+                ctx.shapes.push(crate::preserved::ShapeBinding {
+                    path,
+                    tag: local.to_string(),
+                    attrs,
+                });
+            }
+        }
+    }
     // Round 205 — drain the shape branch's pending `paint-order` (if
     // any) and record it. We target the **outer-most wrapping** the
     // shape produces — same emit site the round-13 `id_paths`
@@ -4975,6 +5024,30 @@ fn capture_dominant_baseline_attr(el: &Element) -> Option<String> {
     }
     let db = DominantBaseline::parse_keyword(trimmed)?;
     Some(db.as_canonical_str().to_string())
+}
+
+/// Round 449 — like [`find_inner_path_subpath`] but strict: descends
+/// only single-child wrappers and requires exactly one terminal
+/// geometry `Path`. The §13.8 stroke-first `paint-order` split (two
+/// single-purpose paths for one source shape) returns `None`, so the
+/// native-shape-identity carrier never binds an ambiguous emit site. A
+/// `SoftMask` wrapper shares its scene-graph slot with the masked
+/// content (the encoder pushes no extra index for it), so it is
+/// descended without extending the sub-path — the native shape then
+/// emits inside the wrapper's `<g mask="url(#…)">`.
+fn find_sole_path_subpath(node: &Node) -> Option<Vec<usize>> {
+    match node {
+        Node::Path(_) => Some(Vec::new()),
+        Node::Group(g) if g.children.len() == 1 => {
+            let inner = find_sole_path_subpath(&g.children[0])?;
+            let mut out = Vec::with_capacity(inner.len() + 1);
+            out.push(0);
+            out.extend(inner);
+            Some(out)
+        }
+        Node::SoftMask { content, .. } => find_sole_path_subpath(content),
+        _ => None,
+    }
 }
 
 /// Round 21 — return the child-index sub-path from `root` down to the

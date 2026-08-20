@@ -504,6 +504,27 @@ pub struct PreservedExtras {
     /// so each source animation is emitted exactly once. Populated only
     /// by [`crate::decoder::parse_svg_with_extras`].
     pub anim_targets: Vec<AnimTargetBinding>,
+    /// Round 449 — native shape identity, keyed by the scene-graph
+    /// tree-path of the inner geometry `Path` node the decoder built
+    /// for a basic shape (SVG 2 §9.2–§9.7 `<rect>` / `<circle>` /
+    /// `<ellipse>` / `<line>` / `<polyline>` / `<polygon>`). The
+    /// decoder flattens every basic shape into path commands, so the
+    /// encoder used to emit `<path d="…">` — geometrically identical
+    /// but losing the element identity, which broke every consumer
+    /// addressing the shape *as* a shape (an inlined
+    /// `<animate attributeName="x">` re-attached to a `<path>` targets
+    /// an attribute the element doesn't have; CSS `rect { … }` type
+    /// selectors stop matching). The binding carries the source tag
+    /// plus the verbatim geometry attributes; on write the encoder
+    /// emits the native tag with those attributes instead of the
+    /// flattened `d`. Populated only by
+    /// [`crate::decoder::parse_svg_with_extras`], and only when the
+    /// shape produced a single unambiguous geometry node (the §13.8
+    /// stroke-first `paint-order` split keeps the flattened-path
+    /// emission). Percentage / unit-bearing geometry re-resolves
+    /// identically on re-parse because the viewport attributes and any
+    /// `<style>` sheet round-trip alongside.
+    pub shapes: Vec<ShapeBinding>,
 }
 
 /// Round 372 — one (scene-graph tree-path, `marker-*` references) entry
@@ -560,6 +581,25 @@ pub struct FilterRefBinding {
     /// filter-list (SVG 2 chained references) round-trips unchanged even
     /// though the decoder only wraps a single pass-through group.
     pub filter: String,
+}
+
+/// Round 449 — one basic shape's native identity (SVG 2 §9.2–§9.7),
+/// keyed by the scene-graph tree-path of the inner geometry node. See
+/// [`PreservedExtras::shapes`].
+#[derive(Clone, Debug)]
+pub struct ShapeBinding {
+    /// Tree-path through the scene graph; matches the layout of
+    /// [`IdScenePath::path`]. Identifies the geometry `Path` node the
+    /// encoder emits as the native shape tag.
+    pub path: Vec<usize>,
+    /// The source tag local name (`rect` / `circle` / `ellipse` /
+    /// `line` / `polyline` / `polygon`).
+    pub tag: String,
+    /// The source geometry attributes, verbatim, in canonical
+    /// per-shape order (e.g. `x` / `y` / `width` / `height` /
+    /// `rx` / `ry` for `<rect>`). Absent attributes (spec defaults)
+    /// are omitted.
+    pub attrs: Vec<(String, String)>,
 }
 
 /// Round 449 — the SMIL animation-element children of one scene-graph
@@ -743,6 +783,7 @@ impl PreservedExtras {
             && self.marker_refs.is_empty()
             && self.texts.is_empty()
             && self.anim_targets.is_empty()
+            && self.shapes.is_empty()
     }
 }
 

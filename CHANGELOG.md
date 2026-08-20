@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- round 449 — native shape identity round-trip (SVG 2 §9.2–§9.7). The
+  decoder flattens every basic shape into path commands, so the encoder
+  emitted `<path d="…">` for a source `<rect>` / `<circle>` /
+  `<ellipse>` / `<line>` / `<polyline>` / `<polygon>` — geometrically
+  identical but losing the element identity, which broke every consumer
+  addressing the shape *as* a shape (an inlined
+  `<animate attributeName="x">` re-attached to a `<path>` targets an
+  attribute the element doesn't have; `rect { … }` type selectors stop
+  matching after a round-trip). New
+  `PreservedExtras::shapes: Vec<ShapeBinding>` records the source tag +
+  verbatim geometry attributes keyed by the inner geometry node's
+  scene-graph tree-path (the §9.6.1 `pathLength` slot); the encoder's
+  geometry arm emits the native tag with those attributes instead of
+  the flattened `d`, with every existing carrier (`pathLength`,
+  `marker-*`, §13.x hints, inline animations) riding the same element.
+  Percentage / unit-bearing geometry survives verbatim and re-resolves
+  identically because the viewport attributes and any `<style>` sheet
+  round-trip alongside. The carrier declines ambiguous emit sites: the
+  §13.8 stroke-first `paint-order` split (two single-purpose paths for
+  one source shape) keeps the flattened form, and `<use>`-instantiated
+  geometry is skipped (the instance collapses back to `<use>`). A
+  masked shape keeps its identity inside the `<g mask="url(#…)">`
+  wrapper (the strict sub-path resolver descends `SoftMask` content,
+  which shares the wrapper's tree-path). The extras-free `write_svg`
+  path is unchanged. New `tests/round449_shape_identity.rs` (10 tests);
+  the round-13 / round-122 locator assertions that pinned the old
+  `<path>` spelling are updated to the native tags.
+
 - round 449 — SMIL animation parent re-attachment by scene-graph path
   (SMIL Animation §3.1: an animation element with no explicit target
   attribute targets its direct XML parent). The round-13 routing keyed

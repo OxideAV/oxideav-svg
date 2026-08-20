@@ -18,12 +18,14 @@ fn animate_inlines_inside_parent_rect_with_id() {
     let (frame, extras) = parse_svg_with_extras(src).unwrap();
     let bytes = write_svg_with_extras(&frame, &extras);
     let s = std::str::from_utf8(&bytes).unwrap();
-    // The <animate> must appear between the opening <path id="r1" ...>
-    // and the closing </path> — i.e. inlined as a child, not at the
-    // trailing edge of the document.
+    // The <animate> must appear between the opening <rect id="r1" ...>
+    // and the closing </rect> — i.e. inlined as a child, not at the
+    // trailing edge of the document. (Round 449 — the shape
+    // round-trips with its native identity, so the emit site is a
+    // <rect>, which also keeps `attributeName="x"` targeting valid.)
     let path_open = s.find("id=\"r1\"").expect("id=\"r1\" missing");
     let animate = s.find("<animate").expect("<animate missing");
-    let path_close = s.find("</path>").expect("</path> missing");
+    let path_close = s.find("</rect>").expect("</rect> missing");
     assert!(
         path_open < animate && animate < path_close,
         "expected `<animate>` inside the id=\"r1\" element. Got:\n{s}"

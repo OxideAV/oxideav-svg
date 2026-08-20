@@ -145,7 +145,7 @@ fn multiple_texts_keep_document_order() {
 </svg>"##;
     let out = roundtrip(src);
     let p_first = out.find(">first</text>").expect("first text present");
-    let p_rect = out.find("<path").expect("rect (as path) present");
+    let p_rect = out.find("<rect").expect("rect present");
     let p_second = out.find(">second</text>").expect("second text present");
     assert!(
         p_first < p_rect && p_rect < p_second,

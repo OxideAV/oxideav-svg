@@ -43,8 +43,10 @@ fn idless_shape_animation_reattaches() {
 </svg>"##;
     let out = roundtrip(src);
     let p_anim = find_once(&out, "<animate");
-    let p_open = out.find("<path").expect("shape present");
-    let p_close = out.find("</path>").expect("shape closes to hold the child");
+    let p_open = out
+        .find("<rect")
+        .expect("shape present with native identity");
+    let p_close = out.find("</rect>").expect("shape closes to hold the child");
     assert!(
         p_open < p_anim && p_anim < p_close,
         "the animation sits inside its parent shape:\n{out}"
@@ -61,7 +63,9 @@ fn idless_set_reattaches() {
 </svg>"##;
     let out = roundtrip(src);
     let p_anim = find_once(&out, "<set");
-    let p_close = out.find("</path>").expect("shape closes to hold the child");
+    let p_close = out
+        .find("</circle>")
+        .expect("shape closes to hold the child");
     assert!(
         p_anim < p_close,
         "the set rides inside its parent shape:\n{out}"
@@ -77,8 +81,10 @@ fn deep_idless_animation_reattaches() {
 </svg>"##;
     let out = roundtrip(src);
     let p_anim = find_once(&out, "<animate");
-    let p_open = out.find("<path").expect("shape present");
-    let p_close = out.find("</path>").expect("shape closes");
+    let p_open = out
+        .find("<rect")
+        .expect("shape present with native identity");
+    let p_close = out.find("</rect>").expect("shape closes");
     assert!(
         p_open < p_anim && p_anim < p_close,
         "the animation sits inside the nested shape:\n{out}"
@@ -96,8 +102,10 @@ fn animation_targets_direct_parent_not_ancestor() {
 </svg>"##;
     let out = roundtrip(src);
     let p_anim = find_once(&out, "<animate");
-    let p_shape_open = out.find("<path").expect("shape present");
-    let p_shape_close = out.find("</path>").expect("shape closes");
+    let p_shape_open = out
+        .find("<rect")
+        .expect("shape present with native identity");
+    let p_shape_close = out.find("</rect>").expect("shape closes");
     assert!(
         p_shape_open < p_anim && p_anim < p_shape_close,
         "the animation is a child of the shape, not the id-bearing group:\n{out}"
@@ -113,7 +121,7 @@ fn id_bearing_parent_still_inlines_once() {
 </svg>"##;
     let out = roundtrip(src);
     let p_anim = find_once(&out, "<animate");
-    let p_close = out.find("</path>").expect("shape closes");
+    let p_close = out.find("</rect>").expect("shape closes");
     assert!(p_anim < p_close, "inlined inside the shape:\n{out}");
     assert!(out.contains("id=\"r1\""), "the id survives:\n{out}");
 }

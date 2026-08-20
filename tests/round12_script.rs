@@ -129,5 +129,11 @@ fn extras_is_empty_when_no_script_present() {
     </svg>"##;
     let (_frame, extras) = parse_svg_with_extras(src).expect("parse");
     assert!(extras.scripts.is_empty());
+    // Round 449 — a shape document is no longer extras-free (the
+    // native-shape-identity carrier records the rect), so the
+    // whole-struct emptiness check moves to a truly element-free
+    // document.
+    let empty = br##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"></svg>"##;
+    let (_frame, extras) = parse_svg_with_extras(empty).expect("parse");
     assert!(extras.is_empty());
 }
