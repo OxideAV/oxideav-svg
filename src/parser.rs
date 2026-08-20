@@ -11,7 +11,12 @@
 use oxideav_core::{Error, Result};
 
 /// One XML element parsed from the input.
-#[derive(Clone, Debug)]
+///
+/// Round 449 — `PartialEq` is structural (tag name + attrs in source
+/// order + children): the encoder uses it to match captured animation
+/// fragments against animation elements that already ride a verbatim
+/// side-channel tree, so each source animation is emitted exactly once.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Element {
     /// Original tag name as it appeared in the source (e.g. `svg`,
     /// `xlink:href`).
@@ -25,7 +30,7 @@ pub struct Element {
 }
 
 /// One node in the XML tree.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Node {
     Element(Element),
     Text(String),

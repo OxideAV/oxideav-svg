@@ -9,6 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- round 449 — SMIL animation parent re-attachment by scene-graph path
+  (SMIL Animation §3.1: an animation element with no explicit target
+  attribute targets its direct XML parent). The round-13 routing keyed
+  captured animations by the *nearest id-bearing ancestor*, which
+  (a) orphaned every animation whose parent chain is id-less — dumped
+  detached at the document's trailing edge, where the implicit parent
+  target becomes the root `<svg>` and the animation is semantically
+  lost — and (b) mis-parented an animation whose id-less parent sits
+  inside an id-bearing container. New
+  `PreservedExtras::anim_targets: Vec<AnimTargetBinding>` records each
+  element's direct animation children (verbatim, source order) keyed by
+  the element's scene-graph tree-path during the scene build; the
+  encoder re-emits them as children of the matching `<g>` / `<path>` /
+  `<use>`. A suppression multiset (structural `PartialEq` on the XML
+  `Element` tree, newly derived) cancels the XML-walk double-capture:
+  fragments equal to a path-routed animation OR to an animation riding
+  a verbatim side-channel tree (`<text>` / `<switch>` / `<defs>`
+  target / `<filter>` / `<pattern>` / `<marker>` / gradient / `<view>`
+  / `<foreignObject>` / `<metadata>` / captured `<image>` children) are
+  dropped from the id / orphan channels, fixing the latent
+  double-emission for animations housed in verbatim-preserved subtrees.
+  Recording is skipped inside `<use>` target instantiation (the
+  collapsed instance never emits and its boundary aliases the `<use>`'s
+  own slot). The `Node::SoftMask` arm no longer emits id-keyed inline
+  animations — the wrapped content shares the wrapper's tree-path and
+  its own arm performs the emission, so a masked id-bearing shape with
+  a captured animation emitted it twice. New
+  `tests/round449_anim_attach.rs` (12 tests): id-less shape / `<set>` /
+  deep nesting / group / `<use>` re-attachment, direct-parent (not
+  ancestor) targeting, id-bearing single emission, pattern and
+  defs-target single emission, `<animateMotion>`+`<mpath>` survival,
+  orphan fallback for uncarried parents, and write fixed-point
+  idempotence.
+
 - round 449 — `<text>` verbatim round-trip fidelity (SVG 2 §11.2). The
   decoder flattens `<text>` into resolver-shaped glyph outline paths
   (or an empty group when no font resolver is installed), so a

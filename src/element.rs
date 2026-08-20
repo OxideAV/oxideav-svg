@@ -2280,6 +2280,15 @@ pub struct ParseContext {
     /// flattened-glyph node with the verbatim `<text>` on round-trip,
     /// skipping the shaped outline children.
     pub texts: Vec<crate::preserved::TextBinding>,
+    /// Round 449 — collected `(scene_path, animation children)`
+    /// bindings (SMIL Animation §3.1 parent targeting). Populated only
+    /// when the caller opted in via
+    /// [`crate::decoder::parse_svg_with_extras`] (same gate as
+    /// [`Self::track_id_paths`]). The encoder re-emits each animation
+    /// element as a child of the node at the recorded path so an
+    /// animation keeps its direct XML parent — id-bearing or not — on
+    /// round-trip.
+    pub anim_targets: Vec<crate::preserved::AnimTargetBinding>,
     /// Round 372 — collected `(scene_path, filter url-ref)` bindings
     /// (SVG 1.1 §15). Populated only when the caller opted in via
     /// [`crate::decoder::parse_svg_with_extras`] (same gate as
@@ -2346,6 +2355,7 @@ impl ParseContext {
             uses: Vec::new(),
             switches: Vec::new(),
             texts: Vec::new(),
+            anim_targets: Vec::new(),
             filter_refs: Vec::new(),
             marker_refs: Vec::new(),
         }
@@ -2435,6 +2445,54 @@ impl ParseContext {
         self.texts.push(crate::preserved::TextBinding {
             path: self.current_path.clone(),
             element,
+        });
+    }
+
+    /// Round 449 — record the direct SMIL animation-element children of
+    /// `el` at the current scene-graph path (SMIL Animation §3.1: an
+    /// animation element with no explicit target attribute targets its
+    /// XML parent). Same [`Self::track_id_paths`] gate as the other
+    /// side-channel recorders. No-op when `el` has no animation
+    /// children. `<text>` and `<switch>` are excluded by the caller —
+    /// their verbatim carriers already re-emit the animation children
+    /// in place.
+    pub fn record_anim_targets(&mut self, el: &Element) {
+        if !self.track_id_paths {
+            return;
+        }
+        // Inside a `<use>` target instantiation the flattened instance
+        // subtree is never emitted (the encoder collapses it back to a
+        // single `<use href=…/>`), and the instance boundary shares the
+        // `<use>`'s own scene-graph slot — recording here would alias
+        // the reference target's animations onto the `<use>` element,
+        // duplicating the verbatim `<defs>`-target emission. The
+        // `<use>` element's own animation children are recorded after
+        // the instantiation completes (the stack is empty again by
+        // then).
+        if !self.use_stack.is_empty() {
+            return;
+        }
+        let anims: Vec<Element> = el
+            .children
+            .iter()
+            .filter_map(|c| match c {
+                crate::parser::Node::Element(e)
+                    if matches!(
+                        tag_local(&e.name).as_str(),
+                        "animate" | "set" | "animatetransform" | "animatemotion"
+                    ) =>
+                {
+                    Some(e.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        if anims.is_empty() {
+            return;
+        }
+        self.anim_targets.push(crate::preserved::AnimTargetBinding {
+            path: self.current_path.clone(),
+            anims,
         });
     }
 
@@ -4408,6 +4466,21 @@ fn parse_element_to_node_ctx_inner(
     // gains write-side fidelity.
     if tag_local(&el.name) == "text" {
         ctx.record_text(el.clone());
+    }
+    // Round 449 — SMIL Animation §3.1: record this element's direct
+    // animation-element children at the current scene-graph path so the
+    // encoder re-emits them as children of the matching node — keeping
+    // the parent-target relationship for id-less parents the round-13
+    // id-keyed routing orphaned (a detached `<animate>` at the trailing
+    // edge has no target). `<text>` / `<switch>` are skipped: their
+    // verbatim carriers already re-emit the animation children in
+    // place, and recording here too would double-count the fragment
+    // suppression the encoder performs.
+    {
+        let local = tag_local(&el.name);
+        if local != "text" && local != "switch" {
+            ctx.record_anim_targets(el);
+        }
     }
     // Round 372 — SVG 1.1 §15: record the `filter="url(#id)"` reference
     // at the current scene-graph path (the topmost emit site, which is

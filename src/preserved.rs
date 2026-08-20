@@ -488,6 +488,22 @@ pub struct PreservedExtras {
     /// the identical text layout. Populated only by
     /// [`crate::decoder::parse_svg_with_extras`].
     pub texts: Vec<TextBinding>,
+    /// Round 449 — SMIL animation elements keyed by the scene-graph
+    /// tree-path of their *direct parent* element. The round-13
+    /// `parent_id` routing on [`Self::animations`] only re-attaches an
+    /// animation when its nearest **id-bearing ancestor** survives as
+    /// an emit site, which (a) orphans every animation whose parent is
+    /// id-less (dumped detached at the trailing edge, where an
+    /// `<animate attributeName=…>` loses its SMIL target — the XML
+    /// parent — entirely) and (b) mis-parents an animation whose
+    /// id-less parent sits inside an id-bearing container. This channel
+    /// records the true parent slot during the scene-graph build; the
+    /// encoder re-emits each animation as a child of the node at that
+    /// path, and any [`Self::animations`] fragment structurally equal
+    /// to a path-routed (or verbatim-carried) animation is suppressed
+    /// so each source animation is emitted exactly once. Populated only
+    /// by [`crate::decoder::parse_svg_with_extras`].
+    pub anim_targets: Vec<AnimTargetBinding>,
 }
 
 /// Round 372 — one (scene-graph tree-path, `marker-*` references) entry
@@ -544,6 +560,24 @@ pub struct FilterRefBinding {
     /// filter-list (SVG 2 chained references) round-trips unchanged even
     /// though the decoder only wraps a single pass-through group.
     pub filter: String,
+}
+
+/// Round 449 — the SMIL animation-element children of one scene-graph
+/// node, keyed by the node's tree-path (the animations' direct XML
+/// parent — SMIL Animation §3.1: an animation element with no
+/// `targetElement` / `href` targets its parent). The encoder re-emits
+/// each element (verbatim, in source order) as a child of the node at
+/// `path`, restoring the parent-target relationship the round-13
+/// id-keyed routing could not express for id-less parents.
+#[derive(Clone, Debug)]
+pub struct AnimTargetBinding {
+    /// Tree-path through the scene graph; matches the layout of
+    /// [`IdScenePath::path`]. Identifies the emitted element that
+    /// receives the animations as children.
+    pub path: Vec<usize>,
+    /// The verbatim animation elements (`<animate>` / `<set>` /
+    /// `<animateTransform>` / `<animateMotion>`), in source order.
+    pub anims: Vec<Element>,
 }
 
 /// Round 449 — one captured `<text>` element, keyed by the scene-graph
@@ -708,6 +742,7 @@ impl PreservedExtras {
             && self.mask_refs.is_empty()
             && self.marker_refs.is_empty()
             && self.texts.is_empty()
+            && self.anim_targets.is_empty()
     }
 }
 

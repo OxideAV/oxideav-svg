@@ -59,6 +59,7 @@ struct EmitIndex<'a> {
     path_to_use: HashMap<Vec<usize>, &'a crate::preserved::UseBinding>,
     path_to_switch: HashMap<Vec<usize>, &'a crate::preserved::SwitchBinding>,
     path_to_text: HashMap<Vec<usize>, &'a crate::preserved::TextBinding>,
+    anim_by_path: HashMap<Vec<usize>, &'a crate::preserved::AnimTargetBinding>,
     path_to_filter_ref: HashMap<Vec<usize>, &'a str>,
     path_to_marker: HashMap<Vec<usize>, &'a crate::preserved::MarkerRefBinding>,
     parent_to_titles: HashMap<Vec<usize>, &'a DescriptiveBinding>,
@@ -258,6 +259,62 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
     for entry in &extras.descs {
         parent_to_descs.insert(entry.parent_path.clone(), entry);
     }
+    // Round 449 — index the path-keyed animation bindings (SMIL
+    // Animation §3.1 parent targeting) so `write_node` re-emits each
+    // animation as a child of its true direct parent, id-bearing or
+    // not.
+    let mut anim_by_path: HashMap<Vec<usize>, &crate::preserved::AnimTargetBinding> =
+        HashMap::new();
+    for entry in &extras.anim_targets {
+        anim_by_path.insert(entry.path.clone(), entry);
+    }
+    // Round 449 — suppression multiset: every animation element that
+    // already reaches the output through another channel. The XML-walk
+    // capture on `extras.animations` records *every* animation in the
+    // document, including ones that also ride (a) a path-keyed
+    // `anim_targets` binding, (b) a verbatim side-channel tree (a
+    // `<text>` / `<switch>` / `<defs>` target / `<filter>` /
+    // `<pattern>` / `<marker>` / gradient / `<view>` /
+    // `<foreignObject>` / `<metadata>` element emitted whole), or (c) a
+    // captured `<image>`'s child list. Routing those fragments through
+    // the round-13 id/orphan channels too would emit them twice, so
+    // each channel occurrence cancels one structurally-equal fragment
+    // (multiset semantics — duplicate source animations stay balanced).
+    let mut anim_suppress: Vec<&Element> = Vec::new();
+    for b in &extras.anim_targets {
+        for a in &b.anims {
+            anim_suppress.push(a);
+        }
+    }
+    for t in &extras.texts {
+        collect_anim_descendants(&t.element, &mut anim_suppress);
+    }
+    for sw in &extras.switches {
+        collect_anim_descendants(&sw.element, &mut anim_suppress);
+    }
+    for el in extras
+        .defs_targets
+        .iter()
+        .chain(&extras.filters)
+        .chain(&extras.patterns)
+        .chain(&extras.markers)
+        .chain(&extras.gradients)
+        .chain(&extras.views)
+        .chain(&extras.foreign_objects)
+        .chain(&extras.metadata)
+    {
+        collect_anim_descendants(el, &mut anim_suppress);
+    }
+    for img in &extras.images {
+        for child in &img.children {
+            if let XmlNode::Element(c) = child {
+                if is_animation_element(c) {
+                    anim_suppress.push(c);
+                }
+                collect_anim_descendants(c, &mut anim_suppress);
+            }
+        }
+    }
     let mut anim_by_parent: HashMap<String, Vec<&AnimationFragment>> = HashMap::new();
     let mut anim_orphan: Vec<&AnimationFragment> = Vec::new();
     // Set of ids that actually appear in id_paths — used to decide
@@ -268,7 +325,16 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
     for entry in &extras.id_paths {
         known_ids.insert(entry.id.as_str());
     }
-    for anim in &extras.animations {
+    'frag: for anim in &extras.animations {
+        // Round 449 — cancel one suppression entry per structurally
+        // equal fragment; what remains routes through the id / orphan
+        // channels below.
+        for i in 0..anim_suppress.len() {
+            if *anim_suppress[i] == anim.element {
+                anim_suppress.swap_remove(i);
+                continue 'frag;
+            }
+        }
         match &anim.parent_id {
             Some(pid) if known_ids.contains(pid.as_str()) => {
                 anim_by_parent.entry(pid.clone()).or_default().push(anim);
@@ -296,6 +362,7 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
         path_to_use,
         path_to_switch,
         path_to_text,
+        anim_by_path,
         path_to_filter_ref,
         path_to_marker,
         parent_to_titles,
@@ -776,6 +843,32 @@ fn write_inline_element(out: &mut String, el: &Element) {
     out.push('>');
 }
 
+/// Round 449 — is this element a SMIL animation element (`<animate>` /
+/// `<set>` / `<animateTransform>` / `<animateMotion>`)?
+fn is_animation_element(el: &Element) -> bool {
+    let name = el.name.rsplit(':').next().unwrap_or(&el.name);
+    name.eq_ignore_ascii_case("animate")
+        || name.eq_ignore_ascii_case("set")
+        || name.eq_ignore_ascii_case("animateTransform")
+        || name.eq_ignore_ascii_case("animateMotion")
+}
+
+/// Round 449 — push a borrow of every SMIL animation element in `el`'s
+/// subtree (excluding `el` itself) onto `out`. Used to build the
+/// suppression multiset that keeps animations riding a verbatim
+/// side-channel tree from also being emitted through the id / orphan
+/// channels.
+fn collect_anim_descendants<'e>(el: &'e Element, out: &mut Vec<&'e Element>) {
+    for child in &el.children {
+        if let XmlNode::Element(c) = child {
+            if is_animation_element(c) {
+                out.push(c);
+            }
+            collect_anim_descendants(c, out);
+        }
+    }
+}
+
 fn write_raw_element(out: &mut String, el: &Element, depth: usize) {
     let indent = "  ".repeat(depth);
     out.push_str(&indent);
@@ -908,6 +1001,7 @@ fn write_node(
         path_to_use,
         path_to_switch,
         path_to_text,
+        anim_by_path,
         path_to_filter_ref,
         path_to_marker,
         parent_to_titles,
@@ -1020,6 +1114,17 @@ fn write_node(
         .and_then(|id| anim_by_parent.get(id))
         .map(Vec::as_slice)
         .unwrap_or(&[]);
+    // Round 449 — animation children recorded against this node's
+    // scene-graph path (SMIL Animation §3.1 parent targeting). Emitted
+    // as children of the matching `<g>` / `<path>` / `<use>` so an
+    // animation keeps its direct XML parent regardless of whether that
+    // parent carries an id. Not emitted by the `Node::SoftMask` arm —
+    // the wrapped content shares the SoftMask's path and its own arm
+    // performs the emission, so emitting in both would duplicate.
+    let path_anims: &[Element] = anim_by_path
+        .get(path_stack.as_slice())
+        .map(|b| b.anims.as_slice())
+        .unwrap_or(&[]);
     // Round 449 — SVG 2 §11.2: this scene-graph position is a
     // flattened `<text>` element. Re-emit the verbatim source markup
     // (string content, font selection properties, `<tspan>`
@@ -1100,12 +1205,17 @@ fn write_node(
                 for (k, v) in &u.extra_attrs {
                     out.push_str(&format!(" {}=\"{}\"", k, escape_attr(v)));
                 }
-                if inline_anims.is_empty() {
+                if inline_anims.is_empty() && path_anims.is_empty() {
                     out.push_str("/>\n");
                 } else {
                     out.push_str(">\n");
                     for anim in inline_anims {
                         write_raw_element(out, &anim.element, depth + 1);
+                    }
+                    // Round 449 — animation children of the source
+                    // `<use>` itself, re-attached by scene-graph path.
+                    for anim in path_anims {
+                        write_raw_element(out, anim, depth + 1);
                     }
                     out.push_str(&indent);
                     out.push_str("</use>\n");
@@ -1288,6 +1398,12 @@ fn write_node(
             for anim in inline_anims {
                 write_raw_element(out, &anim.element, g_depth + 1);
             }
+            // Round 449 — animation children re-attached by scene-graph
+            // path (covers id-less groups the round-13 id routing
+            // orphaned).
+            for anim in path_anims {
+                write_raw_element(out, anim, g_depth + 1);
+            }
             out.push_str(&a_indent);
             out.push_str("</g>\n");
             // Round 115 — close the wrapping `<a>`.
@@ -1407,12 +1523,20 @@ fn write_node(
             if let Some(db) = dominant_baseline_here {
                 out.push_str(&format!(" dominant-baseline=\"{}\"", escape_attr(db)));
             }
-            if inline_anims.is_empty() {
+            if inline_anims.is_empty() && path_anims.is_empty() {
                 out.push_str("/>\n");
             } else {
                 out.push_str(">\n");
                 for anim in inline_anims {
                     write_raw_element(out, &anim.element, depth + 1);
+                }
+                // Round 449 — animation children re-attached by
+                // scene-graph path (covers id-less shapes the round-13
+                // id routing orphaned into detached trailing-edge
+                // emission, where an <animate attributeName=…> loses
+                // its SMIL parent target).
+                for anim in path_anims {
+                    write_raw_element(out, anim, depth + 1);
                 }
                 out.push_str(&indent);
                 out.push_str("</path>\n");
@@ -1462,9 +1586,11 @@ fn write_node(
                 idx,
                 path_stack,
             );
-            for anim in inline_anims {
-                write_raw_element(out, &anim.element, depth + 1);
-            }
+            // Round 449 — id-keyed inline animations are NOT emitted
+            // here: the wrapped content sits at the same scene-graph
+            // path as the SoftMask wrapper, so its own `Node::Group` /
+            // `Node::Path` arm performs the emission; emitting in both
+            // arms duplicated the animation.
             out.push_str(&indent);
             out.push_str("</g>\n");
         }

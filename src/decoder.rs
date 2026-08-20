@@ -20,11 +20,12 @@ use crate::parser::{
     Node as XmlNode,
 };
 use crate::preserved::{
-    AnimationFragment, ClipRuleBinding, ColorInterpolationBinding, ColorRenderingBinding,
-    CursorBinding, DescriptiveBinding, DominantBaselineBinding, FilterRefBinding, IdScenePath,
-    LinkBinding, MarkerRefBinding, OverflowBinding, PaintOrderBinding, PathLengthBinding,
-    PointerEventsBinding, PreservedExtras, RefBinding, ShapeRenderingBinding, SwitchBinding,
-    TextBinding, TextRenderingBinding, UseBinding, VectorEffectBinding,
+    AnimTargetBinding, AnimationFragment, ClipRuleBinding, ColorInterpolationBinding,
+    ColorRenderingBinding, CursorBinding, DescriptiveBinding, DominantBaselineBinding,
+    FilterRefBinding, IdScenePath, LinkBinding, MarkerRefBinding, OverflowBinding,
+    PaintOrderBinding, PathLengthBinding, PointerEventsBinding, PreservedExtras, RefBinding,
+    ShapeRenderingBinding, SwitchBinding, TextBinding, TextRenderingBinding, UseBinding,
+    VectorEffectBinding,
 };
 
 /// Codec id string for SVG vector frames.
@@ -147,6 +148,7 @@ pub fn parse_svg_with_extras(bytes: &[u8]) -> Result<(VectorFrame, PreservedExtr
         filter_refs,
         marker_refs,
         texts,
+        anim_targets,
     ) = parse_svg_root(svg, 0.0, true, &[])?;
     extras.id_paths = id_paths;
     extras.path_lengths = path_lengths;
@@ -168,6 +170,7 @@ pub fn parse_svg_with_extras(bytes: &[u8]) -> Result<(VectorFrame, PreservedExtr
     extras.filter_refs = filter_refs;
     extras.marker_refs = marker_refs;
     extras.texts = texts;
+    extras.anim_targets = anim_targets;
     Ok((frame, extras))
 }
 
@@ -595,6 +598,7 @@ type SvgRootParse = (
     Vec<FilterRefBinding>,
     Vec<MarkerRefBinding>,
     Vec<TextBinding>,
+    Vec<AnimTargetBinding>,
 );
 
 fn parse_svg_root(
@@ -789,6 +793,7 @@ fn parse_svg_root(
         ctx.filter_refs,
         ctx.marker_refs,
         ctx.texts,
+        ctx.anim_targets,
     ))
 }
 
