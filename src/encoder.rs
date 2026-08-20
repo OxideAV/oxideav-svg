@@ -34,6 +34,37 @@ pub fn write_svg(frame: &VectorFrame) -> Vec<u8> {
     write_svg_with_extras(frame, &PreservedExtras::default())
 }
 
+/// Round 449 — the read-only lookup tables threaded through the
+/// recursive scene-graph emission (`write_group_children` /
+/// `write_node`). Each map indexes a [`PreservedExtras`] side-channel
+/// by scene-graph tree-path (or by parent id for the round-13
+/// animation routing) exactly as the per-round build comments in
+/// [`write_svg_with_extras`] describe; bundling them in one struct
+/// keeps the recursion signature stable as side-channels accrue.
+#[derive(Default)]
+struct EmitIndex<'a> {
+    path_to_id: HashMap<Vec<usize>, String>,
+    path_to_path_length: HashMap<Vec<usize>, f32>,
+    path_to_link: HashMap<Vec<usize>, &'a LinkBinding>,
+    path_to_paint_order: HashMap<Vec<usize>, &'a str>,
+    path_to_vector_effect: HashMap<Vec<usize>, &'a str>,
+    path_to_shape_rendering: HashMap<Vec<usize>, &'a str>,
+    path_to_text_rendering: HashMap<Vec<usize>, &'a str>,
+    path_to_color_rendering: HashMap<Vec<usize>, &'a str>,
+    path_to_color_interpolation: HashMap<Vec<usize>, &'a str>,
+    path_to_overflow: HashMap<Vec<usize>, &'a str>,
+    path_to_pointer_events: HashMap<Vec<usize>, &'a str>,
+    path_to_cursor: HashMap<Vec<usize>, &'a str>,
+    path_to_dominant_baseline: HashMap<Vec<usize>, &'a str>,
+    path_to_use: HashMap<Vec<usize>, &'a crate::preserved::UseBinding>,
+    path_to_switch: HashMap<Vec<usize>, &'a crate::preserved::SwitchBinding>,
+    path_to_filter_ref: HashMap<Vec<usize>, &'a str>,
+    path_to_marker: HashMap<Vec<usize>, &'a crate::preserved::MarkerRefBinding>,
+    parent_to_titles: HashMap<Vec<usize>, &'a DescriptiveBinding>,
+    parent_to_descs: HashMap<Vec<usize>, &'a DescriptiveBinding>,
+    anim_by_parent: HashMap<String, Vec<&'a AnimationFragment>>,
+}
+
 /// Round 4 — serialise a [`VectorFrame`] *and* re-emit every preserved
 /// `<style>` / `<filter>` / `<animate>` / `<foreignObject>` fragment
 /// supplied in `extras`. Pair with
@@ -235,6 +266,31 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
             _ => anim_orphan.push(anim),
         }
     }
+
+    // Round 449 — bundle every per-path lookup table into the shared
+    // [`EmitIndex`] the recursive emission reads from.
+    let idx = EmitIndex {
+        path_to_id,
+        path_to_path_length,
+        path_to_link,
+        path_to_paint_order,
+        path_to_vector_effect,
+        path_to_shape_rendering,
+        path_to_text_rendering,
+        path_to_color_rendering,
+        path_to_color_interpolation,
+        path_to_overflow,
+        path_to_pointer_events,
+        path_to_cursor,
+        path_to_dominant_baseline,
+        path_to_use,
+        path_to_switch,
+        path_to_filter_ref,
+        path_to_marker,
+        parent_to_titles,
+        parent_to_descs,
+        anim_by_parent,
+    };
 
     let mut out = String::new();
     out.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
@@ -490,12 +546,12 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
     // element"). `<title>` is emitted before `<desc>` per the §5.8
     // example structure.
     let root_path: Vec<usize> = Vec::new();
-    if let Some(b) = parent_to_titles.get(&root_path) {
+    if let Some(b) = idx.parent_to_titles.get(&root_path) {
         for item in &b.items {
             write_descriptive(&mut out, "title", item, 1);
         }
     }
-    if let Some(b) = parent_to_descs.get(&root_path) {
+    if let Some(b) = idx.parent_to_descs.get(&root_path) {
         for item in &b.items {
             write_descriptive(&mut out, "desc", item, 1);
         }
@@ -509,26 +565,7 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
         &gradients,
         &clips,
         &masks,
-        &path_to_id,
-        &path_to_path_length,
-        &path_to_link,
-        &path_to_paint_order,
-        &path_to_vector_effect,
-        &path_to_shape_rendering,
-        &path_to_text_rendering,
-        &path_to_color_rendering,
-        &path_to_color_interpolation,
-        &path_to_overflow,
-        &path_to_pointer_events,
-        &path_to_cursor,
-        &path_to_dominant_baseline,
-        &path_to_use,
-        &path_to_switch,
-        &path_to_filter_ref,
-        &path_to_marker,
-        &parent_to_titles,
-        &parent_to_descs,
-        &anim_by_parent,
+        &idx,
         &mut path_stack,
     );
 
@@ -774,59 +811,12 @@ fn write_group_children(
     gradients: &GradientCollector,
     clips: &ClipPathCollector,
     masks: &MaskCollector,
-    path_to_id: &HashMap<Vec<usize>, String>,
-    path_to_path_length: &HashMap<Vec<usize>, f32>,
-    path_to_link: &HashMap<Vec<usize>, &LinkBinding>,
-    path_to_paint_order: &HashMap<Vec<usize>, &str>,
-    path_to_vector_effect: &HashMap<Vec<usize>, &str>,
-    path_to_shape_rendering: &HashMap<Vec<usize>, &str>,
-    path_to_text_rendering: &HashMap<Vec<usize>, &str>,
-    path_to_color_rendering: &HashMap<Vec<usize>, &str>,
-    path_to_color_interpolation: &HashMap<Vec<usize>, &str>,
-    path_to_overflow: &HashMap<Vec<usize>, &str>,
-    path_to_pointer_events: &HashMap<Vec<usize>, &str>,
-    path_to_cursor: &HashMap<Vec<usize>, &str>,
-    path_to_dominant_baseline: &HashMap<Vec<usize>, &str>,
-    path_to_use: &HashMap<Vec<usize>, &crate::preserved::UseBinding>,
-    path_to_switch: &HashMap<Vec<usize>, &crate::preserved::SwitchBinding>,
-    path_to_filter_ref: &HashMap<Vec<usize>, &str>,
-    path_to_marker: &HashMap<Vec<usize>, &crate::preserved::MarkerRefBinding>,
-    parent_to_titles: &HashMap<Vec<usize>, &DescriptiveBinding>,
-    parent_to_descs: &HashMap<Vec<usize>, &DescriptiveBinding>,
-    anim_by_parent: &HashMap<String, Vec<&AnimationFragment>>,
+    idx: &EmitIndex,
     path_stack: &mut Vec<usize>,
 ) {
     for (i, child) in group.children.iter().enumerate() {
         path_stack.push(i);
-        write_node(
-            out,
-            child,
-            depth,
-            gradients,
-            clips,
-            masks,
-            path_to_id,
-            path_to_path_length,
-            path_to_link,
-            path_to_paint_order,
-            path_to_vector_effect,
-            path_to_shape_rendering,
-            path_to_text_rendering,
-            path_to_color_rendering,
-            path_to_color_interpolation,
-            path_to_overflow,
-            path_to_pointer_events,
-            path_to_cursor,
-            path_to_dominant_baseline,
-            path_to_use,
-            path_to_switch,
-            path_to_filter_ref,
-            path_to_marker,
-            parent_to_titles,
-            parent_to_descs,
-            anim_by_parent,
-            path_stack,
-        );
+        write_node(out, child, depth, gradients, clips, masks, idx, path_stack);
         path_stack.pop();
     }
 }
@@ -839,28 +829,33 @@ fn write_node(
     gradients: &GradientCollector,
     clips: &ClipPathCollector,
     masks: &MaskCollector,
-    path_to_id: &HashMap<Vec<usize>, String>,
-    path_to_path_length: &HashMap<Vec<usize>, f32>,
-    path_to_link: &HashMap<Vec<usize>, &LinkBinding>,
-    path_to_paint_order: &HashMap<Vec<usize>, &str>,
-    path_to_vector_effect: &HashMap<Vec<usize>, &str>,
-    path_to_shape_rendering: &HashMap<Vec<usize>, &str>,
-    path_to_text_rendering: &HashMap<Vec<usize>, &str>,
-    path_to_color_rendering: &HashMap<Vec<usize>, &str>,
-    path_to_color_interpolation: &HashMap<Vec<usize>, &str>,
-    path_to_overflow: &HashMap<Vec<usize>, &str>,
-    path_to_pointer_events: &HashMap<Vec<usize>, &str>,
-    path_to_cursor: &HashMap<Vec<usize>, &str>,
-    path_to_dominant_baseline: &HashMap<Vec<usize>, &str>,
-    path_to_use: &HashMap<Vec<usize>, &crate::preserved::UseBinding>,
-    path_to_switch: &HashMap<Vec<usize>, &crate::preserved::SwitchBinding>,
-    path_to_filter_ref: &HashMap<Vec<usize>, &str>,
-    path_to_marker: &HashMap<Vec<usize>, &crate::preserved::MarkerRefBinding>,
-    parent_to_titles: &HashMap<Vec<usize>, &DescriptiveBinding>,
-    parent_to_descs: &HashMap<Vec<usize>, &DescriptiveBinding>,
-    anim_by_parent: &HashMap<String, Vec<&AnimationFragment>>,
+    idx: &EmitIndex,
     path_stack: &mut Vec<usize>,
 ) {
+    // Destructure the shared lookup index so the per-round emit logic
+    // below keeps addressing each table by its historical name.
+    let EmitIndex {
+        path_to_id,
+        path_to_path_length,
+        path_to_link,
+        path_to_paint_order,
+        path_to_vector_effect,
+        path_to_shape_rendering,
+        path_to_text_rendering,
+        path_to_color_rendering,
+        path_to_color_interpolation,
+        path_to_overflow,
+        path_to_pointer_events,
+        path_to_cursor,
+        path_to_dominant_baseline,
+        path_to_use,
+        path_to_switch,
+        path_to_filter_ref,
+        path_to_marker,
+        parent_to_titles,
+        parent_to_descs,
+        anim_by_parent,
+    } = idx;
     let indent = "  ".repeat(depth);
     // Round 372 — does this scene-graph position carry recorded
     // `marker-*` references (SVG 2 §13.7.4)? If so the `Node::Group` /
@@ -1209,26 +1204,7 @@ fn write_node(
                 gradients,
                 clips,
                 masks,
-                path_to_id,
-                path_to_path_length,
-                path_to_link,
-                path_to_paint_order,
-                path_to_vector_effect,
-                path_to_shape_rendering,
-                path_to_text_rendering,
-                path_to_color_rendering,
-                path_to_color_interpolation,
-                path_to_overflow,
-                path_to_pointer_events,
-                path_to_cursor,
-                path_to_dominant_baseline,
-                path_to_use,
-                path_to_switch,
-                path_to_filter_ref,
-                path_to_marker,
-                parent_to_titles,
-                parent_to_descs,
-                anim_by_parent,
+                idx,
                 path_stack,
             );
             // Round 13 — animation children come AFTER the group's
@@ -1410,26 +1386,7 @@ fn write_node(
                 gradients,
                 clips,
                 masks,
-                path_to_id,
-                path_to_path_length,
-                path_to_link,
-                path_to_paint_order,
-                path_to_vector_effect,
-                path_to_shape_rendering,
-                path_to_text_rendering,
-                path_to_color_rendering,
-                path_to_color_interpolation,
-                path_to_overflow,
-                path_to_pointer_events,
-                path_to_cursor,
-                path_to_dominant_baseline,
-                path_to_use,
-                path_to_switch,
-                path_to_filter_ref,
-                path_to_marker,
-                parent_to_titles,
-                parent_to_descs,
-                anim_by_parent,
+                idx,
                 path_stack,
             );
             for anim in inline_anims {
@@ -1973,28 +1930,7 @@ fn write_mask(
     // the live scene graph that animations attach to).
     let empty_clips = ClipPathCollector::default();
     let empty_masks = MaskCollector::default();
-    let empty_path_to_id: HashMap<Vec<usize>, String> = HashMap::new();
-    let empty_path_to_pl: HashMap<Vec<usize>, f32> = HashMap::new();
-    let empty_path_to_link: HashMap<Vec<usize>, &LinkBinding> = HashMap::new();
-    let empty_path_to_paint_order: HashMap<Vec<usize>, &str> = HashMap::new();
-    let empty_path_to_vector_effect: HashMap<Vec<usize>, &str> = HashMap::new();
-    let empty_path_to_shape_rendering: HashMap<Vec<usize>, &str> = HashMap::new();
-    let empty_path_to_text_rendering: HashMap<Vec<usize>, &str> = HashMap::new();
-    let empty_path_to_color_rendering: HashMap<Vec<usize>, &str> = HashMap::new();
-    let empty_path_to_color_interpolation: HashMap<Vec<usize>, &str> = HashMap::new();
-    let empty_path_to_overflow: HashMap<Vec<usize>, &str> = HashMap::new();
-    let empty_path_to_pointer_events: HashMap<Vec<usize>, &str> = HashMap::new();
-    let empty_path_to_cursor: HashMap<Vec<usize>, &str> = HashMap::new();
-    let empty_path_to_dominant_baseline: HashMap<Vec<usize>, &str> = HashMap::new();
-    let empty_path_to_use: HashMap<Vec<usize>, &crate::preserved::UseBinding> = HashMap::new();
-    let empty_path_to_switch: HashMap<Vec<usize>, &crate::preserved::SwitchBinding> =
-        HashMap::new();
-    let empty_path_to_filter_ref: HashMap<Vec<usize>, &str> = HashMap::new();
-    let empty_path_to_marker: HashMap<Vec<usize>, &crate::preserved::MarkerRefBinding> =
-        HashMap::new();
-    let empty_titles: HashMap<Vec<usize>, &DescriptiveBinding> = HashMap::new();
-    let empty_descs: HashMap<Vec<usize>, &DescriptiveBinding> = HashMap::new();
-    let empty_anims: HashMap<String, Vec<&AnimationFragment>> = HashMap::new();
+    let empty_idx = EmitIndex::default();
     let mut empty_stack: Vec<usize> = Vec::new();
     write_node(
         out,
@@ -2003,26 +1939,7 @@ fn write_mask(
         gradients,
         &empty_clips,
         &empty_masks,
-        &empty_path_to_id,
-        &empty_path_to_pl,
-        &empty_path_to_link,
-        &empty_path_to_paint_order,
-        &empty_path_to_vector_effect,
-        &empty_path_to_shape_rendering,
-        &empty_path_to_text_rendering,
-        &empty_path_to_color_rendering,
-        &empty_path_to_color_interpolation,
-        &empty_path_to_overflow,
-        &empty_path_to_pointer_events,
-        &empty_path_to_cursor,
-        &empty_path_to_dominant_baseline,
-        &empty_path_to_use,
-        &empty_path_to_switch,
-        &empty_path_to_filter_ref,
-        &empty_path_to_marker,
-        &empty_titles,
-        &empty_descs,
-        &empty_anims,
+        &empty_idx,
         &mut empty_stack,
     );
     out.push_str("    </mask>\n");
