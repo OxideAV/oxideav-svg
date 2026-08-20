@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- round 449 — `<text>` verbatim round-trip fidelity (SVG 2 §11.2). The
+  decoder flattens `<text>` into resolver-shaped glyph outline paths
+  (or an empty group when no font resolver is installed), so a
+  `parse → write` cycle dropped the source character data, the font
+  selection properties, the §11.2.2 `<tspan>` per-character positioning
+  arrays (`x` / `y` / `dx` / `dy` / `rotate`), and any §11.8
+  `<textPath>` layout. New `PreservedExtras::texts: Vec<TextBinding>`
+  captures each `<text>` element verbatim keyed by the scene-graph
+  tree-path of the node the decoder produced (same carrier design as
+  the round-372 `<switch>` binding); on write the encoder replaces the
+  flattened node with the source markup and skips the shaped glyph
+  children. Character data is serialised through a new
+  mixed-content-preserving inline writer (`write_mixed_content_element`)
+  — the pretty-printing verbatim serialiser trims text runs and inserts
+  indentation, which corrupts the §11.1 mixed content model under
+  `xml:space="default"` collapsing (lost inter-span spaces, synthetic
+  spaces between adjacent spans) — so the text subtree round-trips
+  byte-exactly with entities re-escaped. An `<animate>` child of an
+  id-bearing `<text>` rides the verbatim element exactly once. New
+  `tests/round449_text_roundtrip.rs` (10 tests): plain text, tspan
+  arrays + exact spacing, textPath + target def resolution, styling
+  attributes, animation single-emission, write fixed-point idempotence,
+  document order, nested placement, special-character re-escape, and a
+  no-text no-op guard.
+
+- round 449 — encoder emit-lookup refactor: the twenty per-path
+  side-channel lookup tables threaded through `write_group_children` /
+  `write_node` as individual parameters now ride a single `EmitIndex`
+  struct (pure refactor, no behavioural change), keeping the recursion
+  signature stable as write-side round-trip channels accrue.
+
 - round 375 — SVG 2 §5.5 `<symbol>` `x` / `y` geometry properties.
   "The x, y, width, and height geometry properties have the same effect
   as on an `svg` element, when the `symbol` is instantiated by a `use`

@@ -2273,6 +2273,13 @@ pub struct ParseContext {
     /// `<g>` (the selected branch) with the verbatim `<switch>` on
     /// round-trip, skipping the selected child.
     pub switches: Vec<crate::preserved::SwitchBinding>,
+    /// Round 449 — collected `(scene_path, verbatim <text>)` bindings
+    /// (SVG 2 §11.2). Populated only when the caller opted in via
+    /// [`crate::decoder::parse_svg_with_extras`] (same gate as
+    /// [`Self::track_id_paths`]). The encoder replaces the matching
+    /// flattened-glyph node with the verbatim `<text>` on round-trip,
+    /// skipping the shaped outline children.
+    pub texts: Vec<crate::preserved::TextBinding>,
     /// Round 372 — collected `(scene_path, filter url-ref)` bindings
     /// (SVG 1.1 §15). Populated only when the caller opted in via
     /// [`crate::decoder::parse_svg_with_extras`] (same gate as
@@ -2338,6 +2345,7 @@ impl ParseContext {
             pending_dominant_baseline: None,
             uses: Vec::new(),
             switches: Vec::new(),
+            texts: Vec::new(),
             filter_refs: Vec::new(),
             marker_refs: Vec::new(),
         }
@@ -2409,6 +2417,22 @@ impl ParseContext {
             return;
         }
         self.switches.push(crate::preserved::SwitchBinding {
+            path: self.current_path.clone(),
+            element,
+        });
+    }
+
+    /// Round 449 — record a `<text>` verbatim binding at the current
+    /// scene-graph path (SVG 2 §11.2). Same [`Self::track_id_paths`]
+    /// gate as the other side-channel recorders. The encoder replaces
+    /// the matching flattened-glyph node with the verbatim
+    /// `<text>…</text>` on round-trip, skipping the shaped outline
+    /// children.
+    pub fn record_text(&mut self, element: Element) {
+        if !self.track_id_paths {
+            return;
+        }
+        self.texts.push(crate::preserved::TextBinding {
             path: self.current_path.clone(),
             element,
         });
@@ -4373,6 +4397,17 @@ fn parse_element_to_node_ctx_inner(
     // render).
     if tag_local(&el.name) == "switch" {
         ctx.record_switch(el.clone());
+    }
+    // Round 449 — SVG 2 §11.2: record the verbatim `<text>` at the
+    // current scene-graph path so the encoder can replace the flattened
+    // glyph-outline node with the source text markup (string content,
+    // font properties, `<tspan>` positioning arrays, `<textPath>`,
+    // animation children) on round-trip. Only fires for a `<text>` that
+    // produced a node — the text branch always yields a group (empty
+    // when no font resolver is installed), so every parsed `<text>`
+    // gains write-side fidelity.
+    if tag_local(&el.name) == "text" {
+        ctx.record_text(el.clone());
     }
     // Round 372 — SVG 1.1 §15: record the `filter="url(#id)"` reference
     // at the current scene-graph path (the topmost emit site, which is

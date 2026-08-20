@@ -58,6 +58,7 @@ struct EmitIndex<'a> {
     path_to_dominant_baseline: HashMap<Vec<usize>, &'a str>,
     path_to_use: HashMap<Vec<usize>, &'a crate::preserved::UseBinding>,
     path_to_switch: HashMap<Vec<usize>, &'a crate::preserved::SwitchBinding>,
+    path_to_text: HashMap<Vec<usize>, &'a crate::preserved::TextBinding>,
     path_to_filter_ref: HashMap<Vec<usize>, &'a str>,
     path_to_marker: HashMap<Vec<usize>, &'a crate::preserved::MarkerRefBinding>,
     parent_to_titles: HashMap<Vec<usize>, &'a DescriptiveBinding>,
@@ -217,6 +218,15 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
     for entry in &extras.switches {
         path_to_switch.insert(entry.path.clone(), entry);
     }
+    // Round 449 — index `<text>` verbatim bindings (SVG 2 §11.2) by
+    // scene-graph tree-path so `write_node` can replace the matching
+    // flattened glyph-outline node with the source `<text>…</text>`
+    // (string content, font properties, `<tspan>` positioning arrays,
+    // `<textPath>`, animation children) on round-trip.
+    let mut path_to_text: HashMap<Vec<usize>, &crate::preserved::TextBinding> = HashMap::new();
+    for entry in &extras.texts {
+        path_to_text.insert(entry.path.clone(), entry);
+    }
     // Round 372 — index `filter="url(#id)"` reference bindings (SVG 1.1
     // §15) by scene-graph tree-path so `write_node`'s `Node::Group` arm
     // can re-emit `filter=` on the matching filter-wrapper `<g>`,
@@ -285,6 +295,7 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
         path_to_dominant_baseline,
         path_to_use,
         path_to_switch,
+        path_to_text,
         path_to_filter_ref,
         path_to_marker,
         parent_to_titles,
@@ -719,6 +730,52 @@ pub(crate) fn write_element_verbatim(out: &mut String, el: &Element, depth: usiz
     write_raw_element(out, el, depth);
 }
 
+/// Round 449 — serialise an [`Element`] whose subtree carries
+/// *mixed content* (character data interleaved with child elements —
+/// the `<text>` / `<tspan>` / `<textPath>` content model of SVG 2
+/// §11.1). [`write_raw_element`] pretty-prints: it trims each text run
+/// and inserts indentation/newline runs between children, which is
+/// safe for element-only content but corrupts text layout — a trimmed
+/// `"Hello "` before a `<tspan>` loses the inter-word break, adjacent
+/// spans gain synthetic whitespace, and a run following a close tag
+/// gains a leading space after `xml:space="default"` collapsing. This
+/// writer emits the element's entire content inline: character data
+/// escaped but otherwise byte-verbatim, child elements recursively
+/// inline with no inserted whitespace.
+fn write_mixed_content_element(out: &mut String, el: &Element, depth: usize) {
+    out.push_str(&"  ".repeat(depth));
+    write_inline_element(out, el);
+    out.push('\n');
+}
+
+/// Inline (no indentation, no inserted whitespace) serialisation of an
+/// element and its subtree. See [`write_mixed_content_element`].
+fn write_inline_element(out: &mut String, el: &Element) {
+    out.push('<');
+    out.push_str(&el.name);
+    for (k, v) in &el.attrs {
+        out.push(' ');
+        out.push_str(k);
+        out.push_str("=\"");
+        out.push_str(&escape_attr(v));
+        out.push('"');
+    }
+    if el.children.is_empty() {
+        out.push_str("/>");
+        return;
+    }
+    out.push('>');
+    for child in &el.children {
+        match child {
+            XmlNode::Element(c) => write_inline_element(out, c),
+            XmlNode::Text(t) => out.push_str(&escape_text(t)),
+        }
+    }
+    out.push_str("</");
+    out.push_str(&el.name);
+    out.push('>');
+}
+
 fn write_raw_element(out: &mut String, el: &Element, depth: usize) {
     let indent = "  ".repeat(depth);
     out.push_str(&indent);
@@ -850,6 +907,7 @@ fn write_node(
         path_to_dominant_baseline,
         path_to_use,
         path_to_switch,
+        path_to_text,
         path_to_filter_ref,
         path_to_marker,
         parent_to_titles,
@@ -962,6 +1020,21 @@ fn write_node(
         .and_then(|id| anim_by_parent.get(id))
         .map(Vec::as_slice)
         .unwrap_or(&[]);
+    // Round 449 — SVG 2 §11.2: this scene-graph position is a
+    // flattened `<text>` element. Re-emit the verbatim source markup
+    // (string content, font selection properties, `<tspan>`
+    // per-character positioning arrays, `<textPath>`, descriptive and
+    // animation children, and every styling / conditional attribute)
+    // and skip the shaped glyph-outline children entirely. Checked
+    // before the node-kind dispatch so the replacement applies whether
+    // the decoder produced a bare group, a filter-wrapper group, a
+    // `Node::SoftMask`, or a single path for the text — the verbatim
+    // element carries its own `clip-path=` / `mask=` / `filter=`
+    // attributes, so a re-parse rebuilds the identical wrappers.
+    if let Some(t) = path_to_text.get(path_stack.as_slice()) {
+        write_mixed_content_element(out, &t.element, depth);
+        return;
+    }
     match node {
         Node::Group(g) => {
             // Round 372 — SVG 2 §5.7: if this group is the selected

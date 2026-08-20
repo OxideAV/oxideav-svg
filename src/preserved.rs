@@ -473,6 +473,21 @@ pub struct PreservedExtras {
     /// etc. on the matching `<path>` / `<g>`. Populated only by
     /// [`crate::decoder::parse_svg_with_extras`].
     pub marker_refs: Vec<MarkerRefBinding>,
+    /// Round 449 — `<text>` elements captured verbatim, keyed by the
+    /// scene-graph tree-path of the node the decoder produced for the
+    /// text (SVG 2 §11.2). The decoder flattens `<text>` into
+    /// resolver-shaped glyph outline paths (or an empty group when no
+    /// font resolver is installed), which loses the source string, the
+    /// font selection properties, the `<tspan>` per-character
+    /// positioning arrays (`x` / `y` / `dx` / `dy` / `rotate`), and any
+    /// `<textPath>` layout — none of which `oxideav_core::Node` can
+    /// model. The verbatim element restores full write-side fidelity: a
+    /// `parse_svg_with_extras → write_svg_with_extras` round-trip
+    /// replaces the flattened node with the source `<text>…</text>`
+    /// (every attribute + child span verbatim), so a re-parse recovers
+    /// the identical text layout. Populated only by
+    /// [`crate::decoder::parse_svg_with_extras`].
+    pub texts: Vec<TextBinding>,
 }
 
 /// Round 372 — one (scene-graph tree-path, `marker-*` references) entry
@@ -529,6 +544,22 @@ pub struct FilterRefBinding {
     /// filter-list (SVG 2 chained references) round-trips unchanged even
     /// though the decoder only wraps a single pass-through group.
     pub filter: String,
+}
+
+/// Round 449 — one captured `<text>` element, keyed by the scene-graph
+/// tree-path of the node the decoder produced for it (SVG 2 §11.2).
+/// The element is captured whole (attributes + `<tspan>` /
+/// `<textPath>` / animation children + character data) so the
+/// round-trip re-emits the author's text markup instead of the
+/// flattened glyph geometry.
+#[derive(Clone, Debug)]
+pub struct TextBinding {
+    /// Tree-path through the scene graph; matches the layout of
+    /// [`IdScenePath::path`]. Identifies the node the encoder replaces
+    /// with the verbatim `<text>…</text>`.
+    pub path: Vec<usize>,
+    /// The verbatim `<text>` element (all children + attributes).
+    pub element: Element,
 }
 
 /// Round 372 — one captured `<switch>` element, keyed by the
@@ -676,6 +707,7 @@ impl PreservedExtras {
             && self.clip_refs.is_empty()
             && self.mask_refs.is_empty()
             && self.marker_refs.is_empty()
+            && self.texts.is_empty()
     }
 }
 

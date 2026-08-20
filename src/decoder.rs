@@ -24,7 +24,7 @@ use crate::preserved::{
     CursorBinding, DescriptiveBinding, DominantBaselineBinding, FilterRefBinding, IdScenePath,
     LinkBinding, MarkerRefBinding, OverflowBinding, PaintOrderBinding, PathLengthBinding,
     PointerEventsBinding, PreservedExtras, RefBinding, ShapeRenderingBinding, SwitchBinding,
-    TextRenderingBinding, UseBinding, VectorEffectBinding,
+    TextBinding, TextRenderingBinding, UseBinding, VectorEffectBinding,
 };
 
 /// Codec id string for SVG vector frames.
@@ -81,8 +81,7 @@ pub fn parse_svg_at_with_languages(
     let svg =
         find_svg_root(&nodes).ok_or_else(|| Error::invalid("SVG: missing <svg> root element"))?;
     let langs: Vec<String> = system_language.iter().map(|s| s.to_string()).collect();
-    let (frame, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _) =
-        parse_svg_root(svg, t_seconds, false, &langs)?;
+    let (frame, ..) = parse_svg_root(svg, t_seconds, false, &langs)?;
     Ok(frame)
 }
 
@@ -147,6 +146,7 @@ pub fn parse_svg_with_extras(bytes: &[u8]) -> Result<(VectorFrame, PreservedExtr
         switches,
         filter_refs,
         marker_refs,
+        texts,
     ) = parse_svg_root(svg, 0.0, true, &[])?;
     extras.id_paths = id_paths;
     extras.path_lengths = path_lengths;
@@ -167,6 +167,7 @@ pub fn parse_svg_with_extras(bytes: &[u8]) -> Result<(VectorFrame, PreservedExtr
     extras.switches = switches;
     extras.filter_refs = filter_refs;
     extras.marker_refs = marker_refs;
+    extras.texts = texts;
     Ok((frame, extras))
 }
 
@@ -593,6 +594,7 @@ type SvgRootParse = (
     Vec<SwitchBinding>,
     Vec<FilterRefBinding>,
     Vec<MarkerRefBinding>,
+    Vec<TextBinding>,
 );
 
 fn parse_svg_root(
@@ -786,6 +788,7 @@ fn parse_svg_root(
         ctx.switches,
         ctx.filter_refs,
         ctx.marker_refs,
+        ctx.texts,
     ))
 }
 
