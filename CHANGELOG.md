@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8](https://github.com/OxideAV/oxideav-svg/compare/v0.1.7...v0.1.8) - 2026-08-20
+
+### Added
+
+- *(filter)* pixel-level feComponentTransfer evaluator (Filter Effects §9.7)
+- *(filter)* pixel-level feBlend evaluator (SVG 1.1 §15.9 / Filter Effects §9.5)
+
+### Other
+
+- round 449 — README documents the hidden-content round-trip
+- round 449 — inline display:none subtree round-trip (CSS 2.1 §9.2.4)
+- round 449 — README documents the write-side parity work
+- round 449 — write conformance gate + four fixed-point fixes
+- round 449 — native shape identity round-trip (SVG 2 §9.2–§9.7)
+- round 449 — SMIL animation parent re-attachment by scene path
+- round 449 — <text> verbatim round-trip (SVG 2 §11.2)
+- round 449 — bundle encoder emit lookups into one EmitIndex struct
+- round 403 — README documents the hostile-input hardening guards
+- round 403 — cap .svgz inflation (decompression-bomb guard)
+- round 403 — bound <use> expansion (count + decode depth)
+- round 403 — fix two CSS-parser panics on malformed input + fuzz suite
+- round 403 — bound XML nesting depth (hostile-input hardening)
+- add CI / crates.io / docs.rs / MIT-license badges
+- round 382 — verbatim round-trip of unmodelled <a> attributes
+- round 382 — verbatim round-trip of unmodelled <use> attributes
+- round 382 — README documents the completed <image> round-trip
+- round 382 — verbatim round-trip of <image> child content (§6 model)
+- round 382 — <image> geometry <length> unit/percentage fidelity
+- round 382 — verbatim round-trip of unmodelled <image> attributes
+- round 382 — <image> crossorigin CORS-settings attribute (SVG 2 §6)
+- round 375 — preserveAspectRatio optional 'defer' prefix (§8.7)
+- round 375 — <symbol> x/y geometry properties (SVG 2 §5.5)
+- round 375 — <symbol> refX/refY reference point (SVG 2 §5.5)
+- round 375 — fix <symbol>/<use> §8.2 viewBox-min double-translate
+- round 375 — nested <svg> viewport establishment (§7.10 / §8.2)
+- round 372 — marker-start/mid/end reference round-trip (§13.7.4)
+- round 372 — <clipPath>/<mask> reference-identity round-trip (§14.3/§14.4)
+- round 372 — filter="url(#id)" reference round-trip (§15)
+- round 372 — <switch> verbatim round-trip (§5.7)
+- round 372 — <use> reference + <defs> target round-trip (§5.6 / §5.5)
+- turn-key evaluate_filter_graph_resolved (§9.4 resolve + clip)
+- end-to-end §9.4 subregion-resolution integration tests
+- resolve §9.4 filter-primitive subregions to PixelRects
+- §9.4 filter-primitive subregion clipping (round 361)
+- top-level filter-graph DAG evaluator (round 361)
+- feSpecularLighting pixel evaluator (Filter Effects §19)
+- feDiffuseLighting pixel evaluator (Filter Effects §18)
+- §9.21 feTurbulence Perlin-noise generator (round 343)
+- §9.20 feTile pixel evaluator (round 343)
+- §9.11 feDisplacementMap pixel evaluator (round 343)
+- §9.9 feConvolveMatrix 2-D convolution pixel evaluator
+- §9.17 feMorphology erode/dilate pixel evaluator
+- round 318 — pixel-level feMerge / feOffset / feGaussianBlur node evaluators
+- refresh to current status, drop per-round changelog cruft
+
 ### Added
 
 - round 449 — inline-`display:none` subtree round-trip (CSS 2.1
