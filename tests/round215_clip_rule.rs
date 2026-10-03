@@ -13,7 +13,7 @@
 //!   children (since the property is inherited); a per-child
 //!   `clip-rule=` overrides the inherited value.
 //!
-//! Round 215 ships parse (typed [`oxideav_core::FillRule`] on
+//! Round 215 ships parse (typed [`oxideav_svg::FillRule`] on
 //! [`oxideav_svg::defs::ClipPathDef::clip_rule`]) + scope-restricted
 //! cascade + round-trip preservation via
 //! [`oxideav_svg::preserved::PreservedExtras::clip_rules`]. The actual
@@ -22,8 +22,8 @@
 //! representation (`Group::clip`) carries the path geometry only — the
 //! typed def is the source of truth for the rule.
 
-use oxideav_core::FillRule;
-use oxideav_svg::{parse_svg, parse_svg_with_extras, write_svg_with_extras};
+use oxideav_svg::FillRule;
+use oxideav_svg::{parse, parse_with_extras, write_with_extras};
 
 /// Round 215: a `<clipPath>` with no `clip-rule=` attribute (anywhere)
 /// resolves to the §14.3.5 initial value `nonzero` and does NOT record
@@ -38,7 +38,7 @@ fn baseline_no_clip_rule_attr_no_binding() {
       </defs>
       <rect x="0" y="0" width="100" height="100" fill="red" clip-path="url(#c1)"/>
     </svg>"##;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(
         extras.clip_rules.is_empty(),
         "round 215: a clipPath with no clip-rule= must not record a binding"
@@ -57,7 +57,7 @@ fn evenodd_on_child_shape_records_binding() {
       </defs>
       <rect x="0" y="0" width="100" height="100" fill="red" clip-path="url(#myclip)"/>
     </svg>"##;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(
         extras.clip_rules.len(),
         1,
@@ -80,7 +80,7 @@ fn evenodd_on_clip_path_element_cascades_to_child() {
       </defs>
       <rect x="0" y="0" width="100" height="100" fill="red" clip-path="url(#myclip)"/>
     </svg>"##;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.clip_rules.len(), 1);
     assert_eq!(extras.clip_rules[0].clip_rule, "evenodd");
 }
@@ -97,7 +97,7 @@ fn per_child_clip_rule_overrides_inherited() {
       </defs>
       <rect x="0" y="0" width="100" height="100" fill="red" clip-path="url(#myclip)"/>
     </svg>"##;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.clip_rules.len(), 1);
     assert_eq!(
         extras.clip_rules[0].clip_rule, "evenodd",
@@ -118,7 +118,7 @@ fn explicit_nonzero_records_binding_for_round_trip() {
       </defs>
       <rect x="0" y="0" width="100" height="100" fill="red" clip-path="url(#myclip)"/>
     </svg>"##;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.clip_rules.len(), 1);
     assert_eq!(extras.clip_rules[0].clip_rule, "nonzero");
 }
@@ -136,7 +136,7 @@ fn case_insensitive_keyword_match_canonicalises_lowercase() {
       </defs>
       <rect x="0" y="0" width="100" height="100" fill="red" clip-path="url(#c1)"/>
     </svg>"##;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.clip_rules.len(), 1);
     assert_eq!(extras.clip_rules[0].clip_rule, "evenodd");
 }
@@ -154,7 +154,7 @@ fn unknown_keyword_falls_back_to_initial_without_binding() {
       </defs>
       <rect x="0" y="0" width="100" height="100" fill="red" clip-path="url(#c1)"/>
     </svg>"##;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(
         extras.clip_rules.is_empty(),
         "round 215: an unknown clip-rule= keyword must fall through to the initial value silently"
@@ -177,7 +177,7 @@ fn clip_rule_on_referencing_element_is_ignored() {
       <rect x="0" y="0" width="100" height="100" fill="red"
             clip-path="url(#myclip)" clip-rule="evenodd"/>
     </svg>"##;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(
         extras.clip_rules.is_empty(),
         "round 215: clip-rule= on the referencing element must be ignored per §14.3.5"
@@ -197,21 +197,21 @@ fn clip_path_without_id_records_no_binding() {
       </defs>
       <rect x="0" y="0" width="100" height="100" fill="red"/>
     </svg>"##;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(
         extras.clip_rules.is_empty(),
         "round 215: an id-less clipPath cannot be referenced so the binding must skip it"
     );
 }
 
-/// Round 215: `parse_svg` (no extras) still loads a document with
+/// Round 215: `parse` (no extras) still loads a document with
 /// `clip-rule=` cleanly. The round-2 scene graph populates a `Group`
 /// with the clipping path; the rule lives on the typed
 /// `DefsTables::clip_paths` view (which is internal to the parser) and
-/// the rule keyword goes nowhere — `parse_svg` is the no-round-trip
+/// the rule keyword goes nowhere — `parse` is the no-round-trip
 /// fast path.
 #[test]
-fn parse_svg_without_extras_still_loads_document() {
+fn parse_without_extras_still_loads_document() {
     let src = br##"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
       <defs>
         <clipPath id="c1">
@@ -220,11 +220,11 @@ fn parse_svg_without_extras_still_loads_document() {
       </defs>
       <rect x="0" y="0" width="100" height="100" fill="red" clip-path="url(#c1)"/>
     </svg>"##;
-    let frame = parse_svg(src).expect("parse_svg must load a document carrying clip-rule cleanly");
+    let frame = parse(src).expect("parse must load a document carrying clip-rule cleanly");
     assert_eq!(frame.root.children.len(), 1);
 }
 
-/// Round 215: round-trip — `parse_svg_with_extras → write_svg_with_extras`
+/// Round 215: round-trip — `parse_with_extras → write_with_extras`
 /// re-emits `clip-rule="evenodd"` on the inner `<path>` of the
 /// `<clipPath>` def, matching the §14.3.5 worked example structure
 /// (rule on the clipping-shape, not the referencing element).
@@ -238,8 +238,8 @@ fn round_trip_re_emits_evenodd_on_inner_path() {
       </defs>
       <rect x="0" y="0" width="100" height="100" fill="red" clip-path="url(#c1)"/>
     </svg>"##;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
-    let out = String::from_utf8(write_svg_with_extras(&frame, &extras)).unwrap();
+    let (frame, extras) = parse_with_extras(src).unwrap();
+    let out = String::from_utf8(write_with_extras(&frame, &extras)).unwrap();
     assert!(
         out.contains("clip-rule=\"evenodd\""),
         "round 215: round-trip must re-emit clip-rule=evenodd on the inner path; got:\n{}",
@@ -270,8 +270,8 @@ fn round_trip_preserves_explicit_nonzero() {
       </defs>
       <rect x="0" y="0" width="100" height="100" fill="red" clip-path="url(#c1)"/>
     </svg>"##;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
-    let out = String::from_utf8(write_svg_with_extras(&frame, &extras)).unwrap();
+    let (frame, extras) = parse_with_extras(src).unwrap();
+    let out = String::from_utf8(write_with_extras(&frame, &extras)).unwrap();
     assert!(
         out.contains("clip-rule=\"nonzero\""),
         "round 215: explicit clip-rule=nonzero must round-trip (author intent preserved); got:\n{}",
@@ -292,8 +292,8 @@ fn round_trip_omits_attribute_when_default_and_unset() {
       </defs>
       <rect x="0" y="0" width="100" height="100" fill="red" clip-path="url(#c1)"/>
     </svg>"##;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
-    let out = String::from_utf8(write_svg_with_extras(&frame, &extras)).unwrap();
+    let (frame, extras) = parse_with_extras(src).unwrap();
+    let out = String::from_utf8(write_with_extras(&frame, &extras)).unwrap();
     assert!(
         !out.contains("clip-rule="),
         "round 215: a clipPath without an explicit clip-rule= must round-trip without the attribute; got:\n{}",
@@ -313,10 +313,10 @@ fn double_round_trip_converges() {
       </defs>
       <rect x="0" y="0" width="100" height="100" fill="red" clip-path="url(#c1)"/>
     </svg>"##;
-    let (frame1, extras1) = parse_svg_with_extras(src).unwrap();
-    let out1 = write_svg_with_extras(&frame1, &extras1);
-    let (frame2, extras2) = parse_svg_with_extras(&out1).unwrap();
-    let out2 = write_svg_with_extras(&frame2, &extras2);
+    let (frame1, extras1) = parse_with_extras(src).unwrap();
+    let out1 = write_with_extras(&frame1, &extras1);
+    let (frame2, extras2) = parse_with_extras(&out1).unwrap();
+    let out2 = write_with_extras(&frame2, &extras2);
     assert_eq!(
         out1, out2,
         "round 215: a double round-trip must converge — the canonical form is idempotent"
@@ -339,7 +339,7 @@ fn first_child_rule_wins_for_merged_path() {
       </defs>
       <rect x="0" y="0" width="100" height="100" fill="red" clip-path="url(#c1)"/>
     </svg>"##;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.clip_rules.len(), 1);
     assert_eq!(
         extras.clip_rules[0].clip_rule, "evenodd",
@@ -417,7 +417,7 @@ fn two_clip_paths_record_distinct_bindings() {
       <rect x="0" y="0" width="50" height="50" fill="red" clip-path="url(#c_even)"/>
       <rect x="50" y="50" width="50" height="50" fill="blue" clip-path="url(#c_non)"/>
     </svg>"##;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.clip_rules.len(), 2);
     let by_id: std::collections::HashMap<&str, &str> = extras
         .clip_rules

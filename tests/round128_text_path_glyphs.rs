@@ -7,9 +7,9 @@
 
 #![cfg(feature = "text")]
 
-use oxideav_core::Node;
 use oxideav_scribe::{Face, FaceChain};
-use oxideav_svg::{parse_svg, text::set_font_resolver};
+use oxideav_svg::Node;
+use oxideav_svg::{parse, text::set_font_resolver};
 
 const FONT: &[u8] = include_bytes!("fixtures/DejaVuSansMono.ttf");
 
@@ -37,7 +37,7 @@ fn count_paths(node: &Node) -> usize {
 
 /// Recursively collect every `Group` whose `transform` is non-identity
 /// (i.e. carries an explicit placement) along with the group itself.
-fn collect_placed_groups<'a>(node: &'a Node, out: &mut Vec<&'a oxideav_core::Group>) {
+fn collect_placed_groups<'a>(node: &'a Node, out: &mut Vec<&'a oxideav_svg::Group>) {
     if let Node::Group(g) = node {
         let tx = g.transform;
         let is_identity = (tx.a - 1.0).abs() < 1e-6
@@ -71,7 +71,7 @@ fn text_path_horizontal_emits_glyphs_with_zero_rotation() {
     <textPath href="#line">AB</textPath>
   </text>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
 
     // The outer text Group wraps a sequence of placement Groups, one
     // per emitted glyph.
@@ -118,7 +118,7 @@ fn text_path_vertical_emits_glyphs_with_90deg_rotation() {
     <textPath href="#line">XY</textPath>
   </text>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let root_child = &frame.root.children[0];
     assert!(count_paths(root_child) >= 2, "expected >= 2 glyph paths");
 
@@ -167,7 +167,7 @@ fn text_path_off_path_glyphs_dropped() {
     // glyphs that would interfere with the off-path count.
     let src = br##"<?xml version="1.0"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="200" height="100"><defs><path id="tiny" d="M 0 50 L 1 50"/></defs><text font-size="64"><textPath href="#tiny">overflows</textPath></text></svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let leaves = count_paths(&frame.root.children[0]);
     // The first glyph's midpoint sits past the 1px path, so all are
     // dropped.
@@ -191,7 +191,7 @@ fn text_path_start_offset_shifts_first_glyph() {
     <textPath href="#line" startOffset="100">A</textPath>
   </text>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let root_child = &frame.root.children[0];
 
     let mut placed = Vec::new();

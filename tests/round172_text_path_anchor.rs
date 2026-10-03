@@ -13,9 +13,9 @@
 
 #![cfg(feature = "text")]
 
-use oxideav_core::Node;
 use oxideav_scribe::{Face, FaceChain};
-use oxideav_svg::{parse_svg, text::set_font_resolver};
+use oxideav_svg::Node;
+use oxideav_svg::{parse, text::set_font_resolver};
 
 const FONT: &[u8] = include_bytes!("fixtures/DejaVuSansMono.ttf");
 
@@ -48,7 +48,7 @@ fn collect_translates(node: &Node, out: &mut Vec<(f32, f32)>) {
 /// `y_target`. For a horizontal path the textPath glyphs land at
 /// `(start_offset + midpoint_x, y_target)` — the leftmost one is the
 /// first emitted glyph.
-fn leftmost_on_line(frame: &oxideav_core::VectorFrame, y_target: f32) -> f32 {
+fn leftmost_on_line(frame: &oxideav_svg::SvgDocument, y_target: f32) -> f32 {
     let mut tr = Vec::new();
     for c in &frame.root.children {
         collect_translates(c, &mut tr);
@@ -79,7 +79,7 @@ fn text_path_anchor_biases_start_point_per_spec() {
     <textPath href="#line_c" startOffset="300">ABCDE</textPath>
   </text>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
 
     // Each <textPath> lives on its own horizontal line; leftmost
     // glyph translation along that line is the first-glyph midpoint
@@ -129,7 +129,7 @@ fn text_path_default_anchor_is_start() {
     <textPath href="#p2" startOffset="50">ABCDE</textPath>
   </text>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let left_default = leftmost_on_line(&frame, 60.0);
     let left_explicit = leftmost_on_line(&frame, 140.0);
     assert!(left_default.is_finite() && left_explicit.is_finite());

@@ -13,11 +13,11 @@ use oxideav_svg::filter::{ColorInterpolationFilters, FilterPrimitiveNode};
 use oxideav_svg::filter_eval::{
     drop_shadow, evaluate_drop_shadow_node, DropShadowParams, FilterImage,
 };
-use oxideav_svg::parse_svg_with_extras;
+use oxideav_svg::parse_with_extras;
 
 /// Parse `src` and return the single primitive node of `<filter id=>`.
 fn node_for_filter(src: &[u8], filter_id: &str) -> FilterPrimitiveNode {
-    let (_frame, extras) = parse_svg_with_extras(src).expect("parse_svg_with_extras");
+    let (_frame, extras) = parse_with_extras(src).expect("parse_with_extras");
     for el in &extras.filters {
         if el
             .attrs

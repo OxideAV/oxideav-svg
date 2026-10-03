@@ -2,8 +2,8 @@
 //! to `Node::SoftMask`; `<clipPath>` should populate the wrapping
 //! group's `clip` field.
 
-use oxideav_core::{MaskKind, Node};
-use oxideav_svg::{parse_svg, write_svg};
+use oxideav_svg::{parse, write};
+use oxideav_svg::{MaskKind, Node};
 
 #[test]
 fn mask_maps_to_soft_mask_with_luminance_default() {
@@ -17,7 +17,7 @@ fn mask_maps_to_soft_mask_with_luminance_default() {
   </defs>
   <rect x="0" y="0" width="100" height="100" fill="red" mask="url(#m1)"/>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let n = &frame.root.children[0];
     match n {
         Node::SoftMask {
@@ -47,7 +47,7 @@ fn mask_type_alpha_is_honored() {
   </defs>
   <rect width="50" height="50" fill="blue" mask="url(#m1)"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     match &frame.root.children[0] {
         Node::SoftMask { mask_kind, .. } => assert_eq!(*mask_kind, MaskKind::Alpha),
         other => panic!("expected SoftMask, got {:?}", other),
@@ -64,7 +64,7 @@ fn clip_path_populates_group_clip_field() {
   </defs>
   <rect x="0" y="0" width="100" height="100" fill="green" clip-path="url(#c1)"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let n = &frame.root.children[0];
     match n {
         Node::Group(g) => {
@@ -90,7 +90,7 @@ fn multi_shape_clip_path_concatenates_into_single_path() {
   </defs>
   <rect x="0" y="0" width="100" height="100" fill="black" clip-path="url(#c1)"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     match &frame.root.children[0] {
         Node::Group(g) => {
             let clip = g.clip.as_ref().expect("clip present");
@@ -111,15 +111,15 @@ fn mask_round_trips_through_encoder() {
   </defs>
   <rect x="0" y="0" width="100" height="100" fill="red" mask="url(#m1)"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
-    let bytes = write_svg(&frame);
+    let frame = parse(src).unwrap();
+    let bytes = write(&frame);
     let s = std::str::from_utf8(&bytes).unwrap();
     assert!(s.contains("<mask"), "encoder should emit a <mask> def: {s}");
     assert!(
         s.contains("mask=\"url(#"),
         "encoder should reference the mask: {s}"
     );
-    let frame2 = parse_svg(&bytes).expect("re-parse");
+    let frame2 = parse(&bytes).expect("re-parse");
     assert!(matches!(&frame2.root.children[0], Node::SoftMask { .. }));
 }
 
@@ -133,8 +133,8 @@ fn clip_path_round_trips_through_encoder() {
   </defs>
   <rect width="100" height="100" fill="purple" clip-path="url(#c1)"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
-    let bytes = write_svg(&frame);
+    let frame = parse(src).unwrap();
+    let bytes = write(&frame);
     let s = std::str::from_utf8(&bytes).unwrap();
     assert!(s.contains("<clipPath"), "encoder must emit clipPath: {s}");
     assert!(

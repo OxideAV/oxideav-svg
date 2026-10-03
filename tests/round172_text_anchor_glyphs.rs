@@ -13,9 +13,9 @@
 
 #![cfg(feature = "text")]
 
-use oxideav_core::Node;
 use oxideav_scribe::{Face, FaceChain};
-use oxideav_svg::{parse_svg, text::set_font_resolver};
+use oxideav_svg::Node;
+use oxideav_svg::{parse, text::set_font_resolver};
 
 const FONT: &[u8] = include_bytes!("fixtures/DejaVuSansMono.ttf");
 
@@ -51,7 +51,7 @@ fn collect_translates(node: &Node, out: &mut Vec<(f32, f32)>) {
 /// Walk the scene graph to find every immediate `<text>` Group. The
 /// decoder wraps each `<text>` in a Group at the root of the frame —
 /// one per source `<text>` element. We return them in source order.
-fn text_groups(frame: &oxideav_core::VectorFrame) -> Vec<&oxideav_core::Group> {
+fn text_groups(frame: &oxideav_svg::SvgDocument) -> Vec<&oxideav_svg::Group> {
     frame
         .root
         .children
@@ -66,7 +66,7 @@ fn text_groups(frame: &oxideav_core::VectorFrame) -> Vec<&oxideav_core::Group> {
 /// Return the minimum `e` (x-translate) across every non-identity
 /// placement inside `g`. Approximates "leftmost glyph origin" for the
 /// horizontal LTR fixtures used here.
-fn leftmost_glyph_x(g: &oxideav_core::Group) -> f32 {
+fn leftmost_glyph_x(g: &oxideav_svg::Group) -> f32 {
     let mut tr = Vec::new();
     for c in &g.children {
         collect_translates(c, &mut tr);
@@ -87,7 +87,7 @@ fn three_anchors_shift_leftmost_glyph_predictably() {
   <text x="200" y="100" font-size="16" text-anchor="middle">ABCDE</text>
   <text x="200" y="150" font-size="16" text-anchor="end">ABCDE</text>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let groups = text_groups(&frame);
     assert_eq!(groups.len(), 3, "three <text> elements expected");
 
@@ -134,7 +134,7 @@ fn default_matches_explicit_start() {
   <text x="100" y="50" font-size="16">XYZ</text>
   <text x="100" y="80" font-size="16" text-anchor="start">XYZ</text>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let groups = text_groups(&frame);
     assert_eq!(groups.len(), 2);
     let x_default = leftmost_glyph_x(groups[0]);
@@ -155,7 +155,7 @@ fn end_anchor_moves_run_leftwards() {
 <svg xmlns="http://www.w3.org/2000/svg" width="400" height="100">
   <text x="300" y="50" font-size="16" text-anchor="end">HELLO</text>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let groups = text_groups(&frame);
     assert_eq!(groups.len(), 1);
     let x = leftmost_glyph_x(groups[0]);
@@ -182,7 +182,7 @@ fn inheritance_through_group_matches_inline_attribute() {
   </g>
   <text x="200" y="100" font-size="16" text-anchor="middle">ABCDE</text>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     // First child is the outer <g> (a Group containing the inner text
     // Group), second is the inline <text>.
     let groups = text_groups(&frame);
@@ -222,7 +222,7 @@ fn empty_text_runs_emit_nothing_for_every_anchor() {
   <text x="50" y="60" font-size="16" text-anchor="middle"></text>
   <text x="50" y="70" font-size="16" text-anchor="end"></text>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let groups = text_groups(&frame);
     assert_eq!(groups.len(), 3);
     for g in groups {

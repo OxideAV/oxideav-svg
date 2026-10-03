@@ -15,8 +15,8 @@
 //! transform before the outer Group applies the use's `transform=` /
 //! `x` / `y` / `opacity`.
 
-use oxideav_core::Node;
-use oxideav_svg::parse_svg;
+use oxideav_svg::parse;
+use oxideav_svg::Node;
 
 #[test]
 fn use_of_symbol_with_viewbox_and_width_height_scales_by_half() {
@@ -32,7 +32,7 @@ fn use_of_symbol_with_viewbox_and_width_height_scales_by_half() {
   </defs>
   <use href="#logo" width="50" height="50"/>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     assert_eq!(frame.root.children.len(), 1);
     let outer = match &frame.root.children[0] {
         Node::Group(g) => g,
@@ -80,7 +80,7 @@ fn use_of_symbol_falls_back_to_intrinsic_width_height() {
   </symbol>
   <use href="#s"/>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let outer = match &frame.root.children[0] {
         Node::Group(g) => g,
         _ => panic!("outer Group missing"),
@@ -105,7 +105,7 @@ fn use_translate_x_y_composes_with_viewport_transform() {
   </symbol>
   <use href="#s" x="10" y="20" width="50" height="50"/>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let outer = match &frame.root.children[0] {
         Node::Group(g) => g,
         _ => panic!("outer Group missing"),
@@ -134,7 +134,7 @@ fn use_of_symbol_without_viewbox_skips_viewport_transform() {
   </symbol>
   <use href="#s" width="50" height="50"/>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let outer = match &frame.root.children[0] {
         Node::Group(g) => g,
         _ => panic!("outer Group missing"),
@@ -166,7 +166,7 @@ fn use_of_symbol_with_meet_letterbox_centers_content() {
   </symbol>
   <use href="#s" width="200" height="100"/>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let outer = match &frame.root.children[0] {
         Node::Group(g) => g,
         _ => panic!("outer Group missing"),

@@ -9,10 +9,10 @@
 //! them intact for downstream consumers).
 
 use oxideav_svg::filter::{FilterInput, FilterPrimitive, LightSource};
-use oxideav_svg::{parse_svg_with_extras, write_svg_with_extras};
+use oxideav_svg::{parse_with_extras, write_with_extras};
 
 fn graph_for_filter(src: &[u8], filter_id: &str) -> oxideav_svg::filter::FilterGraph {
-    let (_frame, extras) = parse_svg_with_extras(src).expect("parse_svg_with_extras");
+    let (_frame, extras) = parse_with_extras(src).expect("parse_with_extras");
     for el in &extras.filters {
         if el
             .attrs
@@ -283,8 +283,8 @@ fn round_trip_preserves_round10_lighting_primitives_verbatim() {
         </filter></defs>
         <rect width="50" height="50" filter="url(#f)"/>
       </svg>"##;
-    let (frame, extras) = parse_svg_with_extras(src).expect("parse");
-    let bytes = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).expect("parse");
+    let bytes = write_with_extras(&frame, &extras);
     let s = std::str::from_utf8(&bytes).unwrap();
     assert!(s.contains("feDiffuseLighting"));
     assert!(s.contains("feSpecularLighting"));
@@ -292,7 +292,7 @@ fn round_trip_preserves_round10_lighting_primitives_verbatim() {
     assert!(s.contains("feSpotLight"));
     assert!(s.contains("limitingConeAngle"));
     // Re-parse to confirm a second round still parses to typed graph.
-    let (_frame2, extras2) = parse_svg_with_extras(&bytes).expect("re-parse");
+    let (_frame2, extras2) = parse_with_extras(&bytes).expect("re-parse");
     assert_eq!(extras2.filters.len(), 1);
 }
 

@@ -3,16 +3,16 @@
 //!
 //! These tests verify the public-API surface that consumers
 //! (e.g. oxideav-raster) will use to drive the new primitives. The
-//! parser is exercised through `parse_svg_with_extras` →
+//! parser is exercised through `parse_with_extras` →
 //! `filter::parse_filter_graph`, mirroring the round-7 test layout.
 
 use oxideav_svg::filter::{
     BlendMode, CompositeOperator, FilterInput, FilterPrimitive, FloodColor, TransferFunction,
 };
-use oxideav_svg::{parse_svg_with_extras, write_svg_with_extras};
+use oxideav_svg::{parse_with_extras, write_with_extras};
 
 fn graph_for_filter(src: &[u8], filter_id: &str) -> oxideav_svg::filter::FilterGraph {
-    let (_frame, extras) = parse_svg_with_extras(src).expect("parse_svg_with_extras");
+    let (_frame, extras) = parse_with_extras(src).expect("parse_with_extras");
     for el in &extras.filters {
         if el
             .attrs
@@ -269,8 +269,8 @@ fn round_trip_preserves_round8_primitives_verbatim() {
         </filter></defs>
         <rect width="10" height="10" filter="url(#f)"/>
       </svg>"##;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
-    let out = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).unwrap();
+    let out = write_with_extras(&frame, &extras);
     let s = std::str::from_utf8(&out).unwrap();
     assert!(s.contains("feColorMatrix"));
     assert!(s.contains("feMerge"));

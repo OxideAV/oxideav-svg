@@ -10,7 +10,7 @@
 #![cfg(feature = "text")]
 
 use oxideav_svg::element::{PaintState, TextAnchor};
-use oxideav_svg::parse_svg;
+use oxideav_svg::parse;
 use oxideav_svg::parser::{parse_xml, Element};
 
 /// Default `text-anchor` is `start` (per §11.10.1.1 Initial table).
@@ -115,7 +115,7 @@ fn text_anchor_without_resolver_does_not_crash() {
 <svg xmlns="http://www.w3.org/2000/svg" width="200" height="100">
   <text x="100" y="50" font-size="16" text-anchor="middle">Centered</text>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     assert_eq!(frame.root.children.len(), 1);
 }
 
@@ -129,7 +129,7 @@ fn text_anchor_inherits_from_parent_group() {
     <text x="90" y="50" font-size="12">trailing</text>
   </g>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     // Document parses (the resolver-less branch); inheritance is
     // exercised by the cascade. No assertion on the glyph geometry —
     // that's the resolver-installed test in
@@ -157,7 +157,7 @@ fn style_block_rule_resolves_text_anchor() {
   <style>text { text-anchor: end; }</style>
   <text x="50" y="50" font-size="12">hi</text>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     // No glyphs without a resolver, but the document parses cleanly —
     // the cascade saw the rule and applied it without panicking.
     assert!(!frame.root.children.is_empty());

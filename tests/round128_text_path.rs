@@ -7,7 +7,7 @@
 //! one-shot OnceLock that survives the whole process — so we restrict
 //! the tests here to behaviours that are deterministic without one (an
 //! empty group on parse, the path-resolution decision tree exercised
-//! through the public parse_svg API, and round-trip safety) plus
+//! through the public parse API, and round-trip safety) plus
 //! numerical coverage of the new
 //! [`oxideav_svg::path_length::sample_path_at_distance`] sampler used
 //! to lay glyphs along the referenced path.
@@ -18,9 +18,9 @@
 
 #![cfg(feature = "text")]
 
-use oxideav_core::{Node, Path, PathCommand, Point};
-use oxideav_svg::parse_svg;
+use oxideav_svg::parse;
 use oxideav_svg::path_length::{compute_path_length, sample_path_at_distance};
+use oxideav_svg::{Node, Path, PathCommand, Point};
 
 /// `<textPath>` inside a `<text>` parses to an (empty) Group when no
 /// font resolver is installed — matches the `<text>` baseline
@@ -37,7 +37,7 @@ fn text_path_without_font_resolver_parses_to_empty_group() {
     <textPath href="#curve">Along path</textPath>
   </text>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     assert_eq!(frame.root.children.len(), 1);
     match &frame.root.children[0] {
         Node::Group(g) => {
@@ -62,7 +62,7 @@ fn text_path_accepts_xlink_href_fallback() {
     <textPath xlink:href="#curve">Curved</textPath>
   </text>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     assert_eq!(frame.root.children.len(), 1);
 }
 
@@ -76,7 +76,7 @@ fn text_path_inline_path_attribute() {
     <textPath path="M 0 0 L 100 0">Inline</textPath>
   </text>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     assert_eq!(frame.root.children.len(), 1);
 }
 
@@ -92,7 +92,7 @@ fn text_path_unresolvable_ref_drops_silently() {
   </text>
   <rect x="10" y="10" width="20" height="20" fill="red"/>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     // Two top-level children: the <text> (empty group) and the <rect>.
     assert_eq!(frame.root.children.len(), 2);
 }
@@ -110,11 +110,11 @@ fn text_path_alongside_plain_run_parses() {
   </defs>
   <text x="0" y="20">prefix<textPath href="#p">tail</textPath></text>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     assert_eq!(frame.root.children.len(), 1);
 }
 
-/// Round-trip — `parse → write_svg → parse` should not panic on a
+/// Round-trip — `parse → write → parse` should not panic on a
 /// document containing `<textPath>`. The encoder hasn't been taught to
 /// re-emit the source `<textPath>` element yet (deferred to a follow-up
 /// once `<text>` source preservation lands), but the round-trip must
@@ -130,9 +130,9 @@ fn text_path_round_trip_does_not_panic() {
     <textPath href="#curve">Hi</textPath>
   </text>
 </svg>"##;
-    let frame = oxideav_svg::parse_svg(src).expect("parse");
-    let bytes = oxideav_svg::write_svg(&frame);
-    let frame2 = oxideav_svg::parse_svg(&bytes).expect("re-parse");
+    let frame = oxideav_svg::parse(src).expect("parse");
+    let bytes = oxideav_svg::write(&frame);
+    let frame2 = oxideav_svg::parse(&bytes).expect("re-parse");
     assert_eq!(frame.width, frame2.width);
 }
 
@@ -321,7 +321,7 @@ fn text_path_side_right_parses() {
     <textPath href="#curve" side="right">Right side</textPath>
   </text>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     assert_eq!(frame.root.children.len(), 1);
 }
 
@@ -338,7 +338,7 @@ fn text_path_start_offset_percentage_parses() {
     <textPath href="#curve" startOffset="25%">Shifted</textPath>
   </text>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     assert_eq!(frame.root.children.len(), 1);
 }
 
@@ -356,6 +356,6 @@ fn text_path_with_nested_tspan_parses() {
     <textPath href="#curve">a<tspan>b</tspan>c</textPath>
   </text>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     assert_eq!(frame.root.children.len(), 1);
 }

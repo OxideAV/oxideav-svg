@@ -17,7 +17,8 @@
 //!   is `M 0 0 L 10 10 L 20 20`; the implicit follow-on for `m` is
 //!   `l`, the rest follow-on themselves).
 
-use oxideav_core::{Error, PathCommand, Point, Result};
+use crate::error::{Error, Result};
+use crate::model::{PathCommand, Point};
 
 /// Parse a `d` attribute into a sequence of [`PathCommand`]s.
 ///

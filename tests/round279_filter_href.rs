@@ -7,7 +7,7 @@
 //! filter nodes; indirect to an arbitrary level).
 //!
 //! Mirrors the round-7..12 layout — typed-graph assertions via
-//! `parse_svg_with_extras` + `parse_filter_graph`, plus a verbatim-XML
+//! `parse_with_extras` + `parse_filter_graph`, plus a verbatim-XML
 //! round-trip check.
 
 use oxideav_svg::filter::{
@@ -15,7 +15,7 @@ use oxideav_svg::filter::{
     FilterPrimitive, FilterRes, FilterUnits,
 };
 use oxideav_svg::parser::Element;
-use oxideav_svg::{parse_svg_with_extras, write_svg_with_extras};
+use oxideav_svg::{parse_with_extras, write_with_extras};
 
 fn filter_element<'a>(filters: &'a [Element], filter_id: &str) -> &'a Element {
     filters
@@ -30,13 +30,13 @@ fn filter_element<'a>(filters: &'a [Element], filter_id: &str) -> &'a Element {
 
 /// Typed graph straight off the element — no href resolution.
 fn raw_graph(src: &[u8], filter_id: &str) -> FilterGraph {
-    let (_frame, extras) = parse_svg_with_extras(src).expect("parse_svg_with_extras");
+    let (_frame, extras) = parse_with_extras(src).expect("parse_with_extras");
     parse_filter_graph(filter_element(&extras.filters, filter_id))
 }
 
 /// Typed graph after §15.3 cross-filter `href` chain resolution.
 fn resolved_graph(src: &[u8], filter_id: &str) -> FilterGraph {
-    let (_frame, extras) = parse_svg_with_extras(src).expect("parse_svg_with_extras");
+    let (_frame, extras) = parse_with_extras(src).expect("parse_with_extras");
     let el = filter_element(&extras.filters, filter_id);
     let merged = resolve_filter_element_chain(el, &extras.filters);
     parse_filter_graph(&merged)
@@ -359,8 +359,8 @@ fn filter_res_and_href_survive_verbatim_round_trip() {
         r##"<filter id="a" filterRes="200 100"><feOffset dx="1" dy="1"/></filter>
             <filter id="f" xlink:href="#a"/>"##,
     );
-    let (frame, extras) = parse_svg_with_extras(&src).expect("parse");
-    let out = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(&src).expect("parse");
+    let out = write_with_extras(&frame, &extras);
     let text = String::from_utf8(out).expect("utf8");
     assert!(text.contains(r#"filterRes="200 100""#), "{text}");
     assert!(text.contains(r##"xlink:href="#a""##), "{text}");

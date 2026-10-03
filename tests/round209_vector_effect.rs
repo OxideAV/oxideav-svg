@@ -19,7 +19,7 @@
 //! `PaintState::vector_effect` and round-trips the source attribute via
 //! `PreservedExtras::vector_effects`.
 
-use oxideav_svg::{parse_svg, parse_svg_with_extras, write_svg_with_extras};
+use oxideav_svg::{parse, parse_with_extras, write_with_extras};
 
 /// Round 209: a shape without `vector-effect=` parses cleanly and the
 /// decoder does NOT pollute the side-channel.
@@ -29,7 +29,7 @@ fn baseline_no_vector_effect_attr_no_binding() {
                        viewBox="0 0 100 100">
         <rect x="10" y="10" width="50" height="50" fill="red"/>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(
         extras.vector_effects.is_empty(),
         "round 209: a shape without vector-effect= must not record a binding"
@@ -45,7 +45,7 @@ fn non_scaling_stroke_on_rect_records_binding() {
         <rect x="10" y="10" width="50" height="50" fill="red" stroke="black"
               stroke-width="3" vector-effect="non-scaling-stroke"/>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(
         extras.vector_effects.len(),
         1,
@@ -63,7 +63,7 @@ fn explicit_none_skips_recording() {
         <rect x="10" y="10" width="50" height="50" fill="red"
               vector-effect="none"/>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(
         extras.vector_effects.is_empty(),
         "round 209: explicit `none` is the initial value and skips recording"
@@ -79,7 +79,7 @@ fn multi_keyword_set_is_preserved_in_source_order() {
         <path d="M 0 0 L 100 100" stroke="black" stroke-width="2"
               vector-effect="non-scaling-size non-rotation"/>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.vector_effects.len(), 1);
     assert_eq!(
         extras.vector_effects[0].vector_effect,
@@ -97,7 +97,7 @@ fn duplicate_keywords_are_dropped() {
         <rect x="0" y="0" width="50" height="50"
               vector-effect="non-scaling-stroke non-scaling-stroke"/>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.vector_effects.len(), 1);
     assert_eq!(extras.vector_effects[0].vector_effect, "non-scaling-stroke");
 }
@@ -112,7 +112,7 @@ fn host_suffix_screen_is_preserved_but_viewport_default_is_implicit() {
         <rect x="0" y="0" width="50" height="50"
               vector-effect="non-scaling-stroke screen"/>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src_screen).unwrap();
+    let (_frame, extras) = parse_with_extras(src_screen).unwrap();
     assert_eq!(extras.vector_effects.len(), 1);
     assert_eq!(
         extras.vector_effects[0].vector_effect,
@@ -124,7 +124,7 @@ fn host_suffix_screen_is_preserved_but_viewport_default_is_implicit() {
         <rect x="0" y="0" width="50" height="50"
               vector-effect="non-scaling-stroke"/>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src_default).unwrap();
+    let (_frame, extras) = parse_with_extras(src_default).unwrap();
     assert_eq!(extras.vector_effects.len(), 1);
     assert_eq!(
         extras.vector_effects[0].vector_effect, "non-scaling-stroke",
@@ -145,7 +145,7 @@ fn property_is_not_inherited_from_group() {
             <rect x="0" y="0" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     // Exactly one binding — the `<g>`'s own — because the property is
     // non-inherited per §8.13 and the child `<rect>` carries no
     // attribute of its own.
@@ -165,7 +165,7 @@ fn keyword_matching_is_case_insensitive() {
         <rect x="0" y="0" width="50" height="50"
               vector-effect="Non-Scaling-Stroke"/>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.vector_effects.len(), 1);
     assert_eq!(
         extras.vector_effects[0].vector_effect, "non-scaling-stroke",
@@ -184,7 +184,7 @@ fn unknown_tokens_are_silently_dropped() {
         <rect x="0" y="0" width="50" height="50"
               vector-effect="non-scaling-stroke bogus-keyword"/>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.vector_effects.len(), 1);
     assert_eq!(extras.vector_effects[0].vector_effect, "non-scaling-stroke");
 }
@@ -200,7 +200,7 @@ fn payload_without_effect_keyword_skips_recording() {
         <rect x="0" y="0" width="50" height="50"
               vector-effect="bogus-only"/>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(
         extras.vector_effects.is_empty(),
         "round 209: a payload with no recognised effect keyword is not a valid vector-effect"
@@ -219,7 +219,7 @@ fn empty_and_inherit_skip_recording() {
             </svg>"#,
             payload
         );
-        let (_frame, extras) = parse_svg_with_extras(xml.as_bytes()).unwrap();
+        let (_frame, extras) = parse_with_extras(xml.as_bytes()).unwrap();
         assert!(
             extras.vector_effects.is_empty(),
             "round 209: payload {:?} must not record a binding",
@@ -228,23 +228,23 @@ fn empty_and_inherit_skip_recording() {
     }
 }
 
-/// Round 209: legacy `parse_svg` (no extras) still parses a document
+/// Round 209: legacy `parse` (no extras) still parses a document
 /// with `vector-effect=` cleanly — the property's source-faithful
 /// round-trip is opt-in.
 #[test]
-fn parse_svg_without_extras_still_loads_document() {
+fn parse_without_extras_still_loads_document() {
     let src = br#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"
                        viewBox="0 0 100 100">
         <rect x="10" y="10" width="50" height="50" fill="red"
               vector-effect="non-scaling-stroke"/>
     </svg>"#;
-    // `parse_svg` returns the frame only — no binding is captured here
+    // `parse` returns the frame only — no binding is captured here
     // but the call must succeed.
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     assert!(!frame.root.children.is_empty(), "rect must still emit");
 }
 
-/// Round 209: round-trip through `write_svg_with_extras` re-emits the
+/// Round 209: round-trip through `write_with_extras` re-emits the
 /// `vector-effect=` attribute on the matching `<rect>` element.
 #[test]
 fn round_trip_re_emits_attribute_on_rect() {
@@ -253,8 +253,8 @@ fn round_trip_re_emits_attribute_on_rect() {
         <rect x="10" y="10" width="50" height="50" fill="red" stroke="black"
               stroke-width="3" vector-effect="non-scaling-stroke"/>
     </svg>"#;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
-    let out = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).unwrap();
+    let out = write_with_extras(&frame, &extras);
     let out_str = String::from_utf8(out).unwrap();
     assert!(
         out_str.contains(r#"vector-effect="non-scaling-stroke""#),
@@ -272,8 +272,8 @@ fn round_trip_preserves_multi_keyword_order() {
         <path d="M 0 0 L 100 100" stroke="black" stroke-width="2"
               vector-effect="non-rotation non-scaling-size screen"/>
     </svg>"#;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
-    let out = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).unwrap();
+    let out = write_with_extras(&frame, &extras);
     let out_str = String::from_utf8(out).unwrap();
     assert!(
         out_str.contains(r#"vector-effect="non-rotation non-scaling-size screen""#),
@@ -295,8 +295,8 @@ fn round_trip_preserves_group_attribute() {
             <rect x="0" y="0" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
-    let out = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).unwrap();
+    let out = write_with_extras(&frame, &extras);
     let out_str = String::from_utf8(out).unwrap();
     assert!(
         out_str.contains(r#"vector-effect="non-scaling-stroke""#),
@@ -315,10 +315,10 @@ fn round_trip_is_stable_under_double_pass() {
         <rect x="10" y="10" width="50" height="50" fill="red" stroke="black"
               stroke-width="3" vector-effect="non-scaling-stroke"/>
     </svg>"#;
-    let (frame1, extras1) = parse_svg_with_extras(src).unwrap();
-    let out1 = write_svg_with_extras(&frame1, &extras1);
-    let (frame2, extras2) = parse_svg_with_extras(&out1).unwrap();
-    let out2 = write_svg_with_extras(&frame2, &extras2);
+    let (frame1, extras1) = parse_with_extras(src).unwrap();
+    let out1 = write_with_extras(&frame1, &extras1);
+    let (frame2, extras2) = parse_with_extras(&out1).unwrap();
+    let out2 = write_with_extras(&frame2, &extras2);
     assert_eq!(
         out1, out2,
         "round 209: a second round-trip must converge byte-for-byte"
@@ -343,7 +343,7 @@ fn keywords_canonicalise_to_single_space_separators() {
         <rect x="0" y="0" width="50" height="50"
               vector-effect="non-scaling-stroke   non-rotation"/>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.vector_effects.len(), 1);
     assert_eq!(
         extras.vector_effects[0].vector_effect, "non-scaling-stroke non-rotation",

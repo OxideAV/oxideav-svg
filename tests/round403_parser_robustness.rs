@@ -147,11 +147,11 @@ const HOSTILE_DOCS: &[&str] = &[
 
 fn exercise_doc(bytes: &[u8]) {
     let _ = parse_xml(&String::from_utf8_lossy(bytes));
-    if let Ok(frame) = oxideav_svg::parse_svg(bytes) {
+    if let Ok(frame) = oxideav_svg::parse(bytes) {
         // A successful decode must also survive a write round-trip.
-        let _ = oxideav_svg::write_svg(&frame);
+        let _ = oxideav_svg::write(&frame);
     }
-    let _ = oxideav_svg::parse_svg_with_extras(bytes);
+    let _ = oxideav_svg::parse_with_extras(bytes);
 }
 
 /// Tiny deterministic xorshift PRNG so a failure is reproducible.
@@ -183,8 +183,8 @@ fn unterminated_at_rule_block_does_not_panic() {
     ];
     for d in docs {
         // Both the whole-document path and the raw stylesheet path.
-        let _ = oxideav_svg::parse_svg(d.as_bytes());
-        let _ = oxideav_svg::parse_svg_with_extras(d.as_bytes());
+        let _ = oxideav_svg::parse(d.as_bytes());
+        let _ = oxideav_svg::parse_with_extras(d.as_bytes());
     }
 }
 

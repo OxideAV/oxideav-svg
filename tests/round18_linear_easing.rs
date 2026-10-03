@@ -8,7 +8,7 @@
 //!
 //! The end-to-end test wires `linear(0, 0.5 25%, 1)` into an SVG
 //! `<style>` block's `animation-timing-function` and confirms that
-//! `parse_svg_at(t_seconds)` produces the spec-correct interpolated
+//! `parse_at(t_seconds)` produces the spec-correct interpolated
 //! property value.
 
 use oxideav_svg::keyframe::{LinearStop, TimingFunction};
@@ -62,7 +62,7 @@ fn linear_function_explicit_midpoint_input() {
 #[test]
 fn linear_function_drives_opacity_keyframes_at_t() {
     // End-to-end — feed `linear(0, 0.5 25%, 1)` through an SVG
-    // animation and verify `parse_svg_at` resolves the eased opacity
+    // animation and verify `parse_at` resolves the eased opacity
     // at runtime.
     let src = br##"<?xml version="1.0"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">
@@ -82,9 +82,9 @@ fn linear_function_drives_opacity_keyframes_at_t() {
     // At t=0.25s of a 1s animation the eased progress is 0.5 →
     // opacity 0.5 (verified independently by the unit-level
     // compute_progress test above).
-    let frame = oxideav_svg::parse_svg_at(src, 0.25).unwrap();
+    let frame = oxideav_svg::parse_at(src, 0.25).unwrap();
     let g = match &frame.root.children[0] {
-        oxideav_core::Node::Group(g) => g,
+        oxideav_svg::Node::Group(g) => g,
         other => panic!("expected group, got {other:?}"),
     };
     // The group's effective opacity should be 0.5 (modulo the lerp

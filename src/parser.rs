@@ -8,7 +8,7 @@
 //! part case-insensitively (SVG, like HTML, accepts mixed-case markup
 //! in some real-world inputs).
 
-use oxideav_core::{Error, Result};
+use crate::error::{Error, Result};
 
 /// One XML element parsed from the input.
 ///
@@ -41,9 +41,75 @@ pub enum Node {
 /// hard-code that — the caller is responsible for picking the right
 /// root.
 pub fn parse_xml(src: &str) -> Result<Vec<Node>> {
+    parse_xml_with_limits(src, &XmlLimits::default())
+}
+
+/// Hostile-input bounds for [`parse_xml_with_limits`]. SVG's attack
+/// surface is XML: nesting depth (stack), element count (heap) and,
+/// under `strict`, well-formedness. [`crate::DecodeOptions`] maps onto
+/// this record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct XmlLimits {
+    /// Deepest element nesting accepted; deeper input is
+    /// [`Error::LimitExceeded`]. Default [`MAX_XML_DEPTH`].
+    pub max_depth: usize,
+    /// Most elements accepted in one document (`None` = unlimited);
+    /// more is [`Error::LimitExceeded`]. Default [`DEFAULT_MAX_ELEMENTS`].
+    pub max_elements: Option<u64>,
+    /// Reject what the lenient parser otherwise tolerates: a close tag
+    /// that does not match the open element, and an unterminated
+    /// element at end of input.
+    pub strict: bool,
+}
+
+/// Default element-count bound: a million elements is far beyond any
+/// authored SVG (a dense map export is a few tens of thousands) while
+/// still capping a hostile `<g/><g/>…` stream to a bounded allocation.
+pub const DEFAULT_MAX_ELEMENTS: u64 = 1 << 20;
+
+impl Default for XmlLimits {
+    fn default() -> Self {
+        Self {
+            max_depth: MAX_XML_DEPTH,
+            max_elements: Some(DEFAULT_MAX_ELEMENTS),
+            strict: false,
+        }
+    }
+}
+
+impl XmlLimits {
+    /// The defaults.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the nesting-depth bound.
+    pub fn with_max_depth(mut self, max_depth: usize) -> Self {
+        self.max_depth = max_depth;
+        self
+    }
+
+    /// Set the element-count bound (`None` = unlimited).
+    pub fn with_max_elements(mut self, max_elements: impl Into<Option<u64>>) -> Self {
+        self.max_elements = max_elements.into();
+        self
+    }
+
+    /// Set strict well-formedness checking.
+    pub fn with_strict(mut self, strict: bool) -> Self {
+        self.strict = strict;
+        self
+    }
+}
+
+/// [`parse_xml`] with explicit [`XmlLimits`].
+pub fn parse_xml_with_limits(src: &str, limits: &XmlLimits) -> Result<Vec<Node>> {
     let mut p = XmlParser {
         src: src.as_bytes(),
         pos: 0,
+        limits: *limits,
+        elements: 0,
     };
     p.skip_prolog();
     let mut out: Vec<Node> = Vec::new();
@@ -54,6 +120,96 @@ pub fn parse_xml(src: &str) -> Result<Vec<Node>> {
         }
     }
     Ok(out)
+}
+
+/// Locate the document's `<svg>` start tag and return it as an
+/// [`Element`] with its attributes and **no children** — the header-only
+/// read behind [`crate::info`]. Skips the prolog, comments, processing
+/// instructions and any non-`svg` wrapper elements' start tags on the
+/// way (the lenient [`parse_xml`] also accepts a nested root), never
+/// descends into element bodies, and allocates only the attribute
+/// strings of the tags it passes. `Ok(None)` when no `<svg>` tag opens
+/// before the end of input; `Err` only for malformed tag syntax.
+pub fn parse_root_start_tag(src: &str) -> Result<Option<Element>> {
+    let mut p = XmlParser {
+        src: src.as_bytes(),
+        pos: 0,
+        limits: XmlLimits::default(),
+        elements: 0,
+    };
+    p.skip_prolog();
+    let mut depth = 0usize;
+    while p.pos < p.src.len() {
+        // Skip text.
+        while p.pos < p.src.len() && p.src[p.pos] != b'<' {
+            p.pos += 1;
+        }
+        if p.pos >= p.src.len() {
+            break;
+        }
+        let rest = &p.src[p.pos..];
+        if rest.starts_with(b"<!--") {
+            p.pos = find_seq(p.src, p.pos, b"-->")
+                .map(|e| e + 3)
+                .unwrap_or(p.src.len());
+            continue;
+        }
+        if rest.starts_with(b"<?") {
+            p.pos = find_seq(p.src, p.pos, b"?>")
+                .map(|e| e + 2)
+                .unwrap_or(p.src.len());
+            continue;
+        }
+        if rest.starts_with(b"<![CDATA[") {
+            p.pos = find_seq(p.src, p.pos, b"]]>")
+                .map(|e| e + 3)
+                .unwrap_or(p.src.len());
+            continue;
+        }
+        if rest.starts_with(b"<!") {
+            p.pos = find_seq(p.src, p.pos, b">")
+                .map(|e| e + 1)
+                .unwrap_or(p.src.len());
+            continue;
+        }
+        if rest.starts_with(b"</") {
+            p.pos = find_seq(p.src, p.pos, b">")
+                .map(|e| e + 1)
+                .unwrap_or(p.src.len());
+            continue;
+        }
+        // A start tag.
+        depth += 1;
+        if depth > MAX_XML_DEPTH {
+            return Err(Error::limit("XML: element nesting too deep"));
+        }
+        p.pos += 1;
+        let name_start = p.pos;
+        while p.pos < p.src.len()
+            && !matches!(p.src[p.pos], b' ' | b'\t' | b'\n' | b'\r' | b'>' | b'/')
+        {
+            p.pos += 1;
+        }
+        let name = std::str::from_utf8(&p.src[name_start..p.pos])
+            .map_err(|_| Error::invalid("XML: bad UTF-8 in tag name"))?
+            .to_string();
+        if name.is_empty() {
+            return Err(Error::invalid("XML: empty tag name"));
+        }
+        let (attrs, _self_closing) = p.parse_attrs()?;
+        if tag_local(&name) == "svg" {
+            return Ok(Some(Element {
+                name,
+                attrs,
+                children: Vec::new(),
+            }));
+        }
+        if is_raw_text_element(&name) {
+            // Don't scan a <script> body for tags.
+            let _ = p.parse_raw_text_until_close(&name)?;
+        }
+    }
+    Ok(None)
 }
 
 /// Maximum XML element nesting the parser will descend into before it
@@ -73,6 +229,8 @@ pub const MAX_XML_DEPTH: usize = 128;
 struct XmlParser<'a> {
     src: &'a [u8],
     pos: usize,
+    limits: XmlLimits,
+    elements: u64,
 }
 
 impl<'a> XmlParser<'a> {
@@ -163,8 +321,16 @@ impl<'a> XmlParser<'a> {
     }
 
     fn parse_element(&mut self, depth: usize) -> Result<Element> {
-        if depth >= MAX_XML_DEPTH {
-            return Err(Error::invalid("XML: element nesting too deep"));
+        if depth >= self.limits.max_depth {
+            return Err(Error::limit("XML: element nesting too deep"));
+        }
+        self.elements += 1;
+        if let Some(max) = self.limits.max_elements {
+            if self.elements > max {
+                return Err(Error::limit(format!(
+                    "XML: more than {max} elements (max_elements)"
+                )));
+            }
         }
         debug_assert_eq!(self.src[self.pos], b'<');
         self.pos += 1;
@@ -183,41 +349,52 @@ impl<'a> XmlParser<'a> {
         if name.is_empty() {
             return Err(Error::invalid("XML: empty tag name"));
         }
+        let (attrs, self_closing) = self.parse_attrs()?;
+        if self_closing {
+            return Ok(Element {
+                name,
+                attrs,
+                children: Vec::new(),
+            });
+        }
+        // Per HTML/SVG, <script> (and <style>) bodies are raw
+        // text — `<` inside them must NOT be parsed as markup.
+        // Real-world SVGs frequently embed unescaped JS like
+        // `if (a < b)` without CDATA wrapping; treating the
+        // body as XML would either error out or eat the rest
+        // of the document. Round-12 captures the body verbatim
+        // as a single Text child so the round-trip preserves
+        // the script and the rest of the document still parses.
+        let children = if is_raw_text_element(&name) {
+            self.parse_raw_text_until_close(&name)?
+        } else {
+            self.parse_children(&name, depth + 1)?
+        };
+        Ok(Element {
+            name,
+            attrs,
+            children,
+        })
+    }
+
+    /// Parse the attribute list of a start tag (the parser sits just
+    /// after the tag name) through the closing `>` / `/>`. Returns the
+    /// attributes and whether the tag was self-closing.
+    fn parse_attrs(&mut self) -> Result<(Vec<(String, String)>, bool)> {
         let mut attrs: Vec<(String, String)> = Vec::new();
         self.skip_ws();
         while self.pos < self.src.len() {
             let b = self.src[self.pos];
             if b == b'>' {
                 self.pos += 1;
-                // Per HTML/SVG, <script> (and <style>) bodies are raw
-                // text — `<` inside them must NOT be parsed as markup.
-                // Real-world SVGs frequently embed unescaped JS like
-                // `if (a < b)` without CDATA wrapping; treating the
-                // body as XML would either error out or eat the rest
-                // of the document. Round-12 captures the body verbatim
-                // as a single Text child so the round-trip preserves
-                // the script and the rest of the document still parses.
-                let children = if is_raw_text_element(&name) {
-                    self.parse_raw_text_until_close(&name)?
-                } else {
-                    self.parse_children(&name, depth + 1)?
-                };
-                return Ok(Element {
-                    name,
-                    attrs,
-                    children,
-                });
+                return Ok((attrs, false));
             }
             if b == b'/' {
                 self.pos += 1;
                 self.skip_ws();
                 if self.pos < self.src.len() && self.src[self.pos] == b'>' {
                     self.pos += 1;
-                    return Ok(Element {
-                        name,
-                        attrs,
-                        children: Vec::new(),
-                    });
+                    return Ok((attrs, true));
                 }
                 return Err(Error::invalid("XML: malformed self-closing tag"));
             }
@@ -341,15 +518,26 @@ impl<'a> XmlParser<'a> {
                 if close_name.eq_ignore_ascii_case(name) {
                     return Ok(children);
                 }
-                // Mismatched close — tolerate by stopping here. Strict
-                // SVG validators would reject; we'd rather load the
-                // document than fail the round-trip on a stray tag.
+                // Mismatched close — tolerate by stopping here unless
+                // `strict`. Strict SVG validators reject; the lenient
+                // default would rather load the document than fail the
+                // round-trip on a stray tag.
+                if self.limits.strict {
+                    return Err(Error::invalid(format!(
+                        "XML (strict): </{close_name}> closes <{name}>"
+                    )));
+                }
                 return Ok(children);
             }
             match self.parse_node(depth)? {
                 Some(node) => children.push(node),
                 None => break,
             }
+        }
+        if self.limits.strict {
+            return Err(Error::invalid(format!(
+                "XML (strict): <{name}> is not closed before end of input"
+            )));
         }
         Ok(children)
     }
@@ -429,37 +617,27 @@ pub const MAX_SVGZ_INFLATED: u64 = 128 * 1024 * 1024;
 /// [`MAX_SVGZ_INFLATED`] (a decompression-bomb guard: the read is capped
 /// so the huge buffer is never materialised).
 pub fn inflate_gzip(bytes: &[u8]) -> Result<Vec<u8>> {
-    use std::io::Read;
-    let decoder = flate2::read::GzDecoder::new(bytes);
-    // Read at most one byte past the cap so an over-limit stream is
-    // detected without ever allocating the full bomb payload.
-    let mut limited = decoder.take(MAX_SVGZ_INFLATED + 1);
-    let mut out = Vec::with_capacity((bytes.len() * 4).min(1 << 20));
-    limited
-        .read_to_end(&mut out)
-        .map_err(|e| Error::invalid(format!("SVG: gzip inflate failed: {e}")))?;
-    if out.len() as u64 > MAX_SVGZ_INFLATED {
-        return Err(Error::invalid(
-            "SVG: gzip inflate exceeded the decompression-size limit",
-        ));
-    }
-    Ok(out)
+    inflate_gzip_capped(bytes, MAX_SVGZ_INFLATED)
 }
 
-/// Deflate (gzip) the SVG bytes for `.svgz` output. Uses the default
-/// compression level which mirrors what the gzip(1) utility produces.
+/// [`inflate_gzip`] with an explicit inflated-size cap (the smaller of
+/// [`MAX_SVGZ_INFLATED`] and a caller's `max_bytes`). Over-cap input is
+/// [`Error::LimitExceeded`]; the output buffer never grows past `cap`.
+pub fn inflate_gzip_capped(bytes: &[u8], cap: u64) -> Result<Vec<u8>> {
+    match compcol::vec::decompress_to_vec_capped::<compcol::gzip::Gzip>(bytes, cap) {
+        Ok(out) => Ok(out),
+        Err(compcol::Error::OutputLimitExceeded) => Err(Error::limit(
+            "SVG: gzip inflate exceeded the decompression-size limit",
+        )),
+        Err(e) => Err(Error::invalid(format!("SVG: gzip inflate failed: {e}"))),
+    }
+}
+
+/// Deflate (gzip) the SVG bytes for `.svgz` output, at the default
+/// compression level.
 pub fn deflate_gzip(bytes: &[u8]) -> Result<Vec<u8>> {
-    use std::io::Write;
-    let mut encoder = flate2::write::GzEncoder::new(
-        Vec::with_capacity(bytes.len() / 2),
-        flate2::Compression::default(),
-    );
-    encoder
-        .write_all(bytes)
-        .map_err(|e| Error::invalid(format!("SVG: gzip deflate failed: {e}")))?;
-    encoder
-        .finish()
-        .map_err(|e| Error::invalid(format!("SVG: gzip finish failed: {e}")))
+    compcol::vec::compress_to_vec::<compcol::gzip::Gzip>(bytes)
+        .map_err(|e| Error::invalid(format!("SVG: gzip deflate failed: {e}")))
 }
 
 /// Decode the XML predefined entities + numeric character references.

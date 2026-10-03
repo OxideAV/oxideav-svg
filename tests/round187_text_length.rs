@@ -22,9 +22,9 @@
 
 #![cfg(feature = "text")]
 
-use oxideav_core::Node;
 use oxideav_scribe::{Face, FaceChain};
-use oxideav_svg::{parse_svg, text::set_font_resolver};
+use oxideav_svg::Node;
+use oxideav_svg::{parse, text::set_font_resolver};
 
 const FONT: &[u8] = include_bytes!("fixtures/DejaVuSansMono.ttf");
 
@@ -55,7 +55,7 @@ fn collect_placements(node: &Node, out: &mut Vec<(f32, f32, f32)>) {
     }
 }
 
-fn text_groups(frame: &oxideav_core::VectorFrame) -> Vec<&oxideav_core::Group> {
+fn text_groups(frame: &oxideav_svg::SvgDocument) -> Vec<&oxideav_svg::Group> {
     frame
         .root
         .children
@@ -67,7 +67,7 @@ fn text_groups(frame: &oxideav_core::VectorFrame) -> Vec<&oxideav_core::Group> {
         .collect()
 }
 
-fn placements_of(g: &oxideav_core::Group) -> Vec<(f32, f32, f32)> {
+fn placements_of(g: &oxideav_svg::Group) -> Vec<(f32, f32, f32)> {
     let mut out = Vec::new();
     for c in &g.children {
         collect_placements(c, &mut out);
@@ -75,7 +75,7 @@ fn placements_of(g: &oxideav_core::Group) -> Vec<(f32, f32, f32)> {
     out
 }
 
-fn xs_of(g: &oxideav_core::Group) -> Vec<f32> {
+fn xs_of(g: &oxideav_svg::Group) -> Vec<f32> {
     placements_of(g).into_iter().map(|(_, x, _)| x).collect()
 }
 
@@ -96,7 +96,7 @@ fn baseline_extent() -> (f32, f32) {
 <svg xmlns="http://www.w3.org/2000/svg" width="800" height="100">
   <text x="100" y="50" font-size="16">ABCDE</text>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let groups = text_groups(&frame);
     let xs = xs_of(groups[0]);
     (leftmost(&xs), rightmost(&xs))
@@ -124,7 +124,7 @@ fn text_length_rescales_chunk_width_spacing_default() {
 <svg xmlns="http://www.w3.org/2000/svg" width="800" height="100">
   <text x="100" y="50" font-size="16" textLength="300">ABCDE</text>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let groups = text_groups(&frame);
     assert_eq!(groups.len(), 1);
     let xs = xs_of(groups[0]);
@@ -170,7 +170,7 @@ fn length_adjust_spacing_and_glyphs_stretches_outlines() {
 <svg xmlns="http://www.w3.org/2000/svg" width="800" height="100">
   <text x="100" y="50" font-size="16" textLength="300" lengthAdjust="spacingAndGlyphs">ABCDE</text>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let groups = text_groups(&frame);
     let placements = placements_of(groups[0]);
     assert!(
@@ -202,7 +202,7 @@ fn text_length_composes_with_middle_anchor() {
 <svg xmlns="http://www.w3.org/2000/svg" width="800" height="100">
   <text x="400" y="50" font-size="16" textLength="300" text-anchor="middle">ABCDE</text>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let groups = text_groups(&frame);
     let xs = xs_of(groups[0]);
     let left = leftmost(&xs);
@@ -231,7 +231,7 @@ fn per_tspan_text_length_isolates_to_its_chunk() {
 <svg xmlns="http://www.w3.org/2000/svg" width="800" height="100">
   <text x="50" y="50" font-size="16">ABCDE<tspan x="500" textLength="200">FGHIJ</tspan></text>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let groups = text_groups(&frame);
     let xs = xs_of(groups[0]);
     assert!(
@@ -282,7 +282,7 @@ fn negative_text_length_is_ignored() {
 <svg xmlns="http://www.w3.org/2000/svg" width="800" height="100">
   <text x="100" y="50" font-size="16" textLength="-50">ABCDE</text>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let groups = text_groups(&frame);
     let xs = xs_of(groups[0]);
     let w = rightmost(&xs) - leftmost(&xs);

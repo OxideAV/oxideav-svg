@@ -2,12 +2,12 @@
 //! re-emit it, parse the output back, and assert structural equality:
 //! same shape count, same width/height, same stroke widths.
 
-use oxideav_core::{Node, Paint, VectorFrame};
-use oxideav_svg::{parse_svg, write_svg};
+use oxideav_svg::{parse, write};
+use oxideav_svg::{Node, Paint, SvgDocument};
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/icon-house.svg");
 
-fn count_paths(frame: &VectorFrame) -> usize {
+fn count_paths(frame: &SvgDocument) -> usize {
     fn walk(node: &Node, n: &mut usize) {
         match node {
             Node::Path(_) => *n += 1,
@@ -16,7 +16,6 @@ fn count_paths(frame: &VectorFrame) -> usize {
                     walk(c, n);
                 }
             }
-            Node::Image(_) => {}
             _ => {}
         }
     }
@@ -29,7 +28,7 @@ fn count_paths(frame: &VectorFrame) -> usize {
 
 #[test]
 fn fixture_loads_and_round_trips_structurally() {
-    let frame = parse_svg(FIXTURE).expect("fixture parses");
+    let frame = parse(FIXTURE).expect("fixture parses");
     assert_eq!(frame.width, 64.0);
     assert_eq!(frame.height, 64.0);
 
@@ -38,8 +37,8 @@ fn fixture_loads_and_round_trips_structurally() {
     let n1 = count_paths(&frame);
     assert_eq!(n1, 7, "expected 7 paths in the fixture, got {n1}");
 
-    let bytes = write_svg(&frame);
-    let frame2 = parse_svg(&bytes).expect("re-emitted SVG parses");
+    let bytes = write(&frame);
+    let frame2 = parse(&bytes).expect("re-emitted SVG parses");
     let n2 = count_paths(&frame2);
     assert_eq!(n1, n2, "round-trip must preserve path count");
     assert_eq!(frame.width, frame2.width);
@@ -48,7 +47,7 @@ fn fixture_loads_and_round_trips_structurally() {
 
 #[test]
 fn fixture_resolves_gradient_url_reference() {
-    let frame = parse_svg(FIXTURE).unwrap();
+    let frame = parse(FIXTURE).unwrap();
     // First child is the sky <rect> with fill="url(#sky)".
     let p = match &frame.root.children[0] {
         Node::Path(p) => p,

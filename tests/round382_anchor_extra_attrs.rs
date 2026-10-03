@@ -8,11 +8,11 @@
 //! `LinkBinding::extra_attrs` (document order) and re-emits them so the
 //! `<a>` round-trip is lossless.
 
-use oxideav_svg::{parse_svg_with_extras, write_svg_with_extras};
+use oxideav_svg::{parse_with_extras, write_with_extras};
 
 fn roundtrip(src: &[u8]) -> String {
-    let (frame, extras) = parse_svg_with_extras(src).expect("parse");
-    String::from_utf8(write_svg_with_extras(&frame, &extras)).expect("utf8")
+    let (frame, extras) = parse_with_extras(src).expect("parse");
+    String::from_utf8(write_with_extras(&frame, &extras)).expect("utf8")
 }
 
 /// Core + styling attributes on `<a>` survive the round-trip.
@@ -50,7 +50,7 @@ fn modelled_link_attrs_not_duplicated() {
             <rect width="10" height="10"/>
         </a>
     </svg>"##;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     let link = &extras.links[0];
     for modelled in [
         "href",
@@ -96,7 +96,7 @@ fn plain_anchor_has_no_extras() {
                        viewBox="0 0 100 100">
         <a href="https://example.org"><rect width="10" height="10"/></a>
     </svg>"##;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(extras.links[0].extra_attrs.is_empty());
 }
 
@@ -109,7 +109,7 @@ fn extra_attrs_preserve_order() {
             <rect width="10" height="10"/>
         </a>
     </svg>"##;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     let keys: Vec<&str> = extras.links[0]
         .extra_attrs
         .iter()
@@ -117,7 +117,7 @@ fn extra_attrs_preserve_order() {
         .collect();
     assert_eq!(keys, vec!["data-a", "data-b", "data-c"]);
     let out = roundtrip(src);
-    let (_f2, extras2) = parse_svg_with_extras(out.as_bytes()).unwrap();
+    let (_f2, extras2) = parse_with_extras(out.as_bytes()).unwrap();
     let keys2: Vec<&str> = extras2.links[0]
         .extra_attrs
         .iter()

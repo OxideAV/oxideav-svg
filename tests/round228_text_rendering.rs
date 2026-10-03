@@ -20,7 +20,7 @@
 
 use oxideav_svg::element::{PaintState, TextRendering};
 use oxideav_svg::parser::{parse_xml, Element, Node as XmlNode};
-use oxideav_svg::{parse_svg, parse_svg_with_extras, write_svg_with_extras};
+use oxideav_svg::{parse, parse_with_extras, write_with_extras};
 
 /// Default `text-rendering` is `auto` (per §13.10.3 Initial table).
 #[test]
@@ -37,7 +37,7 @@ fn baseline_no_text_rendering_attr_no_binding() {
                        viewBox="0 0 100 100">
         <rect x="10" y="10" width="50" height="50" fill="red"/>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(
         extras.text_renderings.is_empty(),
         "round 228: a document without text-rendering= must not record a binding"
@@ -57,7 +57,7 @@ fn optimize_legibility_on_g_records_binding() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(
         extras.text_renderings.len(),
         1,
@@ -87,7 +87,7 @@ fn each_keyword_records_canonical_form() {
             </svg>"#,
             input
         );
-        let (_frame, extras) = parse_svg_with_extras(src.as_bytes()).unwrap();
+        let (_frame, extras) = parse_with_extras(src.as_bytes()).unwrap();
         assert_eq!(extras.text_renderings.len(), 1, "input={}", input);
         assert_eq!(
             extras.text_renderings[0].text_rendering, expected,
@@ -116,7 +116,7 @@ fn keyword_matching_is_case_insensitive() {
             </svg>"#,
             input
         );
-        let (_frame, extras) = parse_svg_with_extras(src.as_bytes()).unwrap();
+        let (_frame, extras) = parse_with_extras(src.as_bytes()).unwrap();
         assert_eq!(extras.text_renderings.len(), 1, "input={}", input);
         assert_eq!(
             extras.text_renderings[0].text_rendering, expected,
@@ -139,7 +139,7 @@ fn explicit_auto_is_recorded() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(
         extras.text_renderings.len(),
         1,
@@ -158,7 +158,7 @@ fn inherit_keyword_skips_recording() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(
         extras.text_renderings.is_empty(),
         "round 228: `inherit` keeps the inherited value and skips recording"
@@ -177,13 +177,13 @@ fn unknown_keyword_skips_recording() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(
         extras.text_renderings.is_empty(),
         "round 228: unrecognised keyword keeps inherited value and skips recording"
     );
     // The document still loads (no parse failure).
-    let _ = parse_svg(src).unwrap();
+    let _ = parse(src).unwrap();
 }
 
 /// Round 228: empty `text-rendering=""` skips recording (no keyword to
@@ -196,7 +196,7 @@ fn empty_value_skips_recording() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(extras.text_renderings.is_empty());
 }
 
@@ -325,7 +325,7 @@ fn child_can_override_inherited_value() {
 }
 
 /// Round 228: round-trip preserves `text-rendering=` on a `<g>` — a
-/// `parse_svg_with_extras → write_svg_with_extras` cycle re-emits the
+/// `parse_with_extras → write_with_extras` cycle re-emits the
 /// attribute on the matching element.
 #[test]
 fn roundtrip_emits_attribute_on_group() {
@@ -335,8 +335,8 @@ fn roundtrip_emits_attribute_on_group() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
-    let out = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).unwrap();
+    let out = write_with_extras(&frame, &extras);
     let out_s = String::from_utf8(out).unwrap();
     assert!(
         out_s.contains("text-rendering=\"optimizeSpeed\""),
@@ -355,10 +355,10 @@ fn roundtrip_is_idempotent() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (frame1, extras1) = parse_svg_with_extras(src).unwrap();
-    let out1 = write_svg_with_extras(&frame1, &extras1);
-    let (frame2, extras2) = parse_svg_with_extras(&out1).unwrap();
-    let out2 = write_svg_with_extras(&frame2, &extras2);
+    let (frame1, extras1) = parse_with_extras(src).unwrap();
+    let out1 = write_with_extras(&frame1, &extras1);
+    let (frame2, extras2) = parse_with_extras(&out1).unwrap();
+    let out2 = write_with_extras(&frame2, &extras2);
     assert_eq!(
         out1, out2,
         "round 228: parse → write → parse → write must converge"
@@ -367,17 +367,17 @@ fn roundtrip_is_idempotent() {
     assert!(s2.contains("text-rendering=\"geometricPrecision\""));
 }
 
-/// Round 228: `parse_svg` (no extras) still loads the document cleanly
+/// Round 228: `parse` (no extras) still loads the document cleanly
 /// — the property cascade machinery doesn't require the side-channel.
 #[test]
-fn parse_svg_without_extras_still_loads() {
+fn parse_without_extras_still_loads() {
     let src = br#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"
                        viewBox="0 0 100 100">
         <g text-rendering="optimizeLegibility">
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let _ = parse_svg(src).unwrap();
+    let _ = parse(src).unwrap();
 }
 
 /// Round 228: a `<g text-rendering=…>` ancestor records the attribute
@@ -395,7 +395,7 @@ fn group_attribute_records_once_not_per_child() {
             <rect x="30" y="30" width="50" height="50" fill="blue"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(
         extras.text_renderings.len(),
         1,
@@ -417,8 +417,8 @@ fn group_attribute_roundtrips_on_group_element() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
-    let out = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).unwrap();
+    let out = write_with_extras(&frame, &extras);
     let s = String::from_utf8(out).unwrap();
     assert!(
         s.contains("<g ") && s.contains("text-rendering=\"optimizeSpeed\""),
@@ -438,10 +438,10 @@ fn coexists_with_shape_rendering_on_same_group() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.text_renderings.len(), 1);
     assert_eq!(extras.shape_renderings.len(), 1);
-    let out = write_svg_with_extras(&frame, &extras);
+    let out = write_with_extras(&frame, &extras);
     let s = String::from_utf8(out).unwrap();
     assert!(s.contains("text-rendering=\"optimizeLegibility\""));
     assert!(s.contains("shape-rendering=\"geometricPrecision\""));
@@ -463,7 +463,7 @@ fn per_child_override_records_separately() {
             </g>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.text_renderings.len(), 2);
     let kinds: Vec<&str> = extras
         .text_renderings

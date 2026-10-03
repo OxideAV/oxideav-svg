@@ -13,7 +13,8 @@
 //! literal `none` keyword. Gradient `url(#id)` references are handled
 //! separately by [`parse_paint_ref`].
 
-use oxideav_core::{Error, Result, Rgba};
+use crate::error::{Error, Result};
+use crate::model::Rgba;
 
 /// Result of parsing a `fill` or `stroke` value.
 #[derive(Clone, Debug, PartialEq)]

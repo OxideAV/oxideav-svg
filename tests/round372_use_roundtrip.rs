@@ -19,10 +19,10 @@
 //! the inlined geometry), the `<defs>` target survives, and a re-parse
 //! of the output reproduces the same scene-graph shape count.
 
-use oxideav_core::Node;
-use oxideav_svg::{parse_svg_with_extras, write_svg_with_extras};
+use oxideav_svg::Node;
+use oxideav_svg::{parse_with_extras, write_with_extras};
 
-fn count_paths(g: &oxideav_core::Group) -> usize {
+fn count_paths(g: &oxideav_svg::Group) -> usize {
     let mut n = 0;
     for c in &g.children {
         match c {
@@ -40,8 +40,8 @@ fn count_paths(g: &oxideav_core::Group) -> usize {
 }
 
 fn roundtrip(src: &[u8]) -> String {
-    let (frame, extras) = parse_svg_with_extras(src).expect("parse");
-    let out = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).expect("parse");
+    let out = write_with_extras(&frame, &extras);
     String::from_utf8(out).expect("utf8")
 }
 
@@ -84,7 +84,7 @@ fn use_reference_survives_reparse() {
   <use href="#r1" x="40" y="40"/>
 </svg>"##;
     // Original parse: two <use> → two instantiated rect paths.
-    let (frame0, _) = parse_svg_with_extras(src).expect("parse0");
+    let (frame0, _) = parse_with_extras(src).expect("parse0");
     let n0 = count_paths(&frame0.root);
     assert_eq!(n0, 2, "two instances → two paths");
 
@@ -96,7 +96,7 @@ fn use_reference_survives_reparse() {
     );
     // Re-parse the serialised output: the <defs> target + two <use>
     // must reconstruct the same instance count.
-    let (frame1, _) = parse_svg_with_extras(out.as_bytes()).expect("reparse");
+    let (frame1, _) = parse_with_extras(out.as_bytes()).expect("reparse");
     let n1 = count_paths(&frame1.root);
     assert_eq!(n1, n0, "re-parse reproduces the instance count:\n{out}");
 }
@@ -178,7 +178,7 @@ fn plain_document_without_use_is_unaffected() {
 <svg xmlns="http://www.w3.org/2000/svg" width="50" height="50">
   <rect x="0" y="0" width="10" height="10" fill="red"/>
 </svg>"##;
-    let (_, extras) = parse_svg_with_extras(src).expect("parse");
+    let (_, extras) = parse_with_extras(src).expect("parse");
     assert!(extras.uses.is_empty(), "no <use> bindings");
     assert!(extras.defs_targets.is_empty(), "no defs targets");
     let out = roundtrip(src);

@@ -24,7 +24,7 @@
 
 use oxideav_svg::element::{ColorRendering, PaintState};
 use oxideav_svg::parser::{parse_xml, Element, Node as XmlNode};
-use oxideav_svg::{parse_svg, parse_svg_with_extras, write_svg_with_extras};
+use oxideav_svg::{parse, parse_with_extras, write_with_extras};
 
 /// Default `color-rendering` is `auto` (per §13.10.1 Initial table).
 #[test]
@@ -41,7 +41,7 @@ fn baseline_no_color_rendering_attr_no_binding() {
                        viewBox="0 0 100 100">
         <rect x="10" y="10" width="50" height="50" fill="red"/>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(
         extras.color_renderings.is_empty(),
         "round 247: a document without color-rendering= must not record a binding"
@@ -58,7 +58,7 @@ fn optimize_quality_on_g_records_binding() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(
         extras.color_renderings.len(),
         1,
@@ -87,7 +87,7 @@ fn each_keyword_records_canonical_form() {
             </svg>"#,
             input
         );
-        let (_frame, extras) = parse_svg_with_extras(src.as_bytes()).unwrap();
+        let (_frame, extras) = parse_with_extras(src.as_bytes()).unwrap();
         assert_eq!(extras.color_renderings.len(), 1, "input={}", input);
         assert_eq!(
             extras.color_renderings[0].color_rendering, expected,
@@ -116,7 +116,7 @@ fn keyword_matching_is_case_insensitive() {
             </svg>"#,
             input
         );
-        let (_frame, extras) = parse_svg_with_extras(src.as_bytes()).unwrap();
+        let (_frame, extras) = parse_with_extras(src.as_bytes()).unwrap();
         assert_eq!(extras.color_renderings.len(), 1, "input={}", input);
         assert_eq!(
             extras.color_renderings[0].color_rendering, expected,
@@ -140,7 +140,7 @@ fn explicit_auto_is_recorded() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(
         extras.color_renderings.len(),
         1,
@@ -159,7 +159,7 @@ fn inherit_keyword_skips_recording() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(
         extras.color_renderings.is_empty(),
         "round 247: `inherit` keeps the inherited value and skips recording"
@@ -179,13 +179,13 @@ fn unknown_keyword_skips_recording() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(
         extras.color_renderings.is_empty(),
         "round 247: unrecognised keyword keeps inherited value and skips recording"
     );
     // The document still loads (no parse failure).
-    let _ = parse_svg(src).unwrap();
+    let _ = parse(src).unwrap();
 }
 
 /// Round 247: empty `color-rendering=""` skips recording (no keyword to
@@ -198,7 +198,7 @@ fn empty_value_skips_recording() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(extras.color_renderings.is_empty());
 }
 
@@ -329,7 +329,7 @@ fn child_can_override_inherited_value() {
 }
 
 /// Round 247: round-trip preserves `color-rendering=` on a `<g>` — a
-/// `parse_svg_with_extras → write_svg_with_extras` cycle re-emits the
+/// `parse_with_extras → write_with_extras` cycle re-emits the
 /// attribute on the matching element.
 #[test]
 fn roundtrip_emits_attribute_on_group() {
@@ -339,8 +339,8 @@ fn roundtrip_emits_attribute_on_group() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
-    let out = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).unwrap();
+    let out = write_with_extras(&frame, &extras);
     let out_s = String::from_utf8(out).unwrap();
     assert!(
         out_s.contains("color-rendering=\"optimizeSpeed\""),
@@ -358,13 +358,13 @@ fn roundtrip_emits_attribute_on_shape() {
                        viewBox="0 0 100 100">
         <rect x="10" y="10" width="50" height="50" fill="red" color-rendering="optimizeQuality"/>
     </svg>"#;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.color_renderings.len(), 1);
     assert_eq!(
         extras.color_renderings[0].color_rendering,
         "optimizeQuality"
     );
-    let out = write_svg_with_extras(&frame, &extras);
+    let out = write_with_extras(&frame, &extras);
     let out_s = String::from_utf8(out).unwrap();
     assert!(
         out_s.contains("color-rendering=\"optimizeQuality\""),
@@ -383,10 +383,10 @@ fn roundtrip_is_idempotent() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (frame1, extras1) = parse_svg_with_extras(src).unwrap();
-    let out1 = write_svg_with_extras(&frame1, &extras1);
-    let (frame2, extras2) = parse_svg_with_extras(&out1).unwrap();
-    let out2 = write_svg_with_extras(&frame2, &extras2);
+    let (frame1, extras1) = parse_with_extras(src).unwrap();
+    let out1 = write_with_extras(&frame1, &extras1);
+    let (frame2, extras2) = parse_with_extras(&out1).unwrap();
+    let out2 = write_with_extras(&frame2, &extras2);
     assert_eq!(
         out1, out2,
         "round 247: parse → write → parse → write must converge"
@@ -405,8 +405,8 @@ fn roundtrip_canonicalises_source_case() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
-    let out = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).unwrap();
+    let out = write_with_extras(&frame, &extras);
     let out_s = String::from_utf8(out).unwrap();
     assert!(
         out_s.contains("color-rendering=\"optimizeSpeed\""),
@@ -415,17 +415,17 @@ fn roundtrip_canonicalises_source_case() {
     );
 }
 
-/// Round 247: `parse_svg` (no extras) still loads the document cleanly
+/// Round 247: `parse` (no extras) still loads the document cleanly
 /// — the property cascade machinery doesn't require the side-channel.
 #[test]
-fn parse_svg_without_extras_still_loads() {
+fn parse_without_extras_still_loads() {
     let src = br#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"
                        viewBox="0 0 100 100">
         <g color-rendering="optimizeQuality">
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let _ = parse_svg(src).unwrap();
+    let _ = parse(src).unwrap();
 }
 
 /// Round 247: a `<g color-rendering=…>` ancestor records the attribute
@@ -443,7 +443,7 @@ fn group_attribute_records_once_not_per_child() {
             <rect x="30" y="30" width="50" height="50" fill="blue"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(
         extras.color_renderings.len(),
         1,
@@ -468,11 +468,11 @@ fn coexists_with_other_rendering_hints_on_same_group() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.color_renderings.len(), 1);
     assert_eq!(extras.shape_renderings.len(), 1);
     assert_eq!(extras.text_renderings.len(), 1);
-    let out = write_svg_with_extras(&frame, &extras);
+    let out = write_with_extras(&frame, &extras);
     let s = String::from_utf8(out).unwrap();
     assert!(s.contains("color-rendering=\"optimizeQuality\""));
     assert!(s.contains("shape-rendering=\"geometricPrecision\""));
@@ -495,7 +495,7 @@ fn per_child_override_records_separately() {
             </g>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.color_renderings.len(), 2);
     let kinds: Vec<&str> = extras
         .color_renderings

@@ -4,11 +4,11 @@
 //! is folded into the parent element's attribute set so the static
 //! render matches what most browsers paint on first frame.
 
-use oxideav_core::{Node, Paint, Rgba};
-use oxideav_svg::parse_svg;
+use oxideav_svg::parse;
+use oxideav_svg::{Node, Paint, Rgba};
 
-fn first_path_fill(frame: &oxideav_core::VectorFrame) -> Option<Paint> {
-    fn find(g: &oxideav_core::Group) -> Option<Paint> {
+fn first_path_fill(frame: &oxideav_svg::SvgDocument) -> Option<Paint> {
+    fn find(g: &oxideav_svg::Group) -> Option<Paint> {
         for c in &g.children {
             match c {
                 Node::Path(p) => return p.fill.clone(),
@@ -41,7 +41,7 @@ fn animate_from_overrides_static_attr_at_t0() {
     <animate attributeName="fill" from="#00ff00" to="#0000ff" dur="2s"/>
   </rect>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let fill = first_path_fill(&frame).expect("fill resolved");
     // Snapshot at t=0 → from="#00ff00".
     assert_eq!(solid_rgba(fill), Rgba::opaque(0, 255, 0));
@@ -54,7 +54,7 @@ fn animate_first_values_entry_used_when_no_from() {
     <animate attributeName="fill" values="#aabbcc;#112233;#445566" dur="3s"/>
   </rect>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fill = first_path_fill(&frame).unwrap();
     assert_eq!(solid_rgba(fill), Rgba::opaque(0xaa, 0xbb, 0xcc));
 }
@@ -66,7 +66,7 @@ fn animate_to_used_when_no_from_or_values() {
     <animate attributeName="fill" to="#ffaabb" dur="1s"/>
   </rect>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fill = first_path_fill(&frame).unwrap();
     assert_eq!(solid_rgba(fill), Rgba::opaque(0xff, 0xaa, 0xbb));
 }
@@ -79,7 +79,7 @@ fn set_overrides_at_t0() {
     <set attributeName="fill" to="#000000"/>
   </rect>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fill = first_path_fill(&frame).unwrap();
     assert_eq!(solid_rgba(fill), Rgba::opaque(0, 0, 0));
 }
@@ -92,7 +92,7 @@ fn animate_without_attribute_name_is_dropped() {
     <animate from="#000000" to="#ffffff" dur="1s"/>
   </rect>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fill = first_path_fill(&frame).unwrap();
     assert_eq!(solid_rgba(fill), Rgba::opaque(255, 0, 0));
 }
@@ -105,11 +105,11 @@ fn animate_x_attribute_repositions_rect() {
     <animate attributeName="x" from="40" to="80" dur="2s"/>
   </rect>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     // Find the path's first MoveTo to see where the rect started.
     let first_x = match &frame.root.children[0] {
         Node::Path(p) => match p.path.commands.first() {
-            Some(oxideav_core::PathCommand::MoveTo(pt)) => pt.x,
+            Some(oxideav_svg::PathCommand::MoveTo(pt)) => pt.x,
             _ => panic!("expected MoveTo"),
         },
         other => panic!("expected Path, got {:?}", other),

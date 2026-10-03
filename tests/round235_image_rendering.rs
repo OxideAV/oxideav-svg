@@ -20,7 +20,7 @@
 
 use oxideav_svg::element::{ImageRendering, PaintState};
 use oxideav_svg::parser::{parse_xml, Element, Node as XmlNode};
-use oxideav_svg::{parse_svg, parse_svg_with_extras, write_svg_with_extras};
+use oxideav_svg::{parse, parse_with_extras, write_with_extras};
 
 /// Default `image-rendering` is `auto` (per §13.10.4 Initial table).
 #[test]
@@ -37,7 +37,7 @@ fn baseline_no_image_rendering_attr_no_binding() {
                        viewBox="0 0 100 100">
         <image href="logo.png" x="0" y="0" width="50" height="50"/>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.images.len(), 1);
     assert!(
         extras.images[0].image_rendering.is_none(),
@@ -54,7 +54,7 @@ fn optimize_quality_on_image_records_binding() {
         <image href="logo.png" x="0" y="0" width="50" height="50"
                image-rendering="optimizeQuality"/>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.images.len(), 1);
     assert_eq!(
         extras.images[0].image_rendering.as_deref(),
@@ -78,7 +78,7 @@ fn each_keyword_records_canonical_form() {
             </svg>"#,
             input
         );
-        let (_frame, extras) = parse_svg_with_extras(src.as_bytes()).unwrap();
+        let (_frame, extras) = parse_with_extras(src.as_bytes()).unwrap();
         assert_eq!(extras.images.len(), 1, "input={}", input);
         assert_eq!(
             extras.images[0].image_rendering.as_deref(),
@@ -106,7 +106,7 @@ fn keyword_matching_is_case_insensitive() {
             </svg>"#,
             input
         );
-        let (_frame, extras) = parse_svg_with_extras(src.as_bytes()).unwrap();
+        let (_frame, extras) = parse_with_extras(src.as_bytes()).unwrap();
         assert_eq!(extras.images.len(), 1, "input={}", input);
         assert_eq!(
             extras.images[0].image_rendering.as_deref(),
@@ -126,7 +126,7 @@ fn inherit_keyword_skips_recording() {
         <image href="logo.png" x="0" y="0" width="50" height="50"
                image-rendering="inherit"/>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.images.len(), 1);
     assert!(
         extras.images[0].image_rendering.is_none(),
@@ -144,14 +144,14 @@ fn unknown_keyword_skips_recording() {
         <image href="logo.png" x="0" y="0" width="50" height="50"
                image-rendering="someFutureKeyword"/>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.images.len(), 1);
     assert!(
         extras.images[0].image_rendering.is_none(),
         "round 235: unrecognised keyword keeps inherited value and skips recording"
     );
     // The document still loads (no parse failure).
-    let _ = parse_svg(src).unwrap();
+    let _ = parse(src).unwrap();
 }
 
 /// Round 235: empty `image-rendering=""` skips recording (no keyword
@@ -163,7 +163,7 @@ fn empty_value_skips_recording() {
         <image href="logo.png" x="0" y="0" width="50" height="50"
                image-rendering=""/>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.images.len(), 1);
     assert!(extras.images[0].image_rendering.is_none());
 }
@@ -292,7 +292,7 @@ fn child_can_override_inherited_value() {
 }
 
 /// Round 235: round-trip preserves `image-rendering=` on an
-/// `<image>` — a `parse_svg_with_extras → write_svg_with_extras`
+/// `<image>` — a `parse_with_extras → write_with_extras`
 /// cycle re-emits the attribute on the matching element.
 #[test]
 fn roundtrip_emits_attribute_on_image() {
@@ -301,8 +301,8 @@ fn roundtrip_emits_attribute_on_image() {
         <image href="logo.png" x="0" y="0" width="50" height="50"
                image-rendering="optimizeSpeed"/>
     </svg>"#;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
-    let out = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).unwrap();
+    let out = write_with_extras(&frame, &extras);
     let out_s = String::from_utf8(out).unwrap();
     assert!(
         out_s.contains("image-rendering=\"optimizeSpeed\""),
@@ -320,10 +320,10 @@ fn roundtrip_is_idempotent() {
         <image href="logo.png" x="0" y="0" width="50" height="50"
                image-rendering="optimizeQuality"/>
     </svg>"#;
-    let (frame1, extras1) = parse_svg_with_extras(src).unwrap();
-    let out1 = write_svg_with_extras(&frame1, &extras1);
-    let (frame2, extras2) = parse_svg_with_extras(&out1).unwrap();
-    let out2 = write_svg_with_extras(&frame2, &extras2);
+    let (frame1, extras1) = parse_with_extras(src).unwrap();
+    let out1 = write_with_extras(&frame1, &extras1);
+    let (frame2, extras2) = parse_with_extras(&out1).unwrap();
+    let out2 = write_with_extras(&frame2, &extras2);
     assert_eq!(
         out1, out2,
         "round 235: parse → write → parse → write must converge"
@@ -332,17 +332,17 @@ fn roundtrip_is_idempotent() {
     assert!(s2.contains("image-rendering=\"optimizeQuality\""));
 }
 
-/// Round 235: `parse_svg` (no extras) still loads the document
+/// Round 235: `parse` (no extras) still loads the document
 /// cleanly — the property cascade machinery doesn't require the
 /// side-channel.
 #[test]
-fn parse_svg_without_extras_still_loads() {
+fn parse_without_extras_still_loads() {
     let src = br#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"
                        viewBox="0 0 100 100">
         <image href="logo.png" x="0" y="0" width="50" height="50"
                image-rendering="optimizeSpeed"/>
     </svg>"#;
-    let _ = parse_svg(src).unwrap();
+    let _ = parse(src).unwrap();
 }
 
 /// Round 235: case-insensitive source canonicalises to the spec
@@ -355,8 +355,8 @@ fn roundtrip_canonicalises_case() {
         <image href="logo.png" x="0" y="0" width="50" height="50"
                image-rendering="OPTIMIZEQUALITY"/>
     </svg>"#;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
-    let out = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).unwrap();
+    let out = write_with_extras(&frame, &extras);
     let s = String::from_utf8(out).unwrap();
     assert!(
         s.contains("image-rendering=\"optimizeQuality\""),
@@ -381,7 +381,7 @@ fn explicit_auto_is_recorded() {
         <image href="logo.png" x="0" y="0" width="50" height="50"
                image-rendering="auto"/>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.images.len(), 1);
     assert_eq!(
         extras.images[0].image_rendering.as_deref(),
@@ -403,14 +403,14 @@ fn coexists_with_shape_rendering() {
                    image-rendering="optimizeQuality"/>
         </g>
     </svg>"#;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.shape_renderings.len(), 1);
     assert_eq!(extras.images.len(), 1);
     assert_eq!(
         extras.images[0].image_rendering.as_deref(),
         Some("optimizeQuality")
     );
-    let out = write_svg_with_extras(&frame, &extras);
+    let out = write_with_extras(&frame, &extras);
     let s = String::from_utf8(out).unwrap();
     assert!(s.contains("shape-rendering=\"geometricPrecision\""));
     assert!(s.contains("image-rendering=\"optimizeQuality\""));

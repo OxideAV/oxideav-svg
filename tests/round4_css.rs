@@ -3,11 +3,11 @@
 //! Verifies that `<style>` blocks + `style="..."` inline declarations
 //! are folded into the resolved presentation state per SVG 1.1 §6.
 
-use oxideav_core::{Node, Paint, Rgba};
-use oxideav_svg::parse_svg;
+use oxideav_svg::parse;
+use oxideav_svg::{Node, Paint, Rgba};
 
-fn first_path_fill(frame: &oxideav_core::VectorFrame) -> Option<Paint> {
-    fn find(g: &oxideav_core::Group) -> Option<Paint> {
+fn first_path_fill(frame: &oxideav_svg::SvgDocument) -> Option<Paint> {
+    fn find(g: &oxideav_svg::Group) -> Option<Paint> {
         for c in &g.children {
             match c {
                 Node::Path(p) => return p.fill.clone(),
@@ -39,7 +39,7 @@ fn class_selector_applies_fill() {
   </defs>
   <rect class="red" x="0" y="0" width="20" height="20"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fill = first_path_fill(&frame).unwrap();
     assert_eq!(solid_rgba(fill), Rgba::opaque(255, 0, 0));
 }
@@ -55,7 +55,7 @@ fn id_selector_outranks_class() {
   </defs>
   <rect class="red" id="target" x="0" y="0" width="20" height="20"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fill = first_path_fill(&frame).unwrap();
     assert_eq!(solid_rgba(fill), Rgba::opaque(0, 255, 0));
 }
@@ -68,7 +68,7 @@ fn inline_style_overrides_stylesheet() {
   </defs>
   <rect class="x" style="fill: #000000" x="0" y="0" width="20" height="20"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fill = first_path_fill(&frame).unwrap();
     assert_eq!(solid_rgba(fill), Rgba::opaque(0, 0, 0));
 }
@@ -79,7 +79,7 @@ fn tag_selector_matches() {
   <style>rect { fill: #123456 }</style>
   <rect width="10" height="10"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fill = first_path_fill(&frame).unwrap();
     assert_eq!(solid_rgba(fill), Rgba::opaque(0x12, 0x34, 0x56));
 }
@@ -93,7 +93,7 @@ fn comma_selector_lists_multiple_targets() {
   <rect x="0" y="0" width="10" height="10"/>
   <circle cx="15" cy="5" r="5"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     // Both shapes parse — both are filled.
     assert_eq!(frame.root.children.len(), 2);
     let fill = first_path_fill(&frame).unwrap();
@@ -108,7 +108,7 @@ fn style_block_outside_defs_still_works() {
   <style>rect { fill: red }</style>
   <rect width="10" height="10"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fill = first_path_fill(&frame).unwrap();
     assert_eq!(solid_rgba(fill), Rgba::opaque(255, 0, 0));
 }
@@ -122,7 +122,7 @@ fn comments_in_style_block_dont_break_parsing() {
   </style>
   <rect width="10" height="10"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fill = first_path_fill(&frame).unwrap();
     assert_eq!(solid_rgba(fill), Rgba::opaque(0x33, 0x55, 0x77));
 }
@@ -133,7 +133,7 @@ fn cdata_wrapped_style_body_parses() {
   <style><![CDATA[.x { fill: #ffffff }]]></style>
   <rect class="x" width="10" height="10"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fill = first_path_fill(&frame).unwrap();
     assert_eq!(solid_rgba(fill), Rgba::opaque(255, 255, 255));
 }
@@ -147,7 +147,7 @@ fn inherits_cascaded_value_to_child_through_group() {
     <rect width="10" height="10"/>
   </g>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fill = first_path_fill(&frame).unwrap();
     assert_eq!(solid_rgba(fill), Rgba::opaque(0xab, 0xcd, 0xef));
 }
@@ -162,7 +162,7 @@ fn presentation_attr_lower_priority_than_css_rule() {
   <style>.x { fill: #00ff00 }</style>
   <rect class="x" fill="#ff0000" width="10" height="10"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fill = first_path_fill(&frame).unwrap();
     assert_eq!(solid_rgba(fill), Rgba::opaque(0, 255, 0));
 }
@@ -175,7 +175,7 @@ fn unknown_property_is_ignored_not_fatal() {
   <style>.x { font-family: "Helvetica"; fill: #321 }</style>
   <rect class="x" width="10" height="10"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fill = first_path_fill(&frame).unwrap();
     assert_eq!(solid_rgba(fill), Rgba::opaque(0x33, 0x22, 0x11));
 }

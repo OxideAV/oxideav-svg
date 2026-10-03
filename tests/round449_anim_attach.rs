@@ -16,11 +16,11 @@
 //! side-channel trees), so each source animation is emitted exactly
 //! once, in the right place.
 
-use oxideav_svg::{parse_svg_with_extras, write_svg_with_extras};
+use oxideav_svg::{parse_with_extras, write_with_extras};
 
 fn roundtrip(src: &[u8]) -> String {
-    let (frame, extras) = parse_svg_with_extras(src).expect("parse");
-    let out = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).expect("parse");
+    let out = write_with_extras(&frame, &extras);
     String::from_utf8(out).expect("utf8")
 }
 

@@ -1,9 +1,7 @@
 //! Round 95 — SVG 2 §16.3 `<view>` element + fragment-identifier
 //! routing integration tests.
 
-use oxideav_svg::{
-    parse_svg, parse_svg_with_extras, resolve_fragment, write_svg, write_svg_with_extras,
-};
+use oxideav_svg::{parse, parse_with_extras, resolve_fragment, write, write_with_extras};
 
 #[test]
 fn view_element_does_not_render_as_a_node() {
@@ -13,7 +11,7 @@ fn view_element_does_not_render_as_a_node() {
 <svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200">
   <view id="zoomIn" viewBox="0 0 50 50"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     assert!(
         frame.root.children.is_empty(),
         "<view> must not contribute a renderable node; got {} children",
@@ -32,7 +30,7 @@ fn view_lookup_returns_view_box_override() {
   <view id="botRightQuarter" viewBox="50 50 50 50"/>
   <rect x="0" y="0" width="100" height="100" fill="blue"/>
 </svg>"##;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (frame, extras) = parse_with_extras(src).unwrap();
     let r = resolve_fragment(&frame, &extras, "topLeftQuarter");
     let vb = r.view_box.unwrap();
     assert_eq!(vb.min_x, 0.0);
@@ -50,7 +48,7 @@ fn view_lookup_captures_preserve_aspect_ratio_and_zoom_and_pan() {
     let src = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
   <view id="v" viewBox="10 10 80 80" preserveAspectRatio="xMaxYMin slice" zoomAndPan="disable"/>
 </svg>"##;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (frame, extras) = parse_with_extras(src).unwrap();
     let r = resolve_fragment(&frame, &extras, "v");
     let vb = r.view_box.unwrap();
     assert_eq!(vb.min_x, 10.0);
@@ -68,7 +66,7 @@ fn view_lookup_captures_preserve_aspect_ratio_and_zoom_and_pan() {
 #[test]
 fn svg_view_inline_spec_overrides_root_view_box() {
     let src = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"></svg>"##;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (frame, extras) = parse_with_extras(src).unwrap();
     let r = resolve_fragment(&frame, &extras, "svgView(viewBox(0,200,1000,1000))");
     let vb = r.view_box.unwrap();
     assert_eq!(vb.min_x, 0.0);
@@ -78,8 +76,8 @@ fn svg_view_inline_spec_overrides_root_view_box() {
 }
 
 #[test]
-fn view_round_trips_through_write_svg_with_extras() {
-    // A `parse → write_svg_with_extras → parse` cycle must preserve
+fn view_round_trips_through_write_with_extras() {
+    // A `parse → write_with_extras → parse` cycle must preserve
     // every captured `<view>` definition so a caller can still
     // resolve `#viewId` after a round-trip.
     let src = br##"<?xml version="1.0"?>
@@ -87,9 +85,9 @@ fn view_round_trips_through_write_svg_with_extras() {
   <view id="halfView" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid slice"/>
   <rect x="0" y="0" width="200" height="200" fill="red"/>
 </svg>"##;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
-    let out = write_svg_with_extras(&frame, &extras);
-    let (frame2, extras2) = parse_svg_with_extras(&out).unwrap();
+    let (frame, extras) = parse_with_extras(src).unwrap();
+    let out = write_with_extras(&frame, &extras);
+    let (frame2, extras2) = parse_with_extras(&out).unwrap();
     assert!(
         extras2.typed_views.contains_key("halfView"),
         "round-trip lost the <view id='halfView'> definition"
@@ -111,7 +109,7 @@ fn view_attribute_unspecified_inherits_from_root() {
                        preserveAspectRatio="xMinYMid slice">
   <view id="z" viewBox="20 20 50 50"/>
 </svg>"##;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (frame, extras) = parse_with_extras(src).unwrap();
     let r = resolve_fragment(&frame, &extras, "z");
     // viewBox overridden by the <view>.
     assert_eq!(r.view_box.unwrap().min_x, 20.0);
@@ -127,8 +125,8 @@ fn view_attribute_unspecified_inherits_from_root() {
 }
 
 #[test]
-fn bare_write_svg_drops_views_without_extras() {
-    // The legacy `write_svg(&frame)` path (with no extras) must still
+fn bare_write_drops_views_without_extras() {
+    // The legacy `write(&frame)` path (with no extras) must still
     // produce a parseable document — it just won't carry the
     // metadata-only `<view>` elements since they have no scene-graph
     // representation.
@@ -136,9 +134,9 @@ fn bare_write_svg_drops_views_without_extras() {
   <view id="v" viewBox="0 0 50 50"/>
   <rect width="100" height="100" fill="green"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
-    let bytes = write_svg(&frame);
-    let _ = parse_svg(&bytes).expect("re-parse must succeed even without view round-trip");
+    let frame = parse(src).unwrap();
+    let bytes = write(&frame);
+    let _ = parse(&bytes).expect("re-parse must succeed even without view round-trip");
 }
 
 #[test]
@@ -150,7 +148,7 @@ fn empty_fragment_returns_root_view_box() {
                        preserveAspectRatio="xMinYMin meet">
   <view id="v" viewBox="0 0 32 32"/>
 </svg>"##;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (frame, extras) = parse_with_extras(src).unwrap();
     let r = resolve_fragment(&frame, &extras, "");
     let vb = r.view_box.unwrap();
     assert_eq!(vb.width, 64.0);
@@ -168,7 +166,7 @@ fn view_with_no_id_is_silently_dropped() {
     let src = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
   <view viewBox="0 0 50 50"/>
 </svg>"##;
-    let (_, extras) = parse_svg_with_extras(src).unwrap();
+    let (_, extras) = parse_with_extras(src).unwrap();
     assert!(
         extras.typed_views.is_empty(),
         "id-less <view> must not populate the typed_views map"
@@ -187,7 +185,7 @@ fn nested_view_under_a_group_is_still_discovered() {
     <view id="nested" viewBox="0 0 25 25"/>
   </g>
 </svg>"##;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (frame, extras) = parse_with_extras(src).unwrap();
     let r = resolve_fragment(&frame, &extras, "nested");
     let vb = r.view_box.unwrap();
     assert_eq!(vb.width, 25.0);

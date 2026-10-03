@@ -1,5 +1,5 @@
 //! Element-specific parsers — turn an [`Element`] into an
-//! [`oxideav_core::Node`].
+//! [`crate::model::Node`].
 //!
 //! Each shape parser builds a `PathNode` (rectangles / circles /
 //! ellipses / lines / polylines / polygons all reduce to a `Path`).
@@ -10,10 +10,11 @@
 
 use std::collections::{HashMap, HashSet};
 
-use oxideav_core::{
-    DashPattern, Error, FillRule, GradientStop, Group, LineCap, LineJoin, LinearGradient, MaskKind,
-    Node, Paint, Path, PathCommand, PathNode, Point, RadialGradient, Result, Rgba, SpreadMethod,
-    Stroke, Transform2D,
+use crate::error::{Error, Result};
+use crate::model::{
+    DashPattern, FillRule, GradientStop, Group, LineCap, LineJoin, LinearGradient, MaskKind, Node,
+    Paint, Path, PathCommand, PathNode, Point, RadialGradient, Rgba, SpreadMethod, Stroke,
+    Transform2D,
 };
 
 use crate::color::{parse_opacity, parse_paint, PaintValue};
@@ -72,7 +73,7 @@ pub enum TextAnchor {
 /// applies to shapes and text-content elements per the §13.8 attribute
 /// table.
 ///
-/// `oxideav_core::Node` has no `Marker` variant — round 104 captured
+/// `crate::model::Node` has no `Marker` variant — round 104 captured
 /// `<marker>` definitions for round-trip but the vertex-binding /
 /// rendering is deferred until core grows a `Marker` construct — so
 /// the markers slot of `paint-order` parses and round-trips but
@@ -1405,7 +1406,7 @@ pub struct PaintState {
     /// paint the stroke before the fill, the shape emits two
     /// single-purpose `PathNode`s in a wrapping `Group` so the scene
     /// graph composites correctly under the round-1
-    /// `oxideav_core::Node::Path { fill, stroke }` model (which has
+    /// `crate::model::Node::Path { fill, stroke }` model (which has
     /// no built-in operation-order field).
     pub paint_order: PaintOrder,
     /// Round 209 — SVG 2 §8.13 `vector-effect` (NOT inherited).
@@ -1967,7 +1968,7 @@ fn apply_alpha(color: Rgba, alpha: f32) -> Rgba {
 ///      so we treat a successful pattern lookup as "no fill" UNTIL
 ///      the fallback colour applies. In other words, a pattern with
 ///      a fallback colour renders as the fallback today; without a
-///      fallback, no paint is applied. Once `oxideav_core::Paint`
+///      fallback, no paint is applied. Once `crate::model::Paint`
 ///      gains a `Pattern` variant, the pattern branch will return the
 ///      tiled paint directly and the fallback path becomes a true
 ///      error case again.
@@ -1986,7 +1987,7 @@ fn resolve_paint(
                 return Some(p.clone());
             }
             if defs.patterns.contains_key(id) {
-                // Pattern paint server known but `oxideav_core::Paint`
+                // Pattern paint server known but `crate::model::Paint`
                 // has no `Pattern` variant — fall through to the
                 // fallback so the visual isn't silently dropped. Per
                 // SVG 2 §13.2: the fallback applies "if the paint
@@ -2064,12 +2065,12 @@ pub struct ParseContext {
     /// build, used by [`ParseContext::record_id_path`] to map source
     /// `id="..."` attributes to scene-graph emit sites. Pushed before
     /// each child build, popped after. Empty by default and only
-    /// populated by [`crate::decoder::parse_svg_with_extras`].
+    /// populated by [`crate::decoder::parse_with_extras`].
     pub current_path: Vec<usize>,
     /// Round 13 — collected `(scene_path, source_id)` mappings.
     /// Populated only when the caller opted in via
-    /// [`crate::decoder::parse_svg_with_extras`]; the `parse_svg` /
-    /// `parse_svg_at` paths leave the recorder untouched so the
+    /// [`crate::decoder::parse_with_extras`]; the `parse` /
+    /// `parse_at` paths leave the recorder untouched so the
     /// hot-path doesn't pay the (tiny) bookkeeping cost.
     pub id_paths: Vec<IdScenePath>,
     /// Round 13 — gate; when `false`, [`ParseContext::record_id_path`]
@@ -2088,7 +2089,7 @@ pub struct ParseContext {
     pub resolve_ctx: ResolveContext,
     /// Round 21 — collected `(scene_path, pathLength)` mappings.
     /// Populated only when the caller opted in via
-    /// [`crate::decoder::parse_svg_with_extras`] (the same gate that
+    /// [`crate::decoder::parse_with_extras`] (the same gate that
     /// enables [`Self::track_id_paths`]). Each entry records the
     /// author-supplied `pathLength` for a shape so the encoder can
     /// re-emit the attribute on round-trip.
@@ -2108,13 +2109,13 @@ pub struct ParseContext {
     pub system_language: Vec<String>,
     /// Round 115 — collected `(scene_path, <a> hyperlink)` mappings
     /// (SVG 2 §16.5). Populated only when the caller opted in via
-    /// [`crate::decoder::parse_svg_with_extras`] (same gate as
+    /// [`crate::decoder::parse_with_extras`] (same gate as
     /// [`Self::track_id_paths`]); the encoder re-wraps each recorded
     /// `Node::Group` in its `<a href="…">…</a>` element on round-trip.
     pub links: Vec<crate::preserved::LinkBinding>,
     /// Round 122 — collected `(parent_scene_path, [<title>])` bindings
     /// (SVG 2 §5.8). Populated only when the caller opted in via
-    /// [`crate::decoder::parse_svg_with_extras`] (same gate as
+    /// [`crate::decoder::parse_with_extras`] (same gate as
     /// [`Self::track_id_paths`]). One entry per container that carries
     /// at least one `<title>` child; the encoder re-emits the list as
     /// the first children of the matching `<g>` / root `<svg>` on
@@ -2125,7 +2126,7 @@ pub struct ParseContext {
     pub descs: Vec<crate::preserved::DescriptiveBinding>,
     /// Round 205 — SVG 2 §13.8 `paint-order` bindings collected during
     /// the build walk. Populated only when the caller opted in via
-    /// [`crate::decoder::parse_svg_with_extras`] (same gate as
+    /// [`crate::decoder::parse_with_extras`] (same gate as
     /// [`Self::track_id_paths`]). The encoder re-emits the source
     /// attribute on the matching `<path>` / `<rect>` / `<circle>` /
     /// `<ellipse>` / `<line>` / `<polyline>` / `<polygon>` on
@@ -2139,7 +2140,7 @@ pub struct ParseContext {
     pub pending_paint_order: Option<String>,
     /// Round 209 — collected `(scene_path, vector-effect)` bindings
     /// (SVG 2 §8.13). Populated only when the caller opted in via
-    /// [`crate::decoder::parse_svg_with_extras`] (same gate as
+    /// [`crate::decoder::parse_with_extras`] (same gate as
     /// [`Self::track_id_paths`]). The encoder re-emits the source
     /// attribute on the matching shape / `<use>` group on round-trip.
     pub vector_effects: Vec<crate::preserved::VectorEffectBinding>,
@@ -2151,7 +2152,7 @@ pub struct ParseContext {
     pub pending_vector_effect: Option<String>,
     /// Round 221 — collected `(scene_path, shape-rendering)` bindings
     /// (SVG 2 §13.10.2). Populated only when the caller opted in via
-    /// [`crate::decoder::parse_svg_with_extras`] (same gate as
+    /// [`crate::decoder::parse_with_extras`] (same gate as
     /// [`Self::track_id_paths`]). The encoder re-emits the source
     /// attribute on the matching shape / `<g>` on round-trip.
     pub shape_renderings: Vec<crate::preserved::ShapeRenderingBinding>,
@@ -2163,7 +2164,7 @@ pub struct ParseContext {
     pub pending_shape_rendering: Option<String>,
     /// Round 228 — collected `(scene_path, text-rendering)` bindings
     /// (SVG 2 §13.10.3). Populated only when the caller opted in via
-    /// [`crate::decoder::parse_svg_with_extras`] (same gate as
+    /// [`crate::decoder::parse_with_extras`] (same gate as
     /// [`Self::track_id_paths`]). The encoder re-emits the source
     /// attribute on the matching `<text>` / `<g>` on round-trip.
     pub text_renderings: Vec<crate::preserved::TextRenderingBinding>,
@@ -2175,7 +2176,7 @@ pub struct ParseContext {
     pub pending_text_rendering: Option<String>,
     /// Round 247 — collected `(scene_path, color-rendering)` bindings
     /// (SVG 2 §13.10.1). Populated only when the caller opted in via
-    /// [`crate::decoder::parse_svg_with_extras`] (same gate as
+    /// [`crate::decoder::parse_with_extras`] (same gate as
     /// [`Self::track_id_paths`]). The encoder re-emits the source
     /// attribute on the matching shape / `<g>` on round-trip.
     pub color_renderings: Vec<crate::preserved::ColorRenderingBinding>,
@@ -2187,7 +2188,7 @@ pub struct ParseContext {
     pub pending_color_rendering: Option<String>,
     /// Round 252 — collected `(scene_path, color-interpolation)` bindings
     /// (SVG 2 §13.9). Populated only when the caller opted in via
-    /// [`crate::decoder::parse_svg_with_extras`] (same gate as
+    /// [`crate::decoder::parse_with_extras`] (same gate as
     /// [`Self::track_id_paths`]). The encoder re-emits the source
     /// attribute on the matching shape / `<g>` on round-trip.
     pub color_interpolations: Vec<crate::preserved::ColorInterpolationBinding>,
@@ -2199,7 +2200,7 @@ pub struct ParseContext {
     pub pending_color_interpolation: Option<String>,
     /// Round 257 — collected `(scene_path, overflow)` bindings
     /// (SVG 2 §3.11). Populated only when the caller opted in via
-    /// [`crate::decoder::parse_svg_with_extras`] (same gate as
+    /// [`crate::decoder::parse_with_extras`] (same gate as
     /// [`Self::track_id_paths`]). The encoder re-emits the source
     /// attribute on the matching shape / `<g>` on round-trip.
     pub overflows: Vec<crate::preserved::OverflowBinding>,
@@ -2211,7 +2212,7 @@ pub struct ParseContext {
     pub pending_overflow: Option<String>,
     /// Round 260 — collected `(scene_path, pointer-events)` bindings
     /// (SVG 2 §15.6). Populated only when the caller opted in via
-    /// [`crate::decoder::parse_svg_with_extras`] (same gate as
+    /// [`crate::decoder::parse_with_extras`] (same gate as
     /// [`Self::track_id_paths`]). The encoder re-emits the source
     /// attribute on the matching shape / `<g>` on round-trip.
     pub pointer_eventss: Vec<crate::preserved::PointerEventsBinding>,
@@ -2224,7 +2225,7 @@ pub struct ParseContext {
     pub pending_pointer_events: Option<String>,
     /// Round 261 — collected `(scene_path, cursor)` bindings
     /// (SVG 1.1 §16.8.2). Populated only when the caller opted in via
-    /// [`crate::decoder::parse_svg_with_extras`] (same gate as
+    /// [`crate::decoder::parse_with_extras`] (same gate as
     /// [`Self::track_id_paths`]). The encoder re-emits the source
     /// attribute on the matching shape / `<g>` on round-trip.
     pub cursors: Vec<crate::preserved::CursorBinding>,
@@ -2236,7 +2237,7 @@ pub struct ParseContext {
     pub pending_cursor: Option<String>,
     /// Round 291 — collected `(scene_path, dominant-baseline)` bindings
     /// (SVG 1.1 §10.9.2). Populated only when the caller opted in via
-    /// [`crate::decoder::parse_svg_with_extras`] (same gate as
+    /// [`crate::decoder::parse_with_extras`] (same gate as
     /// [`Self::track_id_paths`]). The encoder re-emits the source
     /// attribute on the matching shape / `<g>` on round-trip.
     pub dominant_baselines: Vec<crate::preserved::DominantBaselineBinding>,
@@ -2261,21 +2262,21 @@ pub struct ParseContext {
     pub use_instance_root_pending: bool,
     /// Round 372 — collected `(scene_path, <use> reference)` bindings
     /// (SVG 2 §5.6). Populated only when the caller opted in via
-    /// [`crate::decoder::parse_svg_with_extras`] (same gate as
+    /// [`crate::decoder::parse_with_extras`] (same gate as
     /// [`Self::track_id_paths`]). The encoder replaces the matching
     /// `<g>` (the instantiated instance) with `<use href="#id" …/>` on
     /// round-trip, skipping the flattened children.
     pub uses: Vec<crate::preserved::UseBinding>,
     /// Round 372 — collected `(scene_path, verbatim <switch>)` bindings
     /// (SVG 2 §5.7). Populated only when the caller opted in via
-    /// [`crate::decoder::parse_svg_with_extras`] (same gate as
+    /// [`crate::decoder::parse_with_extras`] (same gate as
     /// [`Self::track_id_paths`]). The encoder replaces the matching
     /// `<g>` (the selected branch) with the verbatim `<switch>` on
     /// round-trip, skipping the selected child.
     pub switches: Vec<crate::preserved::SwitchBinding>,
     /// Round 449 — collected `(scene_path, verbatim <text>)` bindings
     /// (SVG 2 §11.2). Populated only when the caller opted in via
-    /// [`crate::decoder::parse_svg_with_extras`] (same gate as
+    /// [`crate::decoder::parse_with_extras`] (same gate as
     /// [`Self::track_id_paths`]). The encoder replaces the matching
     /// flattened-glyph node with the verbatim `<text>` on round-trip,
     /// skipping the shaped outline children.
@@ -2283,7 +2284,7 @@ pub struct ParseContext {
     /// Round 449 — collected `(scene_path, animation children)`
     /// bindings (SMIL Animation §3.1 parent targeting). Populated only
     /// when the caller opted in via
-    /// [`crate::decoder::parse_svg_with_extras`] (same gate as
+    /// [`crate::decoder::parse_with_extras`] (same gate as
     /// [`Self::track_id_paths`]). The encoder re-emits each animation
     /// element as a child of the node at the recorded path so an
     /// animation keeps its direct XML parent — id-bearing or not — on
@@ -2291,7 +2292,7 @@ pub struct ParseContext {
     pub anim_targets: Vec<crate::preserved::AnimTargetBinding>,
     /// Round 449 — collected `(scene_path, native shape identity)`
     /// bindings (SVG 2 §9.2–§9.7). Populated only when the caller
-    /// opted in via [`crate::decoder::parse_svg_with_extras`] (same
+    /// opted in via [`crate::decoder::parse_with_extras`] (same
     /// gate as [`Self::track_id_paths`]). The encoder emits the
     /// matching geometry node as the source `<rect>` / `<circle>` /
     /// … tag with the verbatim geometry attributes instead of the
@@ -2300,21 +2301,21 @@ pub struct ParseContext {
     /// Round 449 — collected `(parent scene_path, verbatim element)`
     /// bindings for renderable elements suppressed by an inline
     /// `display:none` (CSS 2.1 §9.2.4). Populated only when the caller
-    /// opted in via [`crate::decoder::parse_svg_with_extras`] (same
+    /// opted in via [`crate::decoder::parse_with_extras`] (same
     /// gate as [`Self::track_id_paths`]). The encoder re-emits each at
     /// the tail of the matching parent group so the hidden subtree
     /// survives the round-trip.
     pub unrendered: Vec<crate::preserved::UnrenderedBinding>,
     /// Round 372 — collected `(scene_path, filter url-ref)` bindings
     /// (SVG 1.1 §15). Populated only when the caller opted in via
-    /// [`crate::decoder::parse_svg_with_extras`] (same gate as
+    /// [`crate::decoder::parse_with_extras`] (same gate as
     /// [`Self::track_id_paths`]). The encoder re-emits
     /// `filter="url(#id)"` on the matching filter-wrapper `<g>` on
     /// round-trip so the preserved `<filter>` def stays referenced.
     pub filter_refs: Vec<crate::preserved::FilterRefBinding>,
     /// Round 372 — collected `(scene_path, marker-* refs)` bindings (SVG
     /// 2 §13.7.4). Populated only when the caller opted in via
-    /// [`crate::decoder::parse_svg_with_extras`] (same gate as
+    /// [`crate::decoder::parse_with_extras`] (same gate as
     /// [`Self::track_id_paths`]). The encoder re-emits `marker-start` /
     /// `marker-mid` / `marker-end` on the matching shape on round-trip
     /// so the preserved `<marker>` def stays referenced.
@@ -2535,7 +2536,7 @@ impl ParseContext {
     }
 
     /// Round 19 — bind the root [`ResolveContext`]. Used by
-    /// [`crate::decoder::parse_svg_at`] to seed the viewport
+    /// [`crate::decoder::parse_at`] to seed the viewport
     /// dimensions / root font-size before the tree walk starts.
     pub fn with_resolve_ctx(mut self, ctx: ResolveContext) -> Self {
         self.resolve_ctx = ctx;
@@ -2571,7 +2572,7 @@ impl ParseContext {
     /// author-supplied `pathLength`. Gated behind the same
     /// [`Self::track_id_paths`] flag as [`Self::record_id_path`]
     /// because both binding tables are consumed by the
-    /// `parse_svg_with_extras` round-trip path.
+    /// `parse_with_extras` round-trip path.
     pub fn record_path_length(&mut self, path_length: f32) {
         if !self.track_id_paths {
             return;
@@ -2760,7 +2761,7 @@ impl ParseContext {
     /// Round 115 — record an `<a>` hyperlink binding at the current
     /// scene-graph path (SVG 2 §16.5). Gated behind the same
     /// [`Self::track_id_paths`] flag as [`Self::record_id_path`]; the
-    /// encoder consumes the table on the `parse_svg_with_extras`
+    /// encoder consumes the table on the `parse_with_extras`
     /// round-trip path to re-wrap the matching `Node::Group` in `<a>`.
     pub fn record_link(&mut self, mut link: crate::preserved::LinkBinding) {
         if !self.track_id_paths {
@@ -3725,7 +3726,7 @@ fn parse_element_to_node_ctx_inner(
     // `<animateTransform>` children at `ctx.animation_t` and fold them
     // into the parent element's attribute set before we look at the
     // attrs. Round 3 hard-coded `t=0`; round 4 picks the time from the
-    // ParseContext so `parse_svg_at(bytes, t)` produces a stable
+    // ParseContext so `parse_at(bytes, t)` produces a stable
     // snapshot at any point on the timeline. Round 125 widened the
     // helper to also evaluate `<animateMotion>` — and that branch
     // needs the id table so an `<mpath xlink:href="#path1">` can
@@ -3961,7 +3962,7 @@ fn parse_element_to_node_ctx_inner(
         // hyperlink target + its HTML companion attributes (`href` /
         // `target` / `download` / `ping` / `rel` / `hreflang` / `type`
         // / `referrerpolicy`) are stowed on `ctx.links` for the encoder
-        // to re-wrap in `<a>` on round-trip (`oxideav_core::Group` has
+        // to re-wrap in `<a>` on round-trip (`crate::model::Group` has
         // no hyperlink field). Per the §16.5 content model an `<a>` may
         // not contain another `<a>`, but a UA still renders nested
         // anchor content; we render it and simply record the inner
@@ -4428,7 +4429,7 @@ fn parse_element_to_node_ctx_inner(
             // the shape into two single-purpose PathNodes inside a
             // wrapping Group so the scene graph composites in the
             // requested order. `markers` parses and round-trips but
-            // contributes no node here — `oxideav_core::Node` has no
+            // contributes no node here — `crate::model::Node` has no
             // `Marker` variant yet, so a `paint-order: markers stroke
             // fill` collapses to `paint-order: stroke fill` for the
             // purpose of node emission (the markers slot is otherwise
@@ -4501,9 +4502,18 @@ fn parse_element_to_node_ctx_inner(
             ctx.pending_text_rendering = capture_text_rendering_attr(el);
             crate::text::parse_text_element(el, &state, ctx)?
         }
-        // <text> when text feature is disabled — silently skip.
+        // <text> without the `text` feature: no glyph outlines are
+        // shaped, but the element keeps its scene-graph slot as an
+        // empty group — exactly what the text branch yields when no
+        // font resolver is installed — so the verbatim `<text>`
+        // capture below still records it and a `parse → write` cycle
+        // keeps the markup byte-exactly.
         #[cfg(not(feature = "text"))]
-        "text" => None,
+        "text" => {
+            let _state = parent_state.merged_with_mctx(mctx, &ctx.stylesheet)?;
+            ctx.pending_text_rendering = capture_text_rendering_attr(el);
+            Some(Node::Group(Group::default()))
+        }
         // Round-2 deferral list — silently skip <use>, <script>, etc.
         // so the rest of the document still loads.
         _ => None,
@@ -5185,7 +5195,6 @@ fn find_inner_path_subpath(node: &Node) -> Option<Vec<usize>> {
             }
         }
         Node::SoftMask { content, .. } => find_inner_path_subpath(content),
-        _ => None,
     }
 }
 
@@ -5311,7 +5320,7 @@ pub fn parse_mask_def(el: &Element, ctx: &mut ParseContext) -> Result<Option<(St
 /// children that disagree are tolerated but the merged path can carry
 /// only one rule — the author's original per-child attribute is
 /// preserved on the round-trip side-channel by
-/// [`crate::decoder::parse_svg_with_extras`]). Initial value `nonzero`.
+/// [`crate::decoder::parse_with_extras`]). Initial value `nonzero`.
 pub fn parse_clip_path_def(
     el: &Element,
     ctx: &mut ParseContext,
@@ -5684,7 +5693,7 @@ fn parse_pattern_units(
 /// Parse the four-number `viewBox=` attribute payload. Returns `None`
 /// for any malformed input (matches the decoder-side tolerance — a bad
 /// `viewBox` shouldn't kill the whole document).
-fn parse_symbol_view_box(s: &str) -> Option<oxideav_core::ViewBox> {
+fn parse_symbol_view_box(s: &str) -> Option<crate::model::ViewBox> {
     let nums: Vec<f32> = s
         .split(|c: char| c == ',' || c.is_whitespace())
         .filter(|p| !p.is_empty())
@@ -5693,7 +5702,7 @@ fn parse_symbol_view_box(s: &str) -> Option<oxideav_core::ViewBox> {
     if nums.len() != 4 {
         return None;
     }
-    Some(oxideav_core::ViewBox {
+    Some(crate::model::ViewBox {
         min_x: nums[0],
         min_y: nums[1],
         width: nums[2],
@@ -5755,7 +5764,6 @@ fn transform_path(path: Path, t: &Transform2D) -> Path {
                 end: map(end),
             },
             PathCommand::Close => PathCommand::Close,
-            other => other,
         })
         .collect();
     Path { commands: cmds }
@@ -6019,7 +6027,7 @@ pub fn parse_use_element(
 fn symbol_viewport_transform(
     width: f32,
     height: f32,
-    vb: oxideav_core::ViewBox,
+    vb: crate::model::ViewBox,
     par: crate::filter::PreserveAspectRatio,
 ) -> Transform2D {
     use crate::filter::{MeetOrSlice, PreserveAspectRatioAlign};

@@ -8,10 +8,10 @@
 //! were ignored, so a `<symbol refX refY>` was positioned by its
 //! top-left corner instead of its reference point.
 
-use oxideav_core::{Node, Point, Transform2D};
-use oxideav_svg::parse_svg;
+use oxideav_svg::parse;
+use oxideav_svg::{Node, Point, Transform2D};
 
-fn transform_to_first_path(g: &oxideav_core::Group, acc: Transform2D) -> Option<Transform2D> {
+fn transform_to_first_path(g: &oxideav_svg::Group, acc: Transform2D) -> Option<Transform2D> {
     let here = acc.compose(&g.transform);
     if g.children.iter().any(|c| matches!(c, Node::Path(_))) {
         return Some(here);
@@ -42,7 +42,7 @@ fn symbol_refx_refy_aligns_reference_point_with_use_origin() {
   </defs>
   <use href="#dot" width="50" height="50"/>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let t = transform_to_first_path(&frame.root, Transform2D::identity())
         .expect("a group carrying the rect");
     let centre = t.apply(Point { x: 50.0, y: 50.0 });
@@ -67,7 +67,7 @@ fn symbol_refx_refy_with_use_placement() {
   </defs>
   <use href="#dot" x="80" y="90" width="50" height="50"/>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let t = transform_to_first_path(&frame.root, Transform2D::identity())
         .expect("a group carrying the rect");
     let centre = t.apply(Point { x: 50.0, y: 50.0 });
@@ -93,7 +93,7 @@ fn symbol_ref_geometric_keywords_resolve_against_viewbox() {
   </defs>
   <use href="#dot" width="50" height="50"/>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let t = transform_to_first_path(&frame.root, Transform2D::identity())
         .expect("a group carrying the rect");
     let centre = t.apply(Point { x: 50.0, y: 50.0 });
@@ -119,7 +119,7 @@ fn symbol_without_ref_keeps_corner_placement() {
   </defs>
   <use href="#dot" width="50" height="50"/>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let t = transform_to_first_path(&frame.root, Transform2D::identity())
         .expect("a group carrying the rect");
     let centre = t.apply(Point { x: 50.0, y: 50.0 });

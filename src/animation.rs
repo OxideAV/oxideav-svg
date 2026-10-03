@@ -649,7 +649,7 @@ fn parse_numbers(s: &str) -> Vec<f32> {
 // Round 125 — SVG 1.1 §19.2.14 `<animateMotion>` + `<mpath>` evaluator.
 // ---------------------------------------------------------------------
 
-use oxideav_core::{Path, PathCommand, Point};
+use crate::model::{Path, PathCommand, Point};
 
 /// Round 125 — evaluate an `<animateMotion>` element at `t_seconds`.
 ///
@@ -1031,7 +1031,6 @@ fn sample_path_at_fraction(path: &Path, frac: f32) -> (Point, f32) {
                 }
                 cur = p;
             }
-            _ => {}
         }
     }
     // Past the end of the path → return the final pen position with

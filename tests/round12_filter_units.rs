@@ -11,10 +11,10 @@
 //! a verbatim-XML round-trip check.
 
 use oxideav_svg::filter::{ColorInterpolationFilters, FilterUnits};
-use oxideav_svg::{parse_svg_with_extras, write_svg_with_extras};
+use oxideav_svg::{parse_with_extras, write_with_extras};
 
 fn graph_for_filter(src: &[u8], filter_id: &str) -> oxideav_svg::filter::FilterGraph {
-    let (_frame, extras) = parse_svg_with_extras(src).expect("parse_svg_with_extras");
+    let (_frame, extras) = parse_with_extras(src).expect("parse_with_extras");
     for el in &extras.filters {
         if el
             .attrs
@@ -171,8 +171,8 @@ fn cif_inherit_falls_back_to_initial() {
 #[test]
 fn filter_units_survive_xml_round_trip() {
     let src = br#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><defs><filter id="f" filterUnits="userSpaceOnUse" primitiveUnits="objectBoundingBox" color-interpolation-filters="sRGB"><feFlood flood-color="red"/></filter></defs><rect width="10" height="10" filter="url(#f)"/></svg>"#;
-    let (frame, extras) = parse_svg_with_extras(src).expect("parse");
-    let out = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).expect("parse");
+    let out = write_with_extras(&frame, &extras);
     let out_str = String::from_utf8(out).expect("utf8");
     assert!(out_str.contains("filterUnits=\"userSpaceOnUse\""));
     assert!(out_str.contains("primitiveUnits=\"objectBoundingBox\""));

@@ -10,7 +10,7 @@
 use oxideav_svg::filter::{
     BlendMode, CompositeOperator, FilterInput, FilterPrimitive, MorphologyOperator,
 };
-use oxideav_svg::{parse_svg_with_extras, write_svg_with_extras};
+use oxideav_svg::{parse_with_extras, write_with_extras};
 
 /// Re-parse the source through the public API and dig out the typed
 /// `<filter id="f">` graph from the live parse context. The typed graph
@@ -18,7 +18,7 @@ use oxideav_svg::{parse_svg_with_extras, write_svg_with_extras};
 /// from a render pass, but the tests need direct access — we round-trip
 /// through `parse_filter_graph` on the captured XML element instead.
 fn graph_for_filter(src: &[u8], filter_id: &str) -> oxideav_svg::filter::FilterGraph {
-    let (_frame, extras) = parse_svg_with_extras(src).expect("parse_svg_with_extras");
+    let (_frame, extras) = parse_with_extras(src).expect("parse_with_extras");
     for el in &extras.filters {
         if el
             .attrs
@@ -242,8 +242,8 @@ fn round_trip_preserves_unknown_primitives_via_extras() {
         </filter></defs>
         <rect width="10" height="10" filter="url(#f)"/>
       </svg>"##;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
-    let out = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).unwrap();
+    let out = write_with_extras(&frame, &extras);
     let s = std::str::from_utf8(&out).unwrap();
     assert!(s.contains("feGaussianBlur"));
     assert!(

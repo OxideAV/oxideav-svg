@@ -5,15 +5,15 @@
 //! `stroke-dasharray` / `stroke-dashoffset` rescaling and the
 //! [`oxideav_svg::preserved::PreservedExtras`] round-trip channel.
 
-use oxideav_svg::{parse_svg, parse_svg_with_extras, write_svg_with_extras};
+use oxideav_svg::{parse, parse_with_extras, write_with_extras};
 
 /// Helper: pull the first `Node::Path`'s stroke from the scene graph.
-fn first_path_stroke(frame: &oxideav_core::VectorFrame) -> Option<oxideav_core::Stroke> {
-    fn walk(node: &oxideav_core::Node) -> Option<oxideav_core::Stroke> {
+fn first_path_stroke(frame: &oxideav_svg::SvgDocument) -> Option<oxideav_svg::Stroke> {
+    fn walk(node: &oxideav_svg::Node) -> Option<oxideav_svg::Stroke> {
         match node {
-            oxideav_core::Node::Path(p) => p.stroke.clone(),
-            oxideav_core::Node::Group(g) => g.children.iter().find_map(walk),
-            oxideav_core::Node::SoftMask { content, .. } => walk(content),
+            oxideav_svg::Node::Path(p) => p.stroke.clone(),
+            oxideav_svg::Node::Group(g) => g.children.iter().find_map(walk),
+            oxideav_svg::Node::SoftMask { content, .. } => walk(content),
             _ => None,
         }
     }
@@ -34,7 +34,7 @@ fn dasharray_scales_by_geometric_over_pathlength_ratio() {
         stroke-dashoffset="4"
         pathLength="200"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let stroke = first_path_stroke(&frame).expect("must have a stroke");
     let dash = stroke.dash.expect("dash must survive scaling");
     assert!(
@@ -64,7 +64,7 @@ fn pathlength_zero_collapses_dash_to_solid() {
         stroke-dasharray="20 10"
         pathLength="0"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let stroke = first_path_stroke(&frame).expect("must have a stroke");
     assert!(
         stroke.dash.is_none(),
@@ -84,7 +84,7 @@ fn negative_pathlength_is_ignored() {
         stroke-dasharray="20 10"
         pathLength="-50"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let stroke = first_path_stroke(&frame).expect("must have a stroke");
     let dash = stroke.dash.expect("dash should be unchanged");
     assert!((dash.array[0] - 20.0).abs() < 1e-3);
@@ -102,7 +102,7 @@ fn pathlength_on_rect_with_perimeter() {
         stroke-dasharray="6 3"
         pathLength="60"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let stroke = first_path_stroke(&frame).expect("must have a stroke");
     let dash = stroke.dash.expect("dash must survive scaling");
     assert!(
@@ -129,7 +129,7 @@ fn pathlength_on_circle_with_circumference() {
           pathLength="{circum}"/>
 </svg>"##
     );
-    let frame = parse_svg(src.as_bytes()).unwrap();
+    let frame = parse(src.as_bytes()).unwrap();
     let stroke = first_path_stroke(&frame).expect("must have a stroke");
     let dash = stroke.dash.expect("dash must survive scaling");
     // Allow 1% tolerance for the chord-sum approximation of the circle.
@@ -155,7 +155,7 @@ fn pathlength_round_trip_via_extras() {
         stroke-dasharray="20 10"
         pathLength="200"/>
 </svg>"##;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(
         extras.path_lengths.len(),
         1,
@@ -167,7 +167,7 @@ fn pathlength_round_trip_via_extras() {
     );
 
     // Encoder must re-emit the attribute.
-    let bytes = write_svg_with_extras(&frame, &extras);
+    let bytes = write_with_extras(&frame, &extras);
     let out = std::str::from_utf8(&bytes).unwrap();
     assert!(
         out.contains("pathLength=\"200\""),
@@ -187,7 +187,7 @@ fn pathlength_round_trip_via_extras() {
         out.contains("stroke-dasharray=\"20,10\""),
         "encoder emits the author-unit dash next to pathLength: {out}"
     );
-    let frame2 = parse_svg(&bytes).unwrap();
+    let frame2 = parse(&bytes).unwrap();
     let stroke2 = first_path_stroke(&frame2).expect("must have a stroke");
     let dash2 = stroke2.dash.expect("dash survives");
     // First parse scaled (20,10) -> (10,5); the re-parse of the
@@ -208,9 +208,9 @@ fn pathlength_absent_is_noop() {
         stroke-width="2"
         stroke-dasharray="20 10"/>
 </svg>"##;
-    let (_, extras) = parse_svg_with_extras(src).unwrap();
+    let (_, extras) = parse_with_extras(src).unwrap();
     assert!(extras.path_lengths.is_empty());
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let stroke = first_path_stroke(&frame).expect("must have a stroke");
     let dash = stroke.dash.expect("dash");
     assert!((dash.array[0] - 20.0).abs() < 1e-3);
@@ -226,7 +226,7 @@ fn pathlength_without_stroke_or_dash_is_noop() {
 <svg xmlns="http://www.w3.org/2000/svg" width="100" height="20" viewBox="0 0 100 20">
   <path d="M 0 10 L 100 10" fill="blue" pathLength="42"/>
 </svg>"##;
-    let (_, extras) = parse_svg_with_extras(src).unwrap();
+    let (_, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.path_lengths.len(), 1);
     assert!((extras.path_lengths[0].path_length - 42.0).abs() < 1e-3);
 }
@@ -242,7 +242,7 @@ fn pathlength_on_polyline_with_dasharray() {
             stroke-dasharray="10 5"
             pathLength="140"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let stroke = first_path_stroke(&frame).expect("must have a stroke");
     let dash = stroke.dash.expect("dash");
     assert!(
@@ -265,7 +265,7 @@ fn pathlength_on_line_with_dashoffset() {
         stroke-dashoffset="20"
         pathLength="200"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let stroke = first_path_stroke(&frame).expect("must have a stroke");
     let dash = stroke.dash.expect("dash");
     assert!(

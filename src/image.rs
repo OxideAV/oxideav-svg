@@ -6,7 +6,7 @@
 //! `xlink:href`) carries either an external URL or an inline
 //! `data:image/<mime>;base64,...` URI per RFC 2397.
 //!
-//! `oxideav_core::Node` has an `Image(ImageRef)` variant, but it
+//! `crate::model::Node` has an `Image(ImageRef)` variant, but it
 //! requires a fully-decoded `VideoFrame` — and decoding the raster
 //! payload here would pull every image-format crate (oxideav-png,
 //! oxideav-jpeg, oxideav-webp, …) into oxideav-svg's tree. That's
@@ -21,7 +21,7 @@
 //! - Records external URLs verbatim for caller-side fetching.
 //! - Tracks `(x, y, width, height)` and an optional `transform=` so
 //!   the renderer knows where to paint.
-//! - Survives a `parse → write_svg_with_extras` round-trip: the
+//! - Survives a `parse → write_with_extras` round-trip: the
 //!   encoder re-emits each captured image as a `<image>` element with
 //!   its data URI / external URL intact.
 
@@ -66,7 +66,7 @@ pub struct SvgImage {
     pub height_raw: Option<String>,
     /// Optional `transform=` attribute (parsed via the same
     /// `parse_transform` the rest of the SVG decoder uses).
-    pub transform: Option<oxideav_core::Transform2D>,
+    pub transform: Option<crate::model::Transform2D>,
     /// `id="..."` attribute when present — surfaced so the encoder
     /// can re-emit it on round-trip.
     pub id: Option<String>,
@@ -419,7 +419,7 @@ fn trim_float(v: f32) -> String {
     }
 }
 
-fn format_transform(t: &oxideav_core::Transform2D) -> String {
+fn format_transform(t: &crate::model::Transform2D) -> String {
     format!(
         "matrix({} {} {} {} {} {})",
         trim_float(t.a),

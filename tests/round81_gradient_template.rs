@@ -1,7 +1,7 @@
 //! Round 81 — SVG 2 §14.1.1 gradient `href` template inheritance +
 //! §14.2.2.1 / §14.2.3.1 `gradientUnits` / `gradientTransform` capture.
 //!
-//! Verifies, end-to-end through `parse_svg` / `parse_svg_with_extras`:
+//! Verifies, end-to-end through `parse` / `parse_with_extras`:
 //!
 //! 1. A `<linearGradient>` whose `href="#tmpl"` inherits any
 //!    unspecified attribute (here: `x1` / `y1` / `x2` / `y2`) from
@@ -18,26 +18,26 @@
 //!    detected and broken; the resolver returns spec defaults rather
 //!    than diverging.
 //! 6. `gradientTransform` is parsed and folded into the flattened
-//!    [`oxideav_core::Paint::LinearGradient`] geometry (start / end
+//!    [`oxideav_svg::Paint::LinearGradient`] geometry (start / end
 //!    points get transformed) so a downstream rasteriser sees the
 //!    right coords without needing to read the typed
 //!    [`oxideav_svg::defs::GradientDef`] separately.
 //! 7. The verbatim source `<linearGradient>` survives a
-//!    `parse_svg_with_extras → write_svg_with_extras` cycle on
+//!    `parse_with_extras → write_with_extras` cycle on
 //!    [`oxideav_svg::preserved::PreservedExtras::gradients`].
 
-use oxideav_core::{Paint, PathNode};
 use oxideav_svg::{
     defs::{GradientUnits, ResolvedGradientKind},
-    parse_svg, parse_svg_with_extras, write_svg_with_extras,
+    parse, parse_with_extras, write_with_extras,
 };
+use oxideav_svg::{Paint, PathNode};
 
-fn first_path(frame: &oxideav_core::VectorFrame) -> &PathNode {
-    fn find(n: &oxideav_core::Node) -> Option<&PathNode> {
+fn first_path(frame: &oxideav_svg::SvgDocument) -> &PathNode {
+    fn find(n: &oxideav_svg::Node) -> Option<&PathNode> {
         match n {
-            oxideav_core::Node::Path(p) => Some(p),
-            oxideav_core::Node::Group(g) => g.children.iter().find_map(find),
-            oxideav_core::Node::SoftMask { content, .. } => find(content),
+            oxideav_svg::Node::Path(p) => Some(p),
+            oxideav_svg::Node::Group(g) => g.children.iter().find_map(find),
+            oxideav_svg::Node::SoftMask { content, .. } => find(content),
             _ => None,
         }
     }
@@ -64,7 +64,7 @@ fn linear_gradient_href_inherits_coords_and_stops() {
   </defs>
   <rect x="0" y="0" width="100" height="100" fill="url(#child)"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let path = first_path(&frame);
     match &path.fill {
         Some(Paint::LinearGradient(g)) => {
@@ -103,7 +103,7 @@ fn xlink_href_template_form_also_resolves() {
   </defs>
   <rect x="0" y="0" width="100" height="100" fill="url(#child)"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let path = first_path(&frame);
     match &path.fill {
         Some(Paint::LinearGradient(g)) => {
@@ -128,7 +128,7 @@ fn radial_gradient_href_inherits_centre_radius_and_focal() {
   </defs>
   <rect x="0" y="0" width="100" height="100" fill="url(#child)"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let path = first_path(&frame);
     match &path.fill {
         Some(Paint::RadialGradient(g)) => {
@@ -161,7 +161,7 @@ fn child_specified_attr_overrides_template() {
   </defs>
   <rect x="0" y="0" width="100" height="100" fill="url(#child)"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let path = first_path(&frame);
     match &path.fill {
         Some(Paint::LinearGradient(g)) => {
@@ -187,7 +187,7 @@ fn self_reference_is_broken_and_spec_defaults_apply() {
   </defs>
   <rect x="0" y="0" width="10" height="10" fill="url(#loop)"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let path = first_path(&frame);
     // Either a gradient with spec defaults + zero stops, or no fill at
     // all — both are acceptable terminations. What MUST NOT happen is
@@ -217,7 +217,7 @@ fn gradient_transform_is_folded_into_flattened_paint() {
   </defs>
   <rect x="0" y="0" width="100" height="100" fill="url(#g)"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let path = first_path(&frame);
     match &path.fill {
         Some(Paint::LinearGradient(g)) => {
@@ -252,7 +252,7 @@ fn typed_def_records_units_transform_and_href() {
   </defs>
   <rect x="0" y="0" width="100" height="100" fill="url(#g)"/>
 </svg>"##;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     // The verbatim element should be on extras.gradients for round-trip.
     assert_eq!(extras.gradients.len(), 1);
     let el = &extras.gradients[0];
@@ -283,14 +283,14 @@ fn typed_def_records_units_transform_and_href() {
         },
         units: Some(GradientUnits::UserSpaceOnUse),
         transform: None,
-        spread: Some(oxideav_core::SpreadMethod::Reflect),
+        spread: Some(oxideav_svg::SpreadMethod::Reflect),
         stops: Vec::new(),
         href: String::new(),
     };
     defs.gradients.insert("g".into(), def.clone());
     let resolved = resolve_gradient_chain(&def, &defs);
     assert_eq!(resolved.units, GradientUnits::UserSpaceOnUse);
-    assert_eq!(resolved.spread, oxideav_core::SpreadMethod::Reflect);
+    assert_eq!(resolved.spread, oxideav_svg::SpreadMethod::Reflect);
     match resolved.kind {
         ResolvedGradientKind::Linear { x1, y1, x2, y2 } => {
             assert_eq!((x1, y1, x2, y2), (10.0, 20.0, 80.0, 90.0));
@@ -312,8 +312,8 @@ fn round_trip_preserves_template_chain_verbatim() {
   </defs>
   <rect x="0" y="0" width="100" height="100" fill="url(#child)"/>
 </svg>"##;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
-    let out = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).unwrap();
+    let out = write_with_extras(&frame, &extras);
     let out_str = std::str::from_utf8(&out).expect("encoder emits UTF-8");
     // Both the template AND the child gradient must survive the
     // round-trip — verbatim, with the href intact and the
@@ -327,7 +327,7 @@ fn round_trip_preserves_template_chain_verbatim() {
     );
     assert!(out_str.contains("gradientUnits=\"userSpaceOnUse\""));
     // Re-parse → identical scene-graph fill.
-    let frame2 = parse_svg(&out).unwrap();
+    let frame2 = parse(&out).unwrap();
     let p2 = first_path(&frame2);
     match &p2.fill {
         Some(Paint::LinearGradient(g)) => {
@@ -357,7 +357,7 @@ fn linear_gradient_with_explicit_user_space_units_passes_through_resolver() {
   </defs>
   <rect x="0" y="0" width="200" height="100" fill="url(#g)"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let path = first_path(&frame);
     match &path.fill {
         Some(Paint::LinearGradient(g)) => {

@@ -8,21 +8,21 @@
 //! * `repeatCount`, `begin`, `dur`, `fill=freeze` end-of-anim behaviour.
 //! * `keyPoints` + `keyTimes` override the natural arc-length mapping.
 //! * Round-trip preservation: the `<animateMotion>` element survives a
-//!   `parse_svg_with_extras → write_svg_with_extras` cycle verbatim.
+//!   `parse_with_extras → write_with_extras` cycle verbatim.
 
-use oxideav_core::{Node, Path, PathCommand};
-use oxideav_svg::{parse_svg_at, parse_svg_with_extras, write_svg_with_extras};
+use oxideav_svg::{parse_at, parse_with_extras, write_with_extras};
+use oxideav_svg::{Node, Path, PathCommand};
 
 /// Extract the transform Matrix3x2 from the first child of the scene
 /// root. A shape with a `transform=` (e.g. one we injected via
 /// animateMotion) is wrapped in a single-child Group whose
 /// `transform` field carries the supplemental matrix.
-fn first_child_transform(svg: &[u8], t: f32) -> oxideav_core::Transform2D {
-    let f = parse_svg_at(svg, t).expect("parse");
+fn first_child_transform(svg: &[u8], t: f32) -> oxideav_svg::Transform2D {
+    let f = parse_at(svg, t).expect("parse");
     let child = f.root.children.first().expect("at least one child");
     match child {
         Node::Group(g) => g.transform,
-        _ => oxideav_core::Transform2D::identity(),
+        _ => oxideav_svg::Transform2D::identity(),
     }
 }
 
@@ -285,13 +285,13 @@ fn round_trip_preserves_animate_motion_verbatim() {
     </animateMotion>
   </rect>
 </svg>"##;
-    let (frame, extras) = parse_svg_with_extras(svg).expect("parse with extras");
+    let (frame, extras) = parse_with_extras(svg).expect("parse with extras");
     // Animation captured.
     assert!(
         !extras.animations.is_empty(),
         "<animateMotion> should ride on PreservedExtras::animations"
     );
-    let out_bytes = write_svg_with_extras(&frame, &extras);
+    let out_bytes = write_with_extras(&frame, &extras);
     let out = String::from_utf8(out_bytes).expect("utf-8 output");
     assert!(
         out.contains("animateMotion"),
@@ -339,7 +339,7 @@ fn malformed_path_attribute_is_ignored_gracefully() {
     <animateMotion dur="1s" path="not a valid path"/>
   </rect>
 </svg>"#;
-    let f = parse_svg_at(svg, 0.5).expect("parse must still succeed");
+    let f = parse_at(svg, 0.5).expect("parse must still succeed");
     // The rect child is still there (no transform override applied).
     assert!(!f.root.children.is_empty(), "scene-graph child survives");
 }
@@ -355,7 +355,7 @@ fn missing_mpath_target_falls_through_gracefully() {
     </animateMotion>
   </rect>
 </svg>"##;
-    let f = parse_svg_at(svg, 0.5).expect("parse must still succeed");
+    let f = parse_at(svg, 0.5).expect("parse must still succeed");
     assert!(!f.root.children.is_empty(), "scene-graph child survives");
 }
 
@@ -476,7 +476,7 @@ fn path_node_works_as_first_child() {
     );
     // The PathNode is wrapped in a Group carrying the supplemental
     // transform from the animateMotion override; the Path is inside.
-    let f = parse_svg_at(svg, 0.5).expect("parse");
+    let f = parse_at(svg, 0.5).expect("parse");
     let child = f.root.children.first().expect("child");
     if let Node::Group(g) = child {
         assert!(
@@ -506,7 +506,7 @@ fn motion_path_with_close_command_wraps_around() {
     // The triangle has perimeter 3+4+5 → not right. Let me recompute:
     // legs 30 + 40 = 70, hypotenuse 50; perimeter 120. The Z chord is
     // 50 long. At t=3s (end), we wrap back to the origin (0,0).
-    let f = parse_svg_at(svg, 3.0).expect("parse");
+    let f = parse_at(svg, 3.0).expect("parse");
     let m = first_child_transform(svg, 3.0);
     // Past-end with fill=freeze: last position is the subpath start
     // (per Close behaviour). Allow some tolerance for chord stepping.
@@ -529,13 +529,13 @@ fn empty_path_data_yields_unmodified_element() {
     <animateMotion dur="1s" path=""/>
   </rect>
 </svg>"#;
-    let f = parse_svg_at(svg, 0.5).expect("parse");
+    let f = parse_at(svg, 0.5).expect("parse");
     assert!(!f.root.children.is_empty(), "child survives");
 }
 
 /// Suppress dead-code warning on Path/PathCommand imports — they're
 /// useful for diagnostic context if a test ever needs to introspect
-/// the underlying `oxideav_core::Path` shape.
+/// the underlying `oxideav_svg::Path` shape.
 #[test]
 fn types_in_scope() {
     let _ = std::any::TypeId::of::<Path>();

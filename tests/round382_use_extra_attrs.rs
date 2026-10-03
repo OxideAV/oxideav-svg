@@ -9,11 +9,11 @@
 //! `UseBinding::extra_attrs` (document order) and re-emits them so the
 //! `<use>` round-trip is lossless.
 
-use oxideav_svg::{parse_svg_with_extras, write_svg_with_extras};
+use oxideav_svg::{parse_with_extras, write_with_extras};
 
 fn roundtrip(src: &[u8]) -> String {
-    let (frame, extras) = parse_svg_with_extras(src).expect("parse");
-    String::from_utf8(write_svg_with_extras(&frame, &extras)).expect("utf8")
+    let (frame, extras) = parse_with_extras(src).expect("parse");
+    String::from_utf8(write_with_extras(&frame, &extras)).expect("utf8")
 }
 
 /// Styling + presentation attributes on `<use>` survive the round-trip.
@@ -69,7 +69,7 @@ fn modelled_attrs_not_duplicated() {
         <use id="u" href="#r" x="1" y="2" width="3" height="4"
              transform="translate(5,6)"/>
     </svg>"##;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     let u = &extras.uses[0];
     for modelled in ["href", "x", "y", "width", "height", "transform", "id"] {
         assert!(
@@ -90,7 +90,7 @@ fn plain_use_has_no_extras() {
         <defs><rect id="r" width="10" height="10"/></defs>
         <use href="#r"/>
     </svg>"##;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(extras.uses[0].extra_attrs.is_empty());
 }
 
@@ -102,7 +102,7 @@ fn extra_attrs_preserve_order() {
         <defs><rect id="r" width="10" height="10"/></defs>
         <use href="#r" data-a="1" data-b="2" data-c="3"/>
     </svg>"##;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     let keys: Vec<&str> = extras.uses[0]
         .extra_attrs
         .iter()
@@ -110,7 +110,7 @@ fn extra_attrs_preserve_order() {
         .collect();
     assert_eq!(keys, vec!["data-a", "data-b", "data-c"]);
     let out = roundtrip(src);
-    let (_f2, extras2) = parse_svg_with_extras(out.as_bytes()).unwrap();
+    let (_f2, extras2) = parse_with_extras(out.as_bytes()).unwrap();
     let keys2: Vec<&str> = extras2.uses[0]
         .extra_attrs
         .iter()

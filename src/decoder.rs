@@ -1,10 +1,10 @@
-//! Top-level SVG → [`VectorFrame`] entry point and the
-//! pipeline-friendly [`Decoder`] adapter.
+//! Top-level SVG → [`SvgDocument`] entry points ([`parse`] and its
+//! timeline / language / side-channel variants). The framework
+//! `Decoder` adapter that wraps them lives in [`crate::registry`].
 
-use oxideav_core::{
-    CodecId, CodecParameters, Decoder, Error, Frame, Group, Packet, Result, TimeBase, Transform2D,
-    VectorFrame, ViewBox,
-};
+use crate::error::{Error, Result};
+use crate::model::{Group, SvgDocument, Transform2D, ViewBox};
+use crate::options::DecodeOptions;
 
 use crate::css::MatchContext;
 use crate::element::{
@@ -16,8 +16,8 @@ use crate::element::{
 use crate::filter::{MeetOrSlice, PreserveAspectRatio, PreserveAspectRatioAlign};
 use crate::length::ResolveContext;
 use crate::parser::{
-    attr, decode_utf8_lossy_stripping_bom, inflate_gzip, is_gzip, parse_xml, tag_local, Element,
-    Node as XmlNode,
+    attr, decode_utf8_lossy_stripping_bom, inflate_gzip_capped, is_gzip, parse_xml_with_limits,
+    tag_local, Element, Node as XmlNode,
 };
 use crate::preserved::{
     AnimTargetBinding, AnimationFragment, ClipRuleBinding, ColorInterpolationBinding,
@@ -31,26 +31,37 @@ use crate::preserved::{
 /// Codec id string for SVG vector frames.
 pub const CODEC_ID_STR: &str = "svg";
 
-/// Parse a complete SVG document into a [`VectorFrame`].
+/// Parse a complete SVG document into an [`SvgDocument`].
 ///
-/// Round 3: transparently inflates `.svgz` (gzip-compressed) input —
-/// the magic-bytes sniff (`1f 8b`) means callers can hand us either
+/// Transparently inflates `.svgz` (gzip-compressed) input — the
+/// magic-bytes sniff (`1f 8b`) means callers can hand us either
 /// flavour without having to pre-decompress.
 ///
-/// Equivalent to `parse_svg_at(bytes, 0.0)` — animations snapshot at
-/// `t=0` to reproduce first-paint behaviour.
-pub fn parse_svg(bytes: &[u8]) -> Result<VectorFrame> {
-    parse_svg_at(bytes, 0.0)
+/// Equivalent to `parse_at(bytes, 0.0)` — animations snapshot at `t=0`
+/// to reproduce first-paint behaviour — with
+/// [`DecodeOptions::default()`] limits.
+pub fn parse(bytes: &[u8]) -> Result<SvgDocument> {
+    parse_at(bytes, 0.0)
 }
 
-/// Round 4 — parse a complete SVG document at a specific timeline
-/// point `t_seconds`. Every `<animate>` / `<set>` / `<animateTransform>`
-/// is evaluated at the requested time using the full SMIL timing model
+/// [`parse`] with explicit [`DecodeOptions`]: `max_bytes` bounds the
+/// input (and the inflated size of an `.svgz`), `max_elements` /
+/// `max_depth` bound the XML parser; the canvas-geometry limits
+/// (`max_width` / `max_height` / `max_pixels`) are not consulted here
+/// because parsing allocates no pixels — they apply to
+/// [`crate::decode_with`].
+pub fn parse_with(bytes: &[u8], opts: &DecodeOptions) -> Result<SvgDocument> {
+    parse_at_with_languages_opts(bytes, 0.0, &[], opts)
+}
+
+/// Parse a complete SVG document at a specific timeline point
+/// `t_seconds`. Every `<animate>` / `<set>` / `<animateTransform>` is
+/// evaluated at the requested time using the full SMIL timing model
 /// (begin / dur / repeatCount / keyTimes / values / from-to-by) and
 /// folded into its parent's attribute set before the scene graph is
-/// built. `t_seconds = 0.0` matches `parse_svg`.
-pub fn parse_svg_at(bytes: &[u8], t_seconds: f32) -> Result<VectorFrame> {
-    parse_svg_at_with_languages(bytes, t_seconds, &[])
+/// built. `t_seconds = 0.0` matches [`parse`].
+pub fn parse_at(bytes: &[u8], t_seconds: f32) -> Result<SvgDocument> {
+    parse_at_with_languages(bytes, t_seconds, &[])
 }
 
 /// Round 98 — parse with an explicit user-preferred language list, used
@@ -60,50 +71,105 @@ pub fn parse_svg_at(bytes: &[u8], t_seconds: f32) -> Result<VectorFrame> {
 /// `system_language` carries the "language tags indicated by user
 /// preferences" the spec matches against (oxideav owns no user-agent
 /// locale registry, so the caller supplies it — e.g. `&["en", "fr"]`).
-/// `parse_svg` / `parse_svg_at` pass an empty list: an absent
+/// [`parse`] / [`parse_at`] pass an empty list: an absent
 /// `systemLanguage` still implicitly evaluates to true, but a present,
 /// non-empty one then matches nothing, so a `<switch>` falls through to
 /// the first child without a language test (the spec-recommended
 /// "catch-all" choice).
-pub fn parse_svg_at_with_languages(
+pub fn parse_at_with_languages(
     bytes: &[u8],
     t_seconds: f32,
     system_language: &[&str],
-) -> Result<VectorFrame> {
-    let inflated;
-    let raw: &[u8] = if is_gzip(bytes) {
-        inflated = inflate_gzip(bytes)?;
-        &inflated
-    } else {
-        bytes
-    };
-    let text = decode_utf8_lossy_stripping_bom(raw);
-    let nodes = parse_xml(&text)?;
+) -> Result<SvgDocument> {
+    parse_at_with_languages_opts(bytes, t_seconds, system_language, &DecodeOptions::default())
+}
+
+/// [`parse_at_with_languages`] with explicit [`DecodeOptions`] (see
+/// [`parse_with`] for which limits apply to parsing).
+pub fn parse_at_with_languages_opts(
+    bytes: &[u8],
+    t_seconds: f32,
+    system_language: &[&str],
+    opts: &DecodeOptions,
+) -> Result<SvgDocument> {
+    let nodes = parse_document_xml(bytes, opts)?;
     let svg =
         find_svg_root(&nodes).ok_or_else(|| Error::invalid("SVG: missing <svg> root element"))?;
+    if opts.strict {
+        check_strict_document(&nodes)?;
+    }
     let langs: Vec<String> = system_language.iter().map(|s| s.to_string()).collect();
     let (frame, ..) = parse_svg_root(svg, t_seconds, false, &langs)?;
     Ok(frame)
 }
 
-/// Round 4 — parse and *also* return a [`PreservedExtras`] side-channel
-/// holding `<style>`, `<filter>`, `<animate>`, and `<foreignObject>`
-/// element trees the scene-graph representation can't fully express.
-///
-/// Pair with [`crate::encoder::write_svg_with_extras`] for a structural
-/// round-trip that doesn't drop the dynamic / filter / CSS pieces.
-pub fn parse_svg_with_extras(bytes: &[u8]) -> Result<(VectorFrame, PreservedExtras)> {
+/// Shared front half of every parse entry point: enforce `max_bytes`
+/// on the input, inflate an `.svgz` under the same cap, decode UTF-8
+/// and run the XML parser with the element-count / depth limits.
+pub(crate) fn parse_document_xml(bytes: &[u8], opts: &DecodeOptions) -> Result<Vec<XmlNode>> {
+    if let Some(max) = opts.max_bytes {
+        if bytes.len() as u64 > max {
+            return Err(Error::limit(format!(
+                "SVG: input of {} bytes exceeds max_bytes {max}",
+                bytes.len()
+            )));
+        }
+    }
     let inflated;
     let raw: &[u8] = if is_gzip(bytes) {
-        inflated = inflate_gzip(bytes)?;
+        inflated = inflate_gzip_capped(bytes, opts.inflate_cap())?;
         &inflated
     } else {
         bytes
     };
     let text = decode_utf8_lossy_stripping_bom(raw);
-    let nodes = parse_xml(&text)?;
+    parse_xml_with_limits(&text, &opts.xml_limits())
+}
+
+/// `strict` parsing (SVG 1.1 §5.1.1 / XML 1.0 §2.1): the document
+/// must have exactly one top-level element and it must be the `<svg>`
+/// root — a `<svg>` nested under some other element, or trailing
+/// elements after the root, are rejected instead of being tolerated.
+fn check_strict_document(nodes: &[XmlNode]) -> Result<()> {
+    let mut elements = nodes.iter().filter_map(|n| match n {
+        XmlNode::Element(e) => Some(e),
+        _ => None,
+    });
+    match (elements.next(), elements.next()) {
+        (Some(first), None) if tag_local(&first.name) == "svg" => Ok(()),
+        (Some(first), None) => Err(Error::invalid(format!(
+            "SVG (strict): document element is <{}>, not <svg>",
+            first.name
+        ))),
+        (_, Some(_)) => Err(Error::invalid(
+            "SVG (strict): more than one top-level element",
+        )),
+        (None, _) => Err(Error::invalid("SVG (strict): no document element")),
+    }
+}
+
+/// Parse and *also* return a [`PreservedExtras`] side-channel holding
+/// `<style>`, `<filter>`, `<animate>`, and `<foreignObject>` element
+/// trees the scene-graph representation can't fully express.
+///
+/// Pair with [`crate::encoder::write_with_extras`] for a structural
+/// round-trip that doesn't drop the dynamic / filter / CSS pieces.
+/// Uses [`DecodeOptions::default()`]; see [`parse_with_extras_opts`].
+pub fn parse_with_extras(bytes: &[u8]) -> Result<(SvgDocument, PreservedExtras)> {
+    parse_with_extras_opts(bytes, &DecodeOptions::default())
+}
+
+/// [`parse_with_extras`] with explicit [`DecodeOptions`].
+pub fn parse_with_extras_opts(
+    bytes: &[u8],
+    opts: &DecodeOptions,
+) -> Result<(SvgDocument, PreservedExtras)> {
+    let nodes = parse_document_xml(bytes, opts)?;
     let svg =
         find_svg_root(&nodes).ok_or_else(|| Error::invalid("SVG: missing <svg> root element"))?;
+    if opts.strict {
+        check_strict_document(&nodes)?;
+    }
     let mut extras = PreservedExtras::new();
     collect_extras(svg, &mut extras, None);
     // Round 215 — SVG 1.1 §14.3.5 `clip-rule` side-channel collection.
@@ -277,7 +343,7 @@ fn collect_extras(el: &Element, extras: &mut PreservedExtras, current_id: Option
             // template chain for downstream consumers; this verbatim
             // element is the round-trip source of truth so an author's
             // `gradientUnits` / `gradientTransform` / `href` survive a
-            // `parse_svg_with_extras → write_svg_with_extras` cycle.
+            // `parse_with_extras → write_with_extras` cycle.
             extras.gradients.push(el.clone());
         }
         "foreignobject" => {
@@ -309,7 +375,7 @@ fn collect_extras(el: &Element, extras: &mut PreservedExtras, current_id: Option
             // sure the source XML (descriptive children, attribute
             // ordering, any attributes the typed view doesn't model)
             // round-trips byte-faithfully on
-            // `write_svg_with_extras`.
+            // `write_with_extras`.
             extras.views.push(el.clone());
         }
         "defs" => {
@@ -418,8 +484,8 @@ fn collect_one_clip_rule_binding(el: &Element, extras: &mut PreservedExtras) {
     let resolved = parse_clip_rule_attr(explicit);
     let author_explicit = explicit.is_some_and(|v| parse_clip_rule_attr(Some(v)).is_some());
     let keyword = match resolved {
-        Some(oxideav_core::FillRule::EvenOdd) => "evenodd",
-        Some(oxideav_core::FillRule::NonZero) if author_explicit => "nonzero",
+        Some(crate::model::FillRule::EvenOdd) => "evenodd",
+        Some(crate::model::FillRule::NonZero) if author_explicit => "nonzero",
         // Initial value with no explicit author keyword — nothing to
         // record (the round-trip honours the §14.3.5 initial silently).
         _ => return,
@@ -445,7 +511,7 @@ fn collect_one_clip_rule_binding(el: &Element, extras: &mut PreservedExtras) {
 /// reference target when it is an id-bearing shape / container that has
 /// no other typed round-trip carrier. Used by [`collect_extras`] so a
 /// `<use href="#id">` the encoder re-emits still resolves after a
-/// `parse_svg_with_extras → write_svg_with_extras` cycle.
+/// `parse_with_extras → write_with_extras` cycle.
 ///
 /// The typed kinds (`linearGradient` / `radialGradient` / `filter` /
 /// `pattern` / `marker` / `mask` / `clipPath` / `style` / `view`) are
@@ -549,7 +615,7 @@ fn collect_clip_mask_ref_bindings_inner(
             if let Some(mask_el) = find_def_element(root, "mask", id) {
                 let mut ctx = ParseContext::new();
                 if let Ok(Some((_, def))) = parse_mask_def(mask_el, &mut ctx) {
-                    let node = oxideav_core::Node::Group(def.content.clone());
+                    let node = crate::model::Node::Group(def.content.clone());
                     extras.mask_refs.push(RefBinding {
                         fingerprint: crate::encoder::mask_fingerprint(def.mask_kind, &node),
                         ref_id: id.to_string(),
@@ -594,7 +660,7 @@ fn find_svg_root(nodes: &[XmlNode]) -> Option<&Element> {
 }
 
 type SvgRootParse = (
-    VectorFrame,
+    SvgDocument,
     Vec<IdScenePath>,
     Vec<PathLengthBinding>,
     Vec<LinkBinding>,
@@ -712,7 +778,7 @@ fn parse_svg_root(
     // resolver. Done AFTER `register_all_defs` so a forward `href`
     // reference (`<linearGradient id="b" href="#a">` declared before
     // `<linearGradient id="a">`) resolves correctly.
-    let mut gradient_paints: std::collections::HashMap<String, oxideav_core::Paint> =
+    let mut gradient_paints: std::collections::HashMap<String, crate::model::Paint> =
         std::collections::HashMap::with_capacity(ctx.defs.gradients.len());
     let mut gradient_refs: Vec<RefBinding> = Vec::new();
     for (id, def) in &ctx.defs.gradients {
@@ -797,13 +863,11 @@ fn parse_svg_root(
         }
     }
 
-    let frame = VectorFrame {
+    let frame = SvgDocument {
         width,
         height,
         view_box,
         root,
-        pts: None,
-        time_base: TimeBase::new(1, 1),
     };
     Ok((
         frame,
@@ -1053,49 +1117,6 @@ fn parse_length_or_default(v: Option<&str>, default: f32) -> Result<f32> {
     parse_number(Some(s), default)
 }
 
-/// Codec-registry adapter. Consumes one packet (the entire SVG file)
-/// and produces one [`Frame::Vector`].
-pub fn make_decoder(_params: &CodecParameters) -> Result<Box<dyn Decoder>> {
-    Ok(Box::new(SvgDecoder {
-        codec_id: CodecId::new(CODEC_ID_STR),
-        pending: None,
-        eof: false,
-    }))
-}
-
-struct SvgDecoder {
-    codec_id: CodecId,
-    pending: Option<VectorFrame>,
-    eof: bool,
-}
-
-impl Decoder for SvgDecoder {
-    fn codec_id(&self) -> &CodecId {
-        &self.codec_id
-    }
-    fn send_packet(&mut self, packet: &Packet) -> Result<()> {
-        let frame = parse_svg(&packet.data)?;
-        self.pending = Some(frame);
-        Ok(())
-    }
-    fn receive_frame(&mut self) -> Result<Frame> {
-        match self.pending.take() {
-            Some(f) => Ok(Frame::Vector(f)),
-            None => {
-                if self.eof {
-                    Err(Error::Eof)
-                } else {
-                    Err(Error::NeedMore)
-                }
-            }
-        }
-    }
-    fn flush(&mut self) -> Result<()> {
-        self.eof = true;
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1106,7 +1127,7 @@ mod tests {
 <svg xmlns="http://www.w3.org/2000/svg" width="100" height="50" viewBox="0 0 100 50">
   <rect x="10" y="10" width="80" height="30" fill="red"/>
 </svg>"#;
-        let frame = parse_svg(src).unwrap();
+        let frame = parse(src).unwrap();
         assert_eq!(frame.width, 100.0);
         assert_eq!(frame.height, 50.0);
         assert!(frame.view_box.is_some());
@@ -1116,7 +1137,7 @@ mod tests {
     #[test]
     fn parses_svg_without_explicit_dimensions_falls_back_to_viewbox() {
         let src = br#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"></svg>"#;
-        let frame = parse_svg(src).unwrap();
+        let frame = parse(src).unwrap();
         assert_eq!(frame.width, 64.0);
         assert_eq!(frame.height, 64.0);
     }
@@ -1124,7 +1145,7 @@ mod tests {
     #[test]
     fn rejects_non_svg_input() {
         let src = b"<html><body/></html>";
-        assert!(parse_svg(src).is_err());
+        assert!(parse(src).is_err());
     }
 
     #[test]
@@ -1138,13 +1159,13 @@ mod tests {
             </defs>
             <rect x="0" y="0" width="10" height="10" fill="url(#g)"/>
         </svg>"##;
-        let frame = parse_svg(src).unwrap();
+        let frame = parse(src).unwrap();
         let path = match &frame.root.children[0] {
-            oxideav_core::Node::Path(p) => p,
+            crate::model::Node::Path(p) => p,
             _ => panic!("expected path"),
         };
         match &path.fill {
-            Some(oxideav_core::Paint::LinearGradient(g)) => {
+            Some(crate::model::Paint::LinearGradient(g)) => {
                 assert_eq!(g.stops.len(), 2);
             }
             other => panic!("expected linear gradient, got {:?}", other),

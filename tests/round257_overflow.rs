@@ -19,7 +19,7 @@
 
 use oxideav_svg::element::{Overflow, PaintState};
 use oxideav_svg::parser::{parse_xml, Element, Node as XmlNode};
-use oxideav_svg::{parse_svg, parse_svg_with_extras, write_svg_with_extras};
+use oxideav_svg::{parse, parse_with_extras, write_with_extras};
 
 /// Default `overflow` is `visible` per the §3.11 summary table.
 #[test]
@@ -36,7 +36,7 @@ fn baseline_no_overflow_attr_no_binding() {
                        viewBox="0 0 100 100">
         <rect x="10" y="10" width="50" height="50" fill="red"/>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(
         extras.overflows.is_empty(),
         "round 257: a document without overflow= must not record a binding"
@@ -53,7 +53,7 @@ fn hidden_on_g_records_binding() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(
         extras.overflows.len(),
         1,
@@ -80,7 +80,7 @@ fn each_keyword_records_canonical_form() {
             </svg>"#,
             input
         );
-        let (_frame, extras) = parse_svg_with_extras(src.as_bytes()).unwrap();
+        let (_frame, extras) = parse_with_extras(src.as_bytes()).unwrap();
         assert_eq!(extras.overflows.len(), 1, "input={}", input);
         assert_eq!(extras.overflows[0].overflow, expected, "input={}", input);
     }
@@ -109,7 +109,7 @@ fn keyword_matching_is_case_insensitive() {
             </svg>"#,
             input
         );
-        let (_frame, extras) = parse_svg_with_extras(src.as_bytes()).unwrap();
+        let (_frame, extras) = parse_with_extras(src.as_bytes()).unwrap();
         assert_eq!(extras.overflows.len(), 1, "input={}", input);
         assert_eq!(extras.overflows[0].overflow, expected, "input={}", input);
     }
@@ -129,7 +129,7 @@ fn explicit_visible_is_recorded() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </symbol>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     // <symbol> doesn't currently emit a scene node by default but
     // the cascade flow runs through every element via the <g> path
     // for the side-channel — the binding for an emit-less element
@@ -143,7 +143,7 @@ fn explicit_visible_is_recorded() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(
         extras.overflows.len(),
         1,
@@ -163,7 +163,7 @@ fn inherit_keyword_skips_recording() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(
         extras.overflows.is_empty(),
         "round 257: `inherit` keeps the resolved value and skips recording"
@@ -183,13 +183,13 @@ fn unknown_keyword_skips_recording() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(
         extras.overflows.is_empty(),
         "round 257: unrecognised keyword keeps the resolved value and skips recording"
     );
     // The document still loads (no parse failure).
-    let _ = parse_svg(src).unwrap();
+    let _ = parse(src).unwrap();
 }
 
 /// Round 257: empty `overflow=""` skips recording (no keyword to
@@ -202,7 +202,7 @@ fn empty_value_skips_recording() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(extras.overflows.is_empty());
 }
 
@@ -337,7 +337,7 @@ fn child_attribute_wins_after_reset() {
 }
 
 /// Round 257: round-trip preserves `overflow=` on a `<g>` — a
-/// `parse_svg_with_extras → write_svg_with_extras` cycle re-emits the
+/// `parse_with_extras → write_with_extras` cycle re-emits the
 /// attribute on the matching element.
 #[test]
 fn roundtrip_emits_attribute_on_group() {
@@ -347,8 +347,8 @@ fn roundtrip_emits_attribute_on_group() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
-    let out = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).unwrap();
+    let out = write_with_extras(&frame, &extras);
     let out_s = String::from_utf8(out).unwrap();
     assert!(
         out_s.contains("overflow=\"hidden\""),
@@ -366,10 +366,10 @@ fn roundtrip_emits_attribute_on_shape() {
                        viewBox="0 0 100 100">
         <rect x="10" y="10" width="50" height="50" fill="red" overflow="scroll"/>
     </svg>"#;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.overflows.len(), 1);
     assert_eq!(extras.overflows[0].overflow, "scroll");
-    let out = write_svg_with_extras(&frame, &extras);
+    let out = write_with_extras(&frame, &extras);
     let out_s = String::from_utf8(out).unwrap();
     assert!(
         out_s.contains("overflow=\"scroll\""),
@@ -388,10 +388,10 @@ fn roundtrip_is_idempotent() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (frame1, extras1) = parse_svg_with_extras(src).unwrap();
-    let out1 = write_svg_with_extras(&frame1, &extras1);
-    let (frame2, extras2) = parse_svg_with_extras(&out1).unwrap();
-    let out2 = write_svg_with_extras(&frame2, &extras2);
+    let (frame1, extras1) = parse_with_extras(src).unwrap();
+    let out1 = write_with_extras(&frame1, &extras1);
+    let (frame2, extras2) = parse_with_extras(&out1).unwrap();
+    let out2 = write_with_extras(&frame2, &extras2);
     assert_eq!(
         out1, out2,
         "round 257: parse → write → parse → write must converge"
@@ -411,8 +411,8 @@ fn roundtrip_canonicalises_source_case() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
-    let out = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).unwrap();
+    let out = write_with_extras(&frame, &extras);
     let out_s = String::from_utf8(out).unwrap();
     assert!(
         out_s.contains("overflow=\"hidden\""),
@@ -421,18 +421,18 @@ fn roundtrip_canonicalises_source_case() {
     );
 }
 
-/// Round 257: `parse_svg` (no extras) still loads the document
+/// Round 257: `parse` (no extras) still loads the document
 /// cleanly — the property cascade machinery doesn't require the
 /// side-channel.
 #[test]
-fn parse_svg_without_extras_still_loads() {
+fn parse_without_extras_still_loads() {
     let src = br#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"
                        viewBox="0 0 100 100">
         <g overflow="hidden">
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let _ = parse_svg(src).unwrap();
+    let _ = parse(src).unwrap();
 }
 
 /// Round 257: a `<g overflow=…>` ancestor records the attribute on
@@ -447,7 +447,7 @@ fn group_attribute_records_once_not_per_child() {
             <rect x="30" y="30" width="50" height="50" fill="blue"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(
         extras.overflows.len(),
         1,
@@ -471,13 +471,13 @@ fn coexists_with_other_painting_hints_on_same_group() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.overflows.len(), 1);
     assert_eq!(extras.color_interpolations.len(), 1);
     assert_eq!(extras.color_renderings.len(), 1);
     assert_eq!(extras.shape_renderings.len(), 1);
     assert_eq!(extras.text_renderings.len(), 1);
-    let out = write_svg_with_extras(&frame, &extras);
+    let out = write_with_extras(&frame, &extras);
     let s = String::from_utf8(out).unwrap();
     assert!(s.contains("overflow=\"hidden\""));
     assert!(s.contains("color-interpolation=\"linearRGB\""));
@@ -502,7 +502,7 @@ fn per_child_override_records_separately() {
             </g>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.overflows.len(), 2);
     let kinds: Vec<&str> = extras
         .overflows

@@ -11,11 +11,11 @@
 //! scene-graph tree-path; the encoder emits the native tag instead of
 //! the flattened `d`.
 
-use oxideav_svg::{parse_svg, parse_svg_with_extras, write_svg, write_svg_with_extras};
+use oxideav_svg::{parse, parse_with_extras, write, write_with_extras};
 
 fn roundtrip(src: &[u8]) -> String {
-    let (frame, extras) = parse_svg_with_extras(src).expect("parse");
-    let out = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).expect("parse");
+    let out = write_with_extras(&frame, &extras);
     String::from_utf8(out).expect("utf8")
 }
 
@@ -128,8 +128,8 @@ fn shape_roundtrip_is_idempotent_and_geometry_stable() {
     // output through the plain (extras-free) writer — the flattened
     // geometry must be identical, proving the verbatim geometry
     // attributes resolve to the same user-space shapes.
-    let flat_src = String::from_utf8(write_svg(&parse_svg(src).unwrap())).unwrap();
-    let flat_rt = String::from_utf8(write_svg(&parse_svg(w1.as_bytes()).unwrap())).unwrap();
+    let flat_src = String::from_utf8(write(&parse(src).unwrap())).unwrap();
+    let flat_rt = String::from_utf8(write(&parse(w1.as_bytes()).unwrap())).unwrap();
     assert_eq!(
         flat_src, flat_rt,
         "re-parsed native shapes flatten to identical geometry"
@@ -156,16 +156,16 @@ fn paint_order_split_declines_native_identity() {
     assert_eq!(out, w2, "the declined form is still idempotent");
 }
 
-/// The extras-free `write_svg` path is unchanged — without bindings the
+/// The extras-free `write` path is unchanged — without bindings the
 /// flattened `<path>` emission remains.
 #[test]
-fn plain_write_svg_still_flattens() {
+fn plain_write_still_flattens() {
     let src = br##"<?xml version="1.0"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
   <rect x="1" y="2" width="30" height="40"/>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
-    let out = String::from_utf8(write_svg(&frame)).expect("utf8");
+    let frame = parse(src).expect("parse");
+    let out = String::from_utf8(write(&frame)).expect("utf8");
     assert!(out.contains("<path"), "extras-free write flattens:\n{out}");
     assert!(!out.contains("<rect"), "no binding, no native tag:\n{out}");
 }

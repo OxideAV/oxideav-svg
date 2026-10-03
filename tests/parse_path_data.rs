@@ -1,11 +1,11 @@
 //! Exercise every path command (M, L, H, V, C, S, Q, T, A, Z) and
 //! both absolute / relative / smooth-shorthand variants.
 
-use oxideav_core::{Node, PathCommand};
-use oxideav_svg::parse_svg;
+use oxideav_svg::parse;
+use oxideav_svg::{Node, PathCommand};
 
 fn first_path_commands(src: &[u8]) -> Vec<PathCommand> {
-    let frame = parse_svg(src).expect("parses");
+    let frame = parse(src).expect("parses");
     let path = match &frame.root.children[0] {
         Node::Path(p) => p,
         other => panic!("expected path, got {other:?}"),

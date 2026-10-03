@@ -13,10 +13,10 @@
 //! > for total path length.
 //!
 //! Distance-along-a-path scaling currently affects
-//! [`oxideav_core::Stroke::dash`] (the `stroke-dasharray` /
+//! [`crate::model::Stroke::dash`] (the `stroke-dasharray` /
 //! `stroke-dashoffset` cascade). When `pathLength` is supplied and
 //! non-zero, this module computes the **geometric** length of the
-//! element's resulting [`oxideav_core::Path`] and rewrites each
+//! element's resulting [`crate::model::Path`] and rewrites each
 //! dasharray entry / dashoffset value by the ratio
 //! `geometric_length / pathLength` so a downstream rasteriser that
 //! consumes user-space lengths produces the same visual result as one
@@ -37,7 +37,7 @@
 //!
 //! ## Geometric length computation
 //!
-//! All four curve primitives in [`oxideav_core::PathCommand`] reduce
+//! All four curve primitives in [`crate::model::PathCommand`] reduce
 //! to a polyline sum:
 //!
 //! | Segment        | Strategy                                            |
@@ -55,7 +55,7 @@
 //! ratio rather than an absolute distance, so sub-pixel accuracy is
 //! more than sufficient.
 
-use oxideav_core::{Path, PathCommand, Point, Stroke};
+use crate::model::{Path, PathCommand, Point, Stroke};
 
 /// Parse the SVG 2 §9.6.1 `pathLength` attribute value.
 ///
@@ -137,8 +137,6 @@ pub fn compute_path_length(path: &Path) -> f32 {
                 total += dist(cur, start);
                 cur = start;
             }
-            // `PathCommand` is `#[non_exhaustive]` — be lenient.
-            _ => {}
         }
     }
     total
@@ -315,7 +313,6 @@ pub fn sample_path_at_distance(path: &Path, distance: f32) -> (Point, f32) {
                 }
                 cur = p;
             }
-            _ => {}
         }
     }
     // Past the end → return the final pen with the last tangent.
@@ -769,12 +766,12 @@ mod tests {
 
     #[test]
     fn apply_scales_dasharray_and_offset() {
-        use oxideav_core::{DashPattern, Paint, Rgba, Stroke};
+        use crate::model::{DashPattern, Paint, Rgba, Stroke};
         let mut s = Stroke {
             width: 1.0,
             paint: Paint::Solid(Rgba::opaque(0, 0, 0)),
-            cap: oxideav_core::LineCap::Butt,
-            join: oxideav_core::LineJoin::Miter,
+            cap: crate::model::LineCap::Butt,
+            join: crate::model::LineJoin::Miter,
             miter_limit: 4.0,
             dash: Some(DashPattern::new(vec![10.0, 5.0]).with_offset(2.0)),
         };
@@ -788,12 +785,12 @@ mod tests {
 
     #[test]
     fn apply_zero_path_length_drops_dash() {
-        use oxideav_core::{DashPattern, Paint, Rgba, Stroke};
+        use crate::model::{DashPattern, Paint, Rgba, Stroke};
         let mut s = Stroke {
             width: 1.0,
             paint: Paint::Solid(Rgba::opaque(0, 0, 0)),
-            cap: oxideav_core::LineCap::Butt,
-            join: oxideav_core::LineJoin::Miter,
+            cap: crate::model::LineCap::Butt,
+            join: crate::model::LineJoin::Miter,
             miter_limit: 4.0,
             dash: Some(DashPattern::new(vec![10.0, 5.0])),
         };
@@ -805,12 +802,12 @@ mod tests {
     fn apply_zero_path_length_preserves_all_zero_dash() {
         // "A value of zero scaled infinitely must remain zero" — the
         // all-zero dasharray (degenerate but spec-valid) survives.
-        use oxideav_core::{DashPattern, Paint, Rgba, Stroke};
+        use crate::model::{DashPattern, Paint, Rgba, Stroke};
         let mut s = Stroke {
             width: 1.0,
             paint: Paint::Solid(Rgba::opaque(0, 0, 0)),
-            cap: oxideav_core::LineCap::Butt,
-            join: oxideav_core::LineJoin::Miter,
+            cap: crate::model::LineCap::Butt,
+            join: crate::model::LineJoin::Miter,
             miter_limit: 4.0,
             dash: Some(DashPattern::new(vec![0.0, 0.0])),
         };
@@ -821,12 +818,12 @@ mod tests {
 
     #[test]
     fn apply_no_dash_is_noop() {
-        use oxideav_core::{Paint, Rgba, Stroke};
+        use crate::model::{Paint, Rgba, Stroke};
         let mut s = Stroke {
             width: 1.0,
             paint: Paint::Solid(Rgba::opaque(0, 0, 0)),
-            cap: oxideav_core::LineCap::Butt,
-            join: oxideav_core::LineJoin::Miter,
+            cap: crate::model::LineCap::Butt,
+            join: crate::model::LineJoin::Miter,
             miter_limit: 4.0,
             dash: None,
         };

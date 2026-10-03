@@ -5,7 +5,7 @@
 //! loses the source character data, the font selection properties, the
 //! `<tspan>` per-character positioning arrays (§11.2.2 `x` / `y` /
 //! `dx` / `dy` / `rotate`), and any `<textPath>` layout (§11.8) —
-//! none of which `oxideav_core::Node` can model. Before this round a
+//! none of which `oxideav_svg::Node` can model. Before this round a
 //! `parse → write` cycle dropped the text entirely.
 //!
 //! This round captures the whole `<text>` verbatim in
@@ -17,11 +17,11 @@
 //! collapsing makes synthetic indentation around spans lossy, so none
 //! is inserted).
 
-use oxideav_svg::{parse_svg_with_extras, write_svg_with_extras};
+use oxideav_svg::{parse_with_extras, write_with_extras};
 
 fn roundtrip(src: &[u8]) -> String {
-    let (frame, extras) = parse_svg_with_extras(src).expect("parse");
-    let out = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).expect("parse");
+    let out = write_with_extras(&frame, &extras);
     String::from_utf8(out).expect("utf8")
 }
 
@@ -200,6 +200,6 @@ fn no_text_no_binding_guard() {
 <svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
   <rect x="0" y="0" width="10" height="10"/>
 </svg>"##;
-    let (_frame, extras) = parse_svg_with_extras(src).expect("parse");
+    let (_frame, extras) = parse_with_extras(src).expect("parse");
     assert!(extras.texts.is_empty(), "no <text> → no binding");
 }

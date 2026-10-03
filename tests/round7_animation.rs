@@ -6,18 +6,18 @@
 //! and verify that the static-snapshot value the renderer sees matches
 //! the easing curve.
 
-use oxideav_svg::parse_svg_at;
+use oxideav_svg::parse_at;
 
 /// Find the first painted path-or-group node in the frame, preferring
 /// the deepest leaf so any wrapping `<g>` produced by the encoder for a
 /// per-element transform doesn't shadow the path we want to inspect.
-fn find_first_path(frame: &oxideav_core::VectorFrame) -> &oxideav_core::Node {
-    fn walk(g: &oxideav_core::Group) -> Option<&oxideav_core::Node> {
+fn find_first_path(frame: &oxideav_svg::SvgDocument) -> &oxideav_svg::Node {
+    fn walk(g: &oxideav_svg::Group) -> Option<&oxideav_svg::Node> {
         for c in &g.children {
-            if let oxideav_core::Node::Path(_) = c {
+            if let oxideav_svg::Node::Path(_) = c {
                 return Some(c);
             }
-            if let oxideav_core::Node::Group(sg) = c {
+            if let oxideav_svg::Node::Group(sg) = c {
                 if let Some(hit) = walk(sg) {
                     return Some(hit);
                 }
@@ -28,13 +28,13 @@ fn find_first_path(frame: &oxideav_core::VectorFrame) -> &oxideav_core::Node {
     walk(&frame.root).expect("no path in frame")
 }
 
-fn rect_x(node: &oxideav_core::Node) -> f32 {
+fn rect_x(node: &oxideav_svg::Node) -> f32 {
     let path_node = match node {
-        oxideav_core::Node::Path(p) => p,
+        oxideav_svg::Node::Path(p) => p,
         _ => panic!("not a path"),
     };
     match path_node.path.commands.first() {
-        Some(oxideav_core::PathCommand::MoveTo(p)) => p.x,
+        Some(oxideav_svg::PathCommand::MoveTo(p)) => p.x,
         _ => panic!("no MoveTo"),
     }
 }
@@ -51,7 +51,7 @@ fn paced_redistributes_to_constant_attribute_speed() {
   </rect>
 </svg>"##;
     // Linear baseline: mid-segment at t=1.0s should give x=10.
-    let frame_lin = parse_svg_at(
+    let frame_lin = parse_at(
         br##"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="20">
   <rect width="10" height="10" fill="red">
     <animate attributeName="x" calcMode="linear" values="0;10;100" dur="2s"/>
@@ -66,7 +66,7 @@ fn paced_redistributes_to_constant_attribute_speed() {
         "linear at midpoint should be 10, got {lin_x}"
     );
 
-    let frame_paced = parse_svg_at(src, 1.0).unwrap();
+    let frame_paced = parse_at(src, 1.0).unwrap();
     let paced_x = rect_x(find_first_path(&frame_paced));
     // With paced, the segment 0→10 (length 10) takes ~10/110 of total
     // time, and 10→100 (length 90) takes ~90/110. So at time-fraction
@@ -89,7 +89,7 @@ fn spline_ease_in_curve_lands_below_linear_at_midpoint() {
              keySplines="0.42 0 1 1" dur="2s"/>
   </rect>
 </svg>"##;
-    let frame = parse_svg_at(src, 1.0).unwrap();
+    let frame = parse_at(src, 1.0).unwrap();
     let x = rect_x(find_first_path(&frame));
     // Linear would give 50; ease-in should be noticeably less.
     assert!(x < 40.0, "ease-in spline at t=0.5 should be < 40, got {x}");
@@ -110,7 +110,7 @@ fn spline_linear_curve_matches_calcmode_linear() {
              keySplines="0 0 1 1" dur="2s"/>
   </rect>
 </svg>"##;
-    let frame = parse_svg_at(src, 1.0).unwrap();
+    let frame = parse_at(src, 1.0).unwrap();
     let x = rect_x(find_first_path(&frame));
     assert!(
         (x - 50.0).abs() < 1.0,
@@ -126,7 +126,7 @@ fn spline_missing_keysplines_falls_back_to_linear() {
              values="0;100" keyTimes="0;1" dur="2s"/>
   </rect>
 </svg>"##;
-    let frame = parse_svg_at(src, 1.0).unwrap();
+    let frame = parse_at(src, 1.0).unwrap();
     let x = rect_x(find_first_path(&frame));
     assert!(
         (x - 50.0).abs() < 1.0,

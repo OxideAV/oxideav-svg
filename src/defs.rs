@@ -12,7 +12,7 @@
 //!
 //! - **Masks** (`<mask>` / `mask="url(#id)"`) and **clipPaths**
 //!   (`<clipPath>` / `clip-path="url(#id)"`) parse their child shapes
-//!   into a [`oxideav_core::Group`] (mask) or a [`oxideav_core::Path`]
+//!   into a [`crate::model::Group`] (mask) or a [`crate::model::Path`]
 //!   (clipPath — multiple shapes are concatenated into one path so the
 //!   even-odd / non-zero fill rule of the union approximates the SVG
 //!   clip).
@@ -24,7 +24,7 @@
 
 use std::collections::HashMap;
 
-use oxideav_core::{FillRule, GradientStop, Group, Path, SpreadMethod, Transform2D, ViewBox};
+use crate::model::{FillRule, GradientStop, Group, Path, SpreadMethod, Transform2D, ViewBox};
 
 use crate::filter::{FilterGraph, PreserveAspectRatio};
 use crate::parser::Element;
@@ -321,11 +321,11 @@ pub struct FilterDef {
 
 /// Captured `<mask id="...">`. The mask subtree is pre-parsed into a
 /// `Group` so the resolver can wrap content in
-/// [`oxideav_core::Node::SoftMask`] without re-walking the XML.
+/// [`crate::model::Node::SoftMask`] without re-walking the XML.
 #[derive(Clone, Debug)]
 pub struct MaskDef {
     /// `mask-type="luminance"` (default) or `"alpha"`.
-    pub mask_kind: oxideav_core::MaskKind,
+    pub mask_kind: crate::model::MaskKind,
     pub content: Group,
 }
 
@@ -397,7 +397,7 @@ pub struct SymbolDef {
 
 /// Round 20 — captured `<pattern id="...">` paint server. SVG 2 §14.3.
 ///
-/// `oxideav_core::Paint` lacks a `Pattern` variant — the IR was last
+/// `crate::model::Paint` lacks a `Pattern` variant — the IR was last
 /// frozen with only `Solid` / `LinearGradient` / `RadialGradient`. Round
 /// 20 captures every `<pattern>` we see (typed view + verbatim XML on
 /// the side-channel) so the encoder round-trips the definition AND a
@@ -579,7 +579,7 @@ fn parse_angle_deg(s: &str) -> Option<f32> {
 ///
 /// A `<marker>` is a never-rendered container whose graphics are painted
 /// at vertices of a referencing shape via the `marker-start` /
-/// `marker-mid` / `marker-end` properties. `oxideav_core::Node` has no
+/// `marker-mid` / `marker-end` properties. `crate::model::Node` has no
 /// `Marker` construct (the IR was frozen without one), so — mirroring the
 /// round-20 `<pattern>` capture — round 104 records a typed `MarkerDef`
 /// (consumable by a downstream rasterizer) plus the verbatim source XML
@@ -720,7 +720,7 @@ pub struct DefsTables {
     /// Round 104 — typed `<marker>` definitions (SVG 2 §13.7.1) keyed by
     /// `id`. Populated during the pre-walk so a forward
     /// `marker-end="url(#arrow)"` reference resolves regardless of source
-    /// order. `oxideav_core::Node` has no `Marker` variant yet, so the
+    /// order. `crate::model::Node` has no `Marker` variant yet, so the
     /// scene-walk skips `<marker>` (it's a never-rendered element per
     /// §13.7.1); this typed table + the verbatim XML side-channel are the
     /// inputs a downstream rasterizer consumes once a `Marker` construct
@@ -750,7 +750,7 @@ pub fn parse_url_ref(s: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxideav_core::{GradientStop, Rgba};
+    use crate::model::{GradientStop, Rgba};
 
     #[test]
     fn parse_url_ref_extracts_id() {

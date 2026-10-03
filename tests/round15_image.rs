@@ -7,13 +7,13 @@
 //! `data:image/<mime>;base64,...` URI per RFC 2397.
 //!
 //! These tests cover both shapes and the round-trip through
-//! `parse_svg_with_extras` + `write_svg_with_extras`.
+//! `parse_with_extras` + `write_with_extras`.
 
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 
 use oxideav_svg::image::{ImageHref, SvgImage};
-use oxideav_svg::{parse_svg_with_extras, write_svg_with_extras};
+use oxideav_svg::{parse_with_extras, write_with_extras};
 
 /// 67-byte canonical 1x1 transparent PNG payload.
 const PNG_1X1_BASE64: &str =
@@ -29,7 +29,7 @@ fn captures_inline_data_uri_image() {
 </svg>"##,
         PNG_1X1_BASE64
     );
-    let (_, extras) = parse_svg_with_extras(src.as_bytes()).unwrap();
+    let (_, extras) = parse_with_extras(src.as_bytes()).unwrap();
     assert_eq!(extras.images.len(), 1, "expected one captured <image>");
     let img = &extras.images[0];
     assert_eq!(img.x, 10.0);
@@ -52,7 +52,7 @@ fn captures_external_href_image() {
 <svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
   <image x="0" y="0" width="100" height="100" href="logo.png"/>
 </svg>"##;
-    let (_, extras) = parse_svg_with_extras(src.as_bytes()).unwrap();
+    let (_, extras) = parse_with_extras(src.as_bytes()).unwrap();
     assert_eq!(extras.images.len(), 1);
     let img = &extras.images[0];
     assert!(matches!(&img.href, ImageHref::External(s) if s == "logo.png"));
@@ -66,7 +66,7 @@ fn captures_xlink_href_legacy_form() {
      width="64" height="64">
   <image xlink:href="bg.jpg" width="64" height="64"/>
 </svg>"##;
-    let (_, extras) = parse_svg_with_extras(src.as_bytes()).unwrap();
+    let (_, extras) = parse_with_extras(src.as_bytes()).unwrap();
     assert_eq!(extras.images.len(), 1);
     assert!(matches!(&extras.images[0].href, ImageHref::External(s) if s == "bg.jpg"));
 }
@@ -81,8 +81,8 @@ fn round_trip_inline_data_uri() {
 </svg>"##,
         PNG_1X1_BASE64
     );
-    let (frame, extras) = parse_svg_with_extras(src.as_bytes()).unwrap();
-    let bytes = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src.as_bytes()).unwrap();
+    let bytes = write_with_extras(&frame, &extras);
     let out = std::str::from_utf8(&bytes).unwrap();
     // The encoder re-emits the data URI with the same MIME + payload.
     assert!(
@@ -91,7 +91,7 @@ fn round_trip_inline_data_uri() {
         out
     );
     // Round-trip preserves byte-identity for the decoded payload.
-    let (_, extras2) = parse_svg_with_extras(out.as_bytes()).unwrap();
+    let (_, extras2) = parse_with_extras(out.as_bytes()).unwrap();
     assert_eq!(extras2.images.len(), 1);
     match (&extras.images[0].href, &extras2.images[0].href) {
         (
@@ -117,15 +117,15 @@ fn round_trip_external_href() {
 <svg xmlns="http://www.w3.org/2000/svg" width="200" height="100">
   <image x="5" y="5" width="40" height="40" href="https://example.com/icon.svg"/>
 </svg>"##;
-    let (frame, extras) = parse_svg_with_extras(src.as_bytes()).unwrap();
-    let bytes = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src.as_bytes()).unwrap();
+    let bytes = write_with_extras(&frame, &extras);
     let out = std::str::from_utf8(&bytes).unwrap();
     assert!(
         out.contains("https://example.com/icon.svg"),
         "encoder should re-emit external URL: {}",
         out
     );
-    let (_, extras2) = parse_svg_with_extras(out.as_bytes()).unwrap();
+    let (_, extras2) = parse_with_extras(out.as_bytes()).unwrap();
     assert_eq!(extras2.images.len(), 1);
     assert!(matches!(
         &extras2.images[0].href,
@@ -150,7 +150,7 @@ fn data_uri_with_whitespace_in_payload_decodes() {
 </svg>"##,
         chunked
     );
-    let (_, extras) = parse_svg_with_extras(src.as_bytes()).unwrap();
+    let (_, extras) = parse_with_extras(src.as_bytes()).unwrap();
     assert_eq!(extras.images.len(), 1);
     match &extras.images[0].href {
         ImageHref::DataUri { mime, bytes } => {
@@ -168,7 +168,7 @@ fn malformed_data_uri_drops_the_image() {
 <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
   <image href="data:image/png;base64-no-comma"/>
 </svg>"##;
-    let (_, extras) = parse_svg_with_extras(src.as_bytes()).unwrap();
+    let (_, extras) = parse_with_extras(src.as_bytes()).unwrap();
     // Drops the malformed entry; the rest of the document still parses.
     assert_eq!(extras.images.len(), 0);
 }
@@ -180,7 +180,7 @@ fn missing_href_is_dropped() {
 <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
   <image x="0" y="0" width="10" height="10"/>
 </svg>"##;
-    let (_, extras) = parse_svg_with_extras(src.as_bytes()).unwrap();
+    let (_, extras) = parse_with_extras(src.as_bytes()).unwrap();
     assert_eq!(extras.images.len(), 0);
 }
 
@@ -190,10 +190,10 @@ fn captures_id_attribute_for_round_trip() {
 <svg xmlns="http://www.w3.org/2000/svg" width="100" height="100">
   <image id="hero" x="0" y="0" width="100" height="100" href="hero.png"/>
 </svg>"##;
-    let (frame, extras) = parse_svg_with_extras(src.as_bytes()).unwrap();
+    let (frame, extras) = parse_with_extras(src.as_bytes()).unwrap();
     assert_eq!(extras.images.len(), 1);
     assert_eq!(extras.images[0].id.as_deref(), Some("hero"));
-    let bytes = write_svg_with_extras(&frame, &extras);
+    let bytes = write_with_extras(&frame, &extras);
     let out = std::str::from_utf8(&bytes).unwrap();
     assert!(
         out.contains(r#"id="hero""#),

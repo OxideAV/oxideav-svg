@@ -26,8 +26,8 @@
 //! (0, 0) → (50, 0). The "meet" letterbox shows up as 50px of empty
 //! canvas at left and right.
 
-use oxideav_core::{Point, Transform2D};
-use oxideav_svg::{parse_svg, parse_svg_with_extras, write_svg_with_extras};
+use oxideav_svg::{parse, parse_with_extras, write_with_extras};
+use oxideav_svg::{Point, Transform2D};
 
 /// Apply a [`Transform2D`] to a `(x, y)` point. Mirrors the
 /// renderer's left-multiply convention (`a*x + c*y + e`).
@@ -57,7 +57,7 @@ fn matching_aspect_ratio_yields_identity_root_transform() {
     // viewBox aspect 2:1 matches the canvas 2:1 — meet/slice are
     // moot, no correction needed.
     let src = br#"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 100 50" preserveAspectRatio="xMidYMid meet"/>"#;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     assert!(
         frame.root.transform.is_identity(),
         "no correction expected, got {:?}",
@@ -69,7 +69,7 @@ fn matching_aspect_ratio_yields_identity_root_transform() {
 fn preserve_aspect_ratio_none_yields_identity_root_transform() {
     // `none` matches the renderer's default (stretch).
     let src = br#"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 100 100" preserveAspectRatio="none"/>"#;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     assert!(
         frame.root.transform.is_identity(),
         "preserveAspectRatio='none' should leave root identity"
@@ -82,7 +82,7 @@ fn xmidymid_meet_letterboxes_horizontally() {
     // Per spec: sx=sy=1, tx=50, ty=0. (0,0) → (50,0); (100,100) →
     // (150,100). Effective transform must map the same way.
     let src = br#"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 100 100"/>"#;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let eff = effective(200.0, 100.0, 0.0, 0.0, 100.0, 100.0, &frame.root.transform);
     let p00 = apply(&eff, Point::new(0.0, 0.0));
     let p100 = apply(&eff, Point::new(100.0, 100.0));
@@ -100,7 +100,7 @@ fn xmidymid_meet_letterboxes_vertically() {
     // 100x200 canvas, 100x100 viewBox, default xMidYMid meet:
     // sx=sy=1, tx=0, ty=50. Vertical letterbox.
     let src = br#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="200" viewBox="0 0 100 100"/>"#;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let eff = effective(100.0, 200.0, 0.0, 0.0, 100.0, 100.0, &frame.root.transform);
     let p00 = apply(&eff, Point::new(0.0, 0.0));
     let p100 = apply(&eff, Point::new(100.0, 100.0));
@@ -115,7 +115,7 @@ fn xmidymid_slice_overflows_horizontally() {
     // 200x100 canvas, 100x100 viewBox, xMidYMid slice:
     // sx=sy=2, tx=0, ty=-50. Vertical content overflows top+bottom.
     let src = br#"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid slice"/>"#;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let eff = effective(200.0, 100.0, 0.0, 0.0, 100.0, 100.0, &frame.root.transform);
     let p_center = apply(&eff, Point::new(50.0, 50.0));
     // Center of viewBox lands at center of canvas.
@@ -140,7 +140,7 @@ fn xminymin_meet_anchors_top_left() {
     // 200x100 canvas, 100x100 viewBox, xMinYMin meet:
     // sx=sy=1, tx=0, ty=0. Letterbox is on right side.
     let src = br#"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 100 100" preserveAspectRatio="xMinYMin meet"/>"#;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let eff = effective(200.0, 100.0, 0.0, 0.0, 100.0, 100.0, &frame.root.transform);
     let p00 = apply(&eff, Point::new(0.0, 0.0));
     let p100 = apply(&eff, Point::new(100.0, 100.0));
@@ -155,7 +155,7 @@ fn xmaxymax_meet_anchors_bottom_right() {
     // 200x100 canvas, 100x100 viewBox, xMaxYMax meet:
     // sx=sy=1, tx=100, ty=0. Letterbox on left side.
     let src = br#"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 100 100" preserveAspectRatio="xMaxYMax meet"/>"#;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let eff = effective(200.0, 100.0, 0.0, 0.0, 100.0, 100.0, &frame.root.transform);
     let p00 = apply(&eff, Point::new(0.0, 0.0));
     let p100 = apply(&eff, Point::new(100.0, 100.0));
@@ -171,7 +171,7 @@ fn nonzero_viewbox_origin_maps_correctly_with_meet() {
     // default xMidYMid meet: sx=sy=1, tx = 0 - 10*1 + (200-100*1)/2
     // = -10 + 50 = 40. ty = 0 - 10*1 + 0 = -10.
     let src = br#"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="10 10 100 100"/>"#;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let eff = effective(
         200.0,
         100.0,
@@ -200,12 +200,12 @@ fn round_trip_preserves_root_preserve_aspect_ratio_attribute() {
     let src = br##"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="100" viewBox="0 0 100 100" preserveAspectRatio="xMinYMid slice">
         <rect x="0" y="0" width="100" height="100" fill="#f00"/>
     </svg>"##;
-    let (frame, extras) = parse_svg_with_extras(src).expect("parse");
+    let (frame, extras) = parse_with_extras(src).expect("parse");
     assert_eq!(
         extras.root_preserve_aspect_ratio.as_deref(),
         Some("xMinYMid slice")
     );
-    let bytes = write_svg_with_extras(&frame, &extras);
+    let bytes = write_with_extras(&frame, &extras);
     let out = String::from_utf8(bytes).expect("utf-8");
     assert!(
         out.contains("preserveAspectRatio=\"xMinYMid slice\""),
@@ -217,9 +217,9 @@ fn round_trip_preserves_root_preserve_aspect_ratio_attribute() {
 fn missing_preserve_aspect_ratio_extras_field_does_not_emit_attr() {
     // No PAR on input → extras field is None → no attribute on output.
     let src = br#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"/>"#;
-    let (frame, extras) = parse_svg_with_extras(src).expect("parse");
+    let (frame, extras) = parse_with_extras(src).expect("parse");
     assert!(extras.root_preserve_aspect_ratio.is_none());
-    let out = String::from_utf8(write_svg_with_extras(&frame, &extras)).unwrap();
+    let out = String::from_utf8(write_with_extras(&frame, &extras)).unwrap();
     assert!(
         !out.contains("preserveAspectRatio="),
         "no PAR was set, none should be emitted:\n{out}"

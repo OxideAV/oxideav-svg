@@ -15,11 +15,11 @@
 //! source def (original id + units + every shape) and references it by
 //! its original id.
 
-use oxideav_svg::{parse_svg_with_extras, write_svg_with_extras};
+use oxideav_svg::{parse_with_extras, write_with_extras};
 
 fn roundtrip(src: &[u8]) -> String {
-    let (frame, extras) = parse_svg_with_extras(src).expect("parse");
-    let out = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).expect("parse");
+    let out = write_with_extras(&frame, &extras);
     String::from_utf8(out).expect("utf8")
 }
 
@@ -131,7 +131,7 @@ fn clip_mask_reconnect_after_reparse() {
     let out = roundtrip(src);
     // Re-parse: the binding must reappear so the reference is a stable
     // round-trip carrier.
-    let (_, extras) = parse_svg_with_extras(out.as_bytes()).expect("reparse");
+    let (_, extras) = parse_with_extras(out.as_bytes()).expect("reparse");
     assert_eq!(extras.clip_refs.len(), 1, "clip ref on re-parse");
     assert_eq!(extras.clip_refs[0].ref_id, "cp");
     // And a second write still emits the original id (idempotent).
@@ -151,7 +151,7 @@ fn document_without_clip_mask_is_unaffected() {
     let src = br##"<svg xmlns="http://www.w3.org/2000/svg" width="50" height="50">
   <rect width="10" height="10" fill="red"/>
 </svg>"##;
-    let (_, extras) = parse_svg_with_extras(src).expect("parse");
+    let (_, extras) = parse_with_extras(src).expect("parse");
     assert!(extras.clip_refs.is_empty(), "no clip refs");
     assert!(extras.mask_refs.is_empty(), "no mask refs");
     assert!(extras.clip_paths_raw.is_empty(), "no raw clipPaths");

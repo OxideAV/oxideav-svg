@@ -27,13 +27,13 @@
 //! supported shapes plus the no-op default (empty / `#t=` / `#xywh=`
 //! fall through with the document's root view attributes).
 //!
-//! The function is wall-clean: it consumes only the [`VectorFrame`]
+//! The function is wall-clean: it consumes only the [`SvgDocument`]
 //! (for root `viewBox` + dimensions) and the
 //! [`PreservedExtras::typed_views`](crate::preserved::PreservedExtras::typed_views)
 //! map (for `<view>` lookups). It performs no XML re-parse — the
 //! decoder already extracted everything it needs.
 
-use oxideav_core::{Transform2D, VectorFrame, ViewBox};
+use crate::model::{SvgDocument, Transform2D, ViewBox};
 
 use crate::defs::ZoomAndPan;
 use crate::filter::PreserveAspectRatio;
@@ -95,7 +95,7 @@ impl Default for ResolvedView {
 ///
 /// The function is pure — it never mutates `frame` or `extras`.
 pub fn resolve_fragment(
-    frame: &VectorFrame,
+    frame: &SvgDocument,
     extras: &PreservedExtras,
     fragment: &str,
 ) -> ResolvedView {
@@ -245,16 +245,14 @@ fn parse_view_box_payload(s: &str) -> Option<ViewBox> {
 mod tests {
     use super::*;
     use crate::defs::ViewDef;
-    use oxideav_core::{Group, TimeBase};
+    use crate::model::Group;
 
-    fn frame_with_root_viewbox(vb: Option<ViewBox>) -> VectorFrame {
-        VectorFrame {
+    fn frame_with_root_viewbox(vb: Option<ViewBox>) -> SvgDocument {
+        SvgDocument {
             width: 100.0,
             height: 100.0,
             view_box: vb,
             root: Group::default(),
-            pts: None,
-            time_base: TimeBase::new(1, 1),
         }
     }
 
@@ -475,7 +473,7 @@ mod tests {
         let t = r.transform.expect("transform should be captured");
         // SVG `scale(5)` parses to a 5× uniform scale in
         // Transform2D's `a/d` slots (per
-        // [`oxideav_core::Transform2D::scale`]). Confirms the
+        // [`crate::model::Transform2D::scale`]). Confirms the
         // `transform(...)` payload reached the matrix parser.
         assert!((t.a - 5.0).abs() < 1e-6);
         assert!((t.d - 5.0).abs() < 1e-6);

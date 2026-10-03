@@ -15,7 +15,7 @@
 //! the keyword onto `SvgImage::crossorigin` and round-trips it.
 
 use oxideav_svg::filter::CrossOrigin;
-use oxideav_svg::{parse_svg_with_extras, write_svg_with_extras};
+use oxideav_svg::{parse_with_extras, write_with_extras};
 
 /// An `<image>` without `crossorigin=` records no binding.
 #[test]
@@ -24,7 +24,7 @@ fn baseline_no_crossorigin_no_binding() {
                        viewBox="0 0 100 100">
         <image href="logo.png" x="0" y="0" width="50" height="50"/>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.images.len(), 1);
     assert!(
         extras.images[0].crossorigin.is_none(),
@@ -39,7 +39,7 @@ fn anonymous_records_binding() {
                        viewBox="0 0 100 100">
         <image href="logo.png" width="50" height="50" crossorigin="anonymous"/>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.images[0].crossorigin, Some(CrossOrigin::Anonymous));
 }
 
@@ -51,7 +51,7 @@ fn empty_value_maps_to_anonymous() {
                        viewBox="0 0 100 100">
         <image href="logo.png" width="50" height="50" crossorigin=""/>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.images[0].crossorigin, Some(CrossOrigin::Anonymous));
 }
 
@@ -63,7 +63,7 @@ fn use_credentials_records_binding() {
         <image href="logo.png" width="50" height="50"
                crossorigin="use-credentials"/>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(
         extras.images[0].crossorigin,
         Some(CrossOrigin::UseCredentials)
@@ -78,7 +78,7 @@ fn unknown_token_no_binding() {
                        viewBox="0 0 100 100">
         <image href="logo.png" width="50" height="50" crossorigin="bogus"/>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(extras.images[0].crossorigin.is_none());
 }
 
@@ -97,8 +97,8 @@ fn crossorigin_round_trips() {
         <image href="logo.png" width="50" height="50" crossorigin="{input}"/>
     </svg>"#
         );
-        let (frame, extras) = parse_svg_with_extras(src.as_bytes()).unwrap();
-        let out = write_svg_with_extras(&frame, &extras);
+        let (frame, extras) = parse_with_extras(src.as_bytes()).unwrap();
+        let out = write_with_extras(&frame, &extras);
         let text = String::from_utf8(out).unwrap();
         assert!(
             text.contains(expected),
@@ -107,7 +107,7 @@ fn crossorigin_round_trips() {
 
         // Re-parse the emitted output — the binding must survive a full
         // decode/encode/decode cycle.
-        let (_f2, extras2) = parse_svg_with_extras(text.as_bytes()).unwrap();
+        let (_f2, extras2) = parse_with_extras(text.as_bytes()).unwrap();
         assert!(extras2.images[0].crossorigin.is_some());
     }
 }
@@ -120,8 +120,8 @@ fn absent_crossorigin_not_emitted() {
                        viewBox="0 0 100 100">
         <image href="logo.png" width="50" height="50"/>
     </svg>"#;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
-    let out = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).unwrap();
+    let out = write_with_extras(&frame, &extras);
     let text = String::from_utf8(out).unwrap();
     assert!(!text.contains("crossorigin"));
 }

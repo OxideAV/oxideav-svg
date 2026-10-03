@@ -83,7 +83,8 @@
 use std::cell::RefCell;
 use std::sync::OnceLock;
 
-use oxideav_core::{Group, Node, Path, Result, Transform2D};
+use crate::error::Result;
+use crate::model::{Group, Node, Path, Transform2D};
 
 use crate::element::{PaintState, ParseContext, TextAnchor, TextLengthAdjust};
 use crate::parser::{attr, tag_local, Element, Node as XmlNode};
@@ -978,7 +979,10 @@ fn emit_text_path(el: &Element, inh: &TextInheritance<'_>, out: &mut Group, ctx:
         }
 
         let face = chain.face(g.face_idx);
-        let node = match face.glyph_node(g.glyph_id, inh.font_size) {
+        let node = match face
+            .glyph_node(g.glyph_id, inh.font_size)
+            .map(|n| crate::registry::node_from_core(&n))
+        {
             Some(n) => n,
             None => continue,
         };
@@ -1117,7 +1121,10 @@ fn emit_run(
             // translated identity child and break the round-176
             // leftmost-glyph chunk-extent assertions.
             let face = chain.face(g_meta.face_idx);
-            if let Some(node) = face.glyph_node(g_meta.glyph_id, inh.font_size) {
+            if let Some(node) = face
+                .glyph_node(g_meta.glyph_id, inh.font_size)
+                .map(|n| crate::registry::node_from_core(&n))
+            {
                 let rot_deg = per_char.rotate_at(char_ord).unwrap_or(0.0);
                 let mut placement = Transform2D::translate(origin_x, origin_y);
                 if rot_deg.abs() > 0.0 {
@@ -1188,7 +1195,10 @@ fn emit_run(
         let mut local_pen = 0.0_f32;
         for g_meta in shaped.iter().take(n_glyphs).skip(glyph_idx) {
             let face = chain.face(g_meta.face_idx);
-            if let Some(node) = face.glyph_node(g_meta.glyph_id, inh.font_size) {
+            if let Some(node) = face
+                .glyph_node(g_meta.glyph_id, inh.font_size)
+                .map(|n| crate::registry::node_from_core(&n))
+            {
                 let placement = Transform2D::translate(
                     origin_x + local_pen + g_meta.x_offset,
                     origin_y + g_meta.y_offset,
@@ -1207,7 +1217,7 @@ fn emit_run(
     *char_counter += n_chars;
 }
 
-fn repaint_node(node: Node, fill: Option<oxideav_core::Paint>) -> Node {
+fn repaint_node(node: Node, fill: Option<crate::model::Paint>) -> Node {
     match node {
         Node::Path(mut p) => {
             // Only override black-default fill — preserve anything the
@@ -1236,7 +1246,7 @@ fn parse_coord(s: Option<&str>, default: f32) -> f32 {
 // re-exported as a method on PaintState) so the text module can resolve
 // fills without needing a gradient table.
 impl crate::element::PaintState {
-    pub(crate) fn solid_fill_public(&self) -> Option<oxideav_core::Paint> {
+    pub(crate) fn solid_fill_public(&self) -> Option<crate::model::Paint> {
         // Round 118 — SVG 1.1 §11.5 `visibility: hidden | collapse`:
         // hidden text "is invisible but still takes up space in text
         // layout calculations". We emit the glyph geometry but with no
@@ -1251,7 +1261,7 @@ impl crate::element::PaintState {
         // below works for the common case).
         match &self.fill {
             crate::color::PaintValue::None => None,
-            crate::color::PaintValue::Color(c) => Some(oxideav_core::Paint::Solid(apply_alpha(
+            crate::color::PaintValue::Color(c) => Some(crate::model::Paint::Solid(apply_alpha(
                 *c,
                 self.fill_opacity * self.opacity,
             ))),
@@ -1260,9 +1270,9 @@ impl crate::element::PaintState {
     }
 }
 
-fn apply_alpha(c: oxideav_core::Rgba, a: f32) -> oxideav_core::Rgba {
+fn apply_alpha(c: crate::model::Rgba, a: f32) -> crate::model::Rgba {
     let alpha = ((c.a as f32 / 255.0) * a.clamp(0.0, 1.0)) * 255.0;
-    oxideav_core::Rgba::new(c.r, c.g, c.b, alpha.round() as u8)
+    crate::model::Rgba::new(c.r, c.g, c.b, alpha.round() as u8)
 }
 
 #[cfg(test)]

@@ -1,12 +1,12 @@
-//! Build a `VectorFrame` programmatically, write it as SVG, parse the
+//! Build a `SvgDocument` programmatically, write it as SVG, parse the
 //! result back, and assert structural equality of the round-tripped
 //! scene graph.
 
-use oxideav_core::{
+use oxideav_svg::{parse, write};
+use oxideav_svg::{
     FillRule, GradientStop, Group, LineCap, LineJoin, LinearGradient, Node, Paint, Path, PathNode,
-    Point, Rgba, SpreadMethod, Stroke, TimeBase, Transform2D, VectorFrame, ViewBox,
+    Point, Rgba, SpreadMethod, Stroke, SvgDocument, Transform2D, ViewBox,
 };
-use oxideav_svg::{parse_svg, write_svg};
 
 fn red_triangle() -> PathNode {
     let mut path = Path::new();
@@ -31,7 +31,7 @@ fn red_triangle() -> PathNode {
 
 #[test]
 fn solid_paint_round_trip_preserves_shape_and_attrs() {
-    let frame = VectorFrame {
+    let frame = SvgDocument {
         width: 20.0,
         height: 20.0,
         view_box: Some(ViewBox {
@@ -44,12 +44,10 @@ fn solid_paint_round_trip_preserves_shape_and_attrs() {
             children: vec![Node::Path(red_triangle())],
             ..Group::default()
         },
-        pts: None,
-        time_base: TimeBase::new(1, 1),
     };
 
-    let bytes = write_svg(&frame);
-    let frame2 = parse_svg(&bytes).unwrap();
+    let bytes = write(&frame);
+    let frame2 = parse(&bytes).unwrap();
 
     assert_eq!(frame.width, frame2.width);
     assert_eq!(frame.height, frame2.height);
@@ -91,7 +89,7 @@ fn linear_gradient_round_trips_through_url_reference() {
     path.line_to(Point::new(20.0, 20.0));
     path.close();
 
-    let frame = VectorFrame {
+    let frame = SvgDocument {
         width: 20.0,
         height: 20.0,
         view_box: None,
@@ -104,16 +102,14 @@ fn linear_gradient_round_trips_through_url_reference() {
             })],
             ..Group::default()
         },
-        pts: None,
-        time_base: TimeBase::new(1, 1),
     };
 
-    let bytes = write_svg(&frame);
+    let bytes = write(&frame);
     let s = std::str::from_utf8(&bytes).unwrap();
     assert!(s.contains("<linearGradient"));
     assert!(s.contains("url(#grad1)"));
 
-    let frame2 = parse_svg(&bytes).unwrap();
+    let frame2 = parse(&bytes).unwrap();
     let p2 = match &frame2.root.children[0] {
         Node::Path(p) => p,
         _ => panic!(),
@@ -148,7 +144,7 @@ fn group_with_transform_survives() {
         children: vec![Node::Path(inner)],
         cache_key: None,
     };
-    let frame = VectorFrame {
+    let frame = SvgDocument {
         width: 50.0,
         height: 50.0,
         view_box: None,
@@ -156,16 +152,14 @@ fn group_with_transform_survives() {
             children: vec![Node::Group(group)],
             ..Group::default()
         },
-        pts: None,
-        time_base: TimeBase::new(1, 1),
     };
-    let bytes = write_svg(&frame);
+    let bytes = write(&frame);
     let s = std::str::from_utf8(&bytes).unwrap();
     assert!(s.contains("<g"));
     assert!(s.contains("transform="));
     assert!(s.contains("opacity="));
 
-    let frame2 = parse_svg(&bytes).unwrap();
+    let frame2 = parse(&bytes).unwrap();
     let g2 = match &frame2.root.children[0] {
         Node::Group(g) => g,
         _ => panic!(),

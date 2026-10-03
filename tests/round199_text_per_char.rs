@@ -26,9 +26,9 @@
 
 #![cfg(feature = "text")]
 
-use oxideav_core::Node;
 use oxideav_scribe::{Face, FaceChain};
-use oxideav_svg::{parse_svg, text::set_font_resolver};
+use oxideav_svg::Node;
+use oxideav_svg::{parse, text::set_font_resolver};
 
 const FONT: &[u8] = include_bytes!("fixtures/DejaVuSansMono.ttf");
 
@@ -58,7 +58,7 @@ fn collect_xforms(node: &Node, out: &mut Vec<(f32, f32, f32, f32)>) {
     }
 }
 
-fn text_group(frame: &oxideav_core::VectorFrame) -> &oxideav_core::Group {
+fn text_group(frame: &oxideav_svg::SvgDocument) -> &oxideav_svg::Group {
     for c in &frame.root.children {
         if let Node::Group(g) = c {
             return g;
@@ -67,7 +67,7 @@ fn text_group(frame: &oxideav_core::VectorFrame) -> &oxideav_core::Group {
     panic!("no text group");
 }
 
-fn placements(g: &oxideav_core::Group) -> Vec<(f32, f32, f32, f32)> {
+fn placements(g: &oxideav_svg::Group) -> Vec<(f32, f32, f32, f32)> {
     let mut out = Vec::new();
     for c in &g.children {
         collect_xforms(c, &mut out);
@@ -84,7 +84,7 @@ fn natural_advance() -> f32 {
 <svg xmlns="http://www.w3.org/2000/svg" width="600" height="100">
   <text x="0" y="50" font-size="16" font-family="mono">ABCDE</text>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let xs: Vec<f32> = placements(text_group(&frame))
         .into_iter()
         .map(|(_, _, e, _)| e)
@@ -108,7 +108,7 @@ fn list_x_seats_individual_characters() {
 <svg xmlns="http://www.w3.org/2000/svg" width="600" height="100">
   <text x="10 50 100" y="50" font-size="16" font-family="mono">ABCDE</text>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let xs: Vec<f32> = placements(text_group(&frame))
         .into_iter()
         .map(|(_, _, e, _)| e)
@@ -156,7 +156,7 @@ fn list_dx_nudges_individual_characters() {
 <svg xmlns="http://www.w3.org/2000/svg" width="600" height="100">
   <text x="0" y="50" dx="0 5 10" font-size="16" font-family="mono">ABCDE</text>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let xs: Vec<f32> = placements(text_group(&frame))
         .into_iter()
         .map(|(_, _, e, _)| e)
@@ -208,7 +208,7 @@ fn list_y_seats_individual_baselines() {
 <svg xmlns="http://www.w3.org/2000/svg" width="600" height="100">
   <text x="0" y="10 20 30 40 50" font-size="16" font-family="mono">ABCDE</text>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let xforms = placements(text_group(&frame));
     assert_eq!(xforms.len(), 5);
     let ys: Vec<f32> = xforms.iter().map(|(_, _, _, f)| *f).collect();
@@ -235,7 +235,7 @@ fn list_rotate_per_character_with_sticky_final() {
 <svg xmlns="http://www.w3.org/2000/svg" width="600" height="100">
   <text x="100" y="50" rotate="0 90 180" font-size="16" font-family="mono">ABCDE</text>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let xforms = placements(text_group(&frame));
     assert_eq!(
         xforms.len(),
@@ -278,7 +278,7 @@ fn tspan_list_overlays_at_current_ordinal() {
     install_resolver();
     let src = br##"<?xml version="1.0"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="600" height="100"><text x="0" y="50" font-size="16" font-family="mono">A<tspan x="100 200">BC</tspan>D</text></svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let xs: Vec<f32> = placements(text_group(&frame))
         .into_iter()
         .map(|(_, _, e, _)| e)
@@ -321,7 +321,7 @@ fn list_longer_than_run_is_lenient() {
     install_resolver();
     let src = br##"<?xml version="1.0"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="600" height="100"><text x="0" y="50" dx="10 20 30 40 50 60 70 80" font-size="16" font-family="mono">AB</text></svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let xs: Vec<f32> = placements(text_group(&frame))
         .into_iter()
         .map(|(_, _, e, _)| e)
@@ -356,7 +356,7 @@ fn list_separator_grammar_accepts_commas_and_whitespace() {
     ];
     let mut all = Vec::new();
     for v in &variants {
-        let frame = parse_svg(v).expect("parse");
+        let frame = parse(v).expect("parse");
         let xs: Vec<f32> = placements(text_group(&frame))
             .into_iter()
             .map(|(_, _, e, _)| e)
@@ -379,7 +379,7 @@ fn empty_rotate_attribute_is_no_op() {
     install_resolver();
     let src = br##"<?xml version="1.0"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="600" height="100"><text x="100" y="50" rotate="" font-size="16" font-family="mono">A</text></svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let xforms = placements(text_group(&frame));
     assert_eq!(xforms.len(), 1);
     // Identity rotation: a=1, b=0.
@@ -411,7 +411,7 @@ fn tspan_list_x_first_value_opens_chunk() {
     install_resolver();
     let src = br##"<?xml version="1.0"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="600" height="100"><text x="0" y="50" font-size="16" font-family="mono" text-anchor="end">A<tspan x="100 200">BC</tspan></text></svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let xs: Vec<f32> = placements(text_group(&frame))
         .into_iter()
         .map(|(_, _, e, _)| e)

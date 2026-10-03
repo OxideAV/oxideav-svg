@@ -11,21 +11,21 @@
 //!    `patternTransform` / `viewBox` / `preserveAspectRatio` / `href`
 //!    survive the typed parse.
 //! 4. SVG 2 §13.2 paint-list (`fill="url(#pat) red"`) renders as the
-//!    fallback colour today (`oxideav_core::Paint` has no `Pattern`
+//!    fallback colour today (`oxideav_svg::Paint` has no `Pattern`
 //!    variant yet) — and a bare `url(#pat)` with no fallback yields no
 //!    paint, matching the pre-round-20 behaviour for unknown ids.
 //! 5. `url(#unknown) blue` falls back to the colour even when the id
 //!    doesn't resolve.
 
-use oxideav_core::Paint;
-use oxideav_svg::{defs::PatternUnits, parse_svg, parse_svg_with_extras, write_svg_with_extras};
+use oxideav_svg::Paint;
+use oxideav_svg::{defs::PatternUnits, parse, parse_with_extras, write_with_extras};
 
-fn first_path(frame: &oxideav_core::VectorFrame) -> &oxideav_core::PathNode {
-    fn find(n: &oxideav_core::Node) -> Option<&oxideav_core::PathNode> {
+fn first_path(frame: &oxideav_svg::SvgDocument) -> &oxideav_svg::PathNode {
+    fn find(n: &oxideav_svg::Node) -> Option<&oxideav_svg::PathNode> {
         match n {
-            oxideav_core::Node::Path(p) => Some(p),
-            oxideav_core::Node::Group(g) => g.children.iter().find_map(find),
-            oxideav_core::Node::SoftMask { content, .. } => find(content),
+            oxideav_svg::Node::Path(p) => Some(p),
+            oxideav_svg::Node::Group(g) => g.children.iter().find_map(find),
+            oxideav_svg::Node::SoftMask { content, .. } => find(content),
             _ => None,
         }
     }
@@ -48,7 +48,7 @@ fn pattern_paint_with_colour_fallback_renders_as_fallback() {
   </defs>
   <rect x="0" y="0" width="100" height="100" fill="url(#p1) red"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let path = first_path(&frame);
     match &path.fill {
         Some(Paint::Solid(c)) => {
@@ -74,7 +74,7 @@ fn pattern_paint_without_fallback_yields_no_paint() {
   </defs>
   <rect x="0" y="0" width="100" height="100" fill="url(#p1)"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let path = first_path(&frame);
     assert!(
         path.fill.is_none(),
@@ -89,7 +89,7 @@ fn unknown_url_with_fallback_resolves_to_fallback_colour() {
 <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
   <rect x="0" y="0" width="10" height="10" fill="url(#nope) #00ff00"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let path = first_path(&frame);
     match &path.fill {
         Some(Paint::Solid(c)) => assert_eq!((c.r, c.g, c.b, c.a), (0, 255, 0, 255)),
@@ -103,7 +103,7 @@ fn unknown_url_with_explicit_none_fallback_yields_no_paint() {
 <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
   <rect x="0" y="0" width="10" height="10" fill="url(#nope) none"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let path = first_path(&frame);
     assert!(path.fill.is_none());
 }
@@ -119,10 +119,10 @@ fn typed_pattern_def_records_default_units() {
     </pattern>
   </defs>
 </svg>"##;
-    let (_frame, _extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, _extras) = parse_with_extras(src).unwrap();
     // Drop down to the typed view via a re-parse using the lower-level
     // ParseContext. Easier path: re-build defs via the public parser
-    // entry — but parse_svg_with_extras already populated the defs
+    // entry — but parse_with_extras already populated the defs
     // inside its internal ctx and dropped it. Test the typed view by
     // parsing through the element module directly.
     use oxideav_svg::element::{parse_pattern_def, ParseContext};
@@ -238,13 +238,13 @@ fn pattern_round_trips_through_preserved_extras() {
   </defs>
   <rect x="0" y="0" width="40" height="40" fill="url(#dots) gray"/>
 </svg>"##;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(
         extras.patterns.len(),
         1,
         "<pattern> not captured into PreservedExtras"
     );
-    let out = write_svg_with_extras(&frame, &extras);
+    let out = write_with_extras(&frame, &extras);
     let out_str = std::str::from_utf8(&out).unwrap();
     assert!(
         out_str.contains("<pattern"),
@@ -258,7 +258,7 @@ fn pattern_round_trips_through_preserved_extras() {
 
     // Re-parse and confirm the typed view is still populated and the
     // rect still picks up its fallback colour.
-    let (frame2, extras2) = parse_svg_with_extras(&out).unwrap();
+    let (frame2, extras2) = parse_with_extras(&out).unwrap();
     assert_eq!(extras2.patterns.len(), 1);
     let path = first_path(&frame2);
     match &path.fill {
@@ -276,7 +276,7 @@ fn pattern_alone_with_no_fallback_does_not_break_document() {
 <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
   <rect x="0" y="0" width="10" height="10" fill="url(#missing)"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     assert_eq!(frame.root.children.len(), 1);
     let path = first_path(&frame);
     assert!(path.fill.is_none());

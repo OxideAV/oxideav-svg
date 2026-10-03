@@ -9,11 +9,11 @@
 //! round records the source `filter=` attribute per scene-graph
 //! tree-path and re-emits it on the filter-wrapper `<g>` on write.
 
-use oxideav_svg::{parse_svg_with_extras, write_svg_with_extras};
+use oxideav_svg::{parse_with_extras, write_with_extras};
 
 fn roundtrip(src: &[u8]) -> String {
-    let (frame, extras) = parse_svg_with_extras(src).expect("parse");
-    let out = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).expect("parse");
+    let out = write_with_extras(&frame, &extras);
     String::from_utf8(out).expect("utf8")
 }
 
@@ -52,7 +52,7 @@ fn filter_reference_reconnects_after_reparse() {
     assert!(out.contains("filter=\"url(#blur)\""), "ref present:\n{out}");
     // Re-parse: the binding must reappear, proving the reference is a
     // first-class round-trip carrier rather than a one-shot.
-    let (_, extras) = parse_svg_with_extras(out.as_bytes()).expect("reparse");
+    let (_, extras) = parse_with_extras(out.as_bytes()).expect("reparse");
     assert_eq!(extras.filter_refs.len(), 1, "one filter-ref on re-parse");
     assert_eq!(extras.filter_refs[0].filter, "url(#blur)");
 }
@@ -64,7 +64,7 @@ fn unresolved_filter_reference_records_nothing() {
     let src = br##"<svg xmlns="http://www.w3.org/2000/svg" width="50" height="50">
   <rect width="50" height="50" filter="url(#missing)" fill="red"/>
 </svg>"##;
-    let (_, extras) = parse_svg_with_extras(src).expect("parse");
+    let (_, extras) = parse_with_extras(src).expect("parse");
     assert!(
         extras.filter_refs.is_empty(),
         "no binding for an unresolved filter reference"
@@ -76,7 +76,7 @@ fn document_without_filter_is_unaffected() {
     let src = br##"<svg xmlns="http://www.w3.org/2000/svg" width="50" height="50">
   <rect width="10" height="10" fill="red"/>
 </svg>"##;
-    let (_, extras) = parse_svg_with_extras(src).expect("parse");
+    let (_, extras) = parse_with_extras(src).expect("parse");
     assert!(extras.filter_refs.is_empty(), "no filter refs");
     let out = roundtrip(src);
     assert!(

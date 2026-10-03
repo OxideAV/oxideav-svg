@@ -12,14 +12,14 @@
 //!   attribute via the normal cascade.
 //!
 //! Verified by parsing a doc with a `<style>` block, then walking the
-//! resulting `VectorFrame` to assert each path's resolved fill colour
+//! resulting `SvgDocument` to assert each path's resolved fill colour
 //! (or path geometry, for the `d` property tests) matches what the
 //! cascade dictates.
 
-use oxideav_core::{Group, Node, Paint, PathCommand, Rgba, VectorFrame};
-use oxideav_svg::parse_svg;
+use oxideav_svg::parse;
+use oxideav_svg::{Group, Node, Paint, PathCommand, Rgba, SvgDocument};
 
-fn fills_in_order(frame: &VectorFrame) -> Vec<Option<Rgba>> {
+fn fills_in_order(frame: &SvgDocument) -> Vec<Option<Rgba>> {
     fn rec(g: &Group, out: &mut Vec<Option<Rgba>>) {
         for c in &g.children {
             match c {
@@ -41,7 +41,7 @@ fn fills_in_order(frame: &VectorFrame) -> Vec<Option<Rgba>> {
 /// Walk every `Node::Path` in DFS order, returning each path's command
 /// list. Used by the `d`-property tests to verify the path geometry
 /// came from CSS rather than the `d` attribute.
-fn path_commands_in_order(frame: &VectorFrame) -> Vec<Vec<PathCommand>> {
+fn path_commands_in_order(frame: &SvgDocument) -> Vec<Vec<PathCommand>> {
     fn rec(g: &Group, out: &mut Vec<Vec<PathCommand>>) {
         for c in &g.children {
             match c {
@@ -69,7 +69,7 @@ fn nth_last_child_matches_last_element() {
   <rect x="30" y="0" width="10" height="10"/>
   <rect x="40" y="0" width="10" height="10"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fills = fills_in_order(&frame);
     assert_eq!(fills.len(), 5);
     for f in &fills[..4] {
@@ -94,7 +94,7 @@ fn nth_last_child_keyword_odd_matches_from_end() {
   <rect x="20" y="0" width="10" height="10"/>
   <rect x="30" y="0" width="10" height="10"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fills = fills_in_order(&frame);
     let target = Some(Rgba::opaque(0, 255, 0));
     assert_ne!(fills[0], target); // last_idx=4
@@ -116,7 +116,7 @@ fn nth_last_of_type_independent_of_other_tags() {
   <rect x="30" y="0" width="10" height="10"/>
   <circle cx="45" cy="5" r="5"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fills = fills_in_order(&frame);
     let target = Some(Rgba::opaque(0, 0, 255));
     // DFS order: rect, circle, rect, rect, circle.
@@ -134,7 +134,7 @@ fn lang_pseudo_matches_exact_tag() {
   <rect lang="en" x="0"  y="0" width="10" height="10"/>
   <rect lang="fr" x="10" y="0" width="10" height="10"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fills = fills_in_order(&frame);
     assert_eq!(fills[0], Some(Rgba::opaque(0xaa, 0xbb, 0xcc)));
     assert_ne!(fills[1], Some(Rgba::opaque(0xaa, 0xbb, 0xcc)));
@@ -149,7 +149,7 @@ fn lang_pseudo_dash_matches_subtag() {
   <rect lang="en-US"  x="10" y="0" width="10" height="10"/>
   <rect lang="english" x="20" y="0" width="10" height="10"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fills = fills_in_order(&frame);
     let target = Some(Rgba::opaque(0x11, 0x22, 0x33));
     assert_eq!(fills[0], target);
@@ -169,7 +169,7 @@ fn lang_pseudo_inherits_from_ancestor() {
     <rect x="0" y="0" width="10" height="10"/>
   </g>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fills = fills_in_order(&frame);
     assert_eq!(fills[0], Some(Rgba::opaque(0xff, 0xaa, 0x00)));
 }
@@ -181,7 +181,7 @@ fn lang_pseudo_no_attribute_does_not_match() {
   <style>:lang(en) { fill: #ff0000 }</style>
   <rect x="0" y="0" width="10" height="10"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fills = fills_in_order(&frame);
     assert_ne!(fills[0], Some(Rgba::opaque(255, 0, 0)));
 }
@@ -204,7 +204,7 @@ fn css_d_property_overrides_attribute() {
   <style>path { d: "M 0 0 L 50 50" }</style>
   <path d="M 0 0 L 5 5"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let cmds = path_commands_in_order(&frame);
     assert_eq!(cmds.len(), 1);
     // 2 commands: MoveTo + LineTo to (50, 50).
@@ -226,7 +226,7 @@ fn css_d_property_inline_style_wins() {
   <style>path { d: "M 0 0 L 30 30" }</style>
   <path d="M 0 0 L 5 5" style='d: "M 0 0 L 99 99"'/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let cmds = path_commands_in_order(&frame);
     assert_eq!(cmds.len(), 1);
     match cmds[0][1] {
@@ -246,7 +246,7 @@ fn css_d_none_drops_path() {
   <style>path { d: none }</style>
   <path d="M 0 0 L 5 5"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let cmds = path_commands_in_order(&frame);
     assert_eq!(cmds.len(), 0);
 }
@@ -260,7 +260,7 @@ fn css_d_property_does_not_affect_non_path_elements() {
   <style>rect { d: "M 0 0 L 5 5" }</style>
   <rect x="0" y="0" width="20" height="20"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let cmds = path_commands_in_order(&frame);
     // The rect produces a normal rectangular path (5 commands:
     // M, L, L, L, Z).

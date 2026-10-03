@@ -7,42 +7,46 @@ license = "MIT"
 repository = "https://github.com/OxideAV/oxideav-svg"
 homepage = "https://github.com/OxideAV/oxideav-svg"
 authors = ["Mark Karpeles"]
-description = "Pure-Rust SVG (read + write) for the oxideav framework — round 2 covers <text>/<tspan> via scribe + <filter>/<mask>/<clipPath> graceful pass-through"
+description = "Pure-Rust SVG (read + write): framework-free vector document API following the OxideAV image-crate contract, with optional oxideav framework integration"
 readme = "README.md"
 keywords = ["multimedia", "image", "svg", "vector", "pure-rust"]
 categories = ["multimedia::encoding", "multimedia::images"]
+# crates.io 10 MiB package cap: fixtures and fuzz corpora stay out.
+exclude = ["/tests", "/fuzz"]
 
 [features]
-# `text` enables `<text>` / `<tspan>` parsing via oxideav-scribe's
-# vector-first API (`Shaper::shape_to_paths`). Default-on so an
-# out-of-the-box `oxideav-svg = "0.1"` reads SVGs containing text;
-# downstream crates that don't need text (or want to avoid the scribe
-# dep tree) can opt out via `default-features = false`.
-default = ["text"]
-text = ["dep:oxideav-scribe"]
+default = ["registry", "text"]
+# Framework integration: `register` / `make_decoder` / `make_encoder`,
+# the `Frame::Vector` codec adapters, the `.svg` / `.svgz` demuxer +
+# muxer, and the `SvgDocument` <-> `oxideav_core::VectorFrame` bridge.
+# Off, the crate is the image-crate contract's standalone layer plus
+# the vector document API (`parse` / `write` / `SvgDocument`) with no
+# `oxideav-core` in the dependency tree.
+registry = ["dep:oxideav-core"]
+# `text` enables `<text>` / `<tspan>` / `<textPath>` parsing via
+# oxideav-scribe's vector-first API (`Face::glyph_node`), which hands
+# back framework scene nodes — so `text` implies `registry`.
+text = ["dep:oxideav-scribe", "registry"]
 
 [dependencies]
-# `Node::SoftMask` + `MaskKind` (used by round-2 `<mask>` / `<clipPath>`
-# mapping) require oxideav-core 0.1.15+.
-oxideav-core = "0.1"
-# Round-7 vector-text APIs (`Face::glyph_node` + `Shaper::shape_to_paths`)
-# land in 0.1.1; gated behind the `text` feature so the SVG crate stays
+# Optional behind the default-on `registry` feature (IMAGE_CRATE_API):
+# image-library consumers use `default-features = false` to skip the
+# framework dependency tree entirely. `Node::SoftMask` + `MaskKind`
+# (used by the `<mask>` / `<clipPath>` bridge) need oxideav-core 0.1.15+.
+oxideav-core = { version = "0.1", optional = true }
+# Vector-text APIs (`Face::glyph_node` + `Shaper::shape_to_paths`) land
+# in 0.1.1; gated behind the `text` feature so the SVG crate stays
 # usable when callers don't need text shaping.
 oxideav-scribe = { version = "0.1.1", optional = true }
-# Round 3: `.svgz` (gzip-compressed SVG) support. Pure-Rust backend
-# (miniz_oxide) so we don't pull in any C dependencies — same backend
-# `oxideav-pdf` and `oxideav-png` already use transitively.
-flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
-# Round 13: `Stylesheet::resolve_imports` emits `log::debug!` lines
-# when an `@import` is skipped (fetcher returned None / cycle / depth
-# cap reached). The crate is otherwise silent.
+# `.svgz` (gzip-compressed SVG, RFC 1952) inflate / deflate through the
+# workspace's compression provider. Only the gzip algorithm is needed;
+# the capped decoder is the decompression-bomb guard.
+compcol = { version = "0.6", default-features = false, features = ["gzip"] }
+# `Stylesheet::resolve_imports` emits `log::debug!` lines when an
+# `@import` is skipped (fetcher returned None / cycle / depth cap
+# reached). The crate is otherwise silent.
 log = "0.4"
-# Round 15: `<image>` element with embedded `data:image/...;base64,...`
-# URI decoding. `STANDARD` engine implements RFC 4648 §4 — no padding
+# `<image>` element with embedded `data:image/...;base64,...` URI
+# decoding. `STANDARD` engine implements RFC 4648 §4 — no padding
 # tolerance is acceptable for the data-URI subset.
 base64 = { version = "0.22", default-features = false, features = ["std"] }
-
-[dev-dependencies]
-# Needed in `round3_svgz` to gzip a fixture by hand and assert the
-# parser inflates it. Same backend the prod dep uses.
-flate2 = { version = "1", default-features = false, features = ["rust_backend"] }

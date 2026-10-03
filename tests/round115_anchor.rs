@@ -6,14 +6,14 @@
 //! hyperlink. Round 115 renders the children into a `Node::Group` and
 //! preserves the hyperlink target + its HTML companion attributes via
 //! the `PreservedExtras::links` side-channel so a
-//! `parse_svg_with_extras → write_svg_with_extras` round-trip re-wraps
+//! `parse_with_extras → write_with_extras` round-trip re-wraps
 //! the group in its `<a href="…">…</a>` element.
 
-use oxideav_core::{Node, Paint, PathNode, Rgba};
-use oxideav_svg::{parse_svg, parse_svg_with_extras, write_svg_with_extras};
+use oxideav_svg::{parse, parse_with_extras, write_with_extras};
+use oxideav_svg::{Node, Paint, PathNode, Rgba};
 
 /// Find every `Node::Path` in the scene graph, in pre-order.
-fn all_paths(frame: &oxideav_core::VectorFrame) -> Vec<&PathNode> {
+fn all_paths(frame: &oxideav_svg::SvgDocument) -> Vec<&PathNode> {
     fn walk<'a>(n: &'a Node, out: &mut Vec<&'a PathNode>) {
         match n {
             Node::Path(p) => out.push(p),
@@ -50,7 +50,7 @@ fn anchor_renders_its_children() {
     <rect x="0" y="0" width="10" height="10" fill="#ff0000"/>
   </a>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let paths = all_paths(&frame);
     assert_eq!(paths.len(), 1, "<a> must render its child shape");
     let c = fill_rgba(paths[0]).expect("solid fill");
@@ -68,7 +68,7 @@ fn anchor_is_a_group_node() {
     <rect x="0" y="0" width="2" height="2" fill="#0000ff"/>
   </a>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     assert_eq!(frame.root.children.len(), 1);
     match &frame.root.children[0] {
         Node::Group(g) => assert_eq!(g.children.len(), 2, "both children render"),
@@ -86,7 +86,7 @@ fn anchor_transform_applies_to_group() {
     <rect x="0" y="0" width="5" height="5" fill="#abcdef"/>
   </a>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     match &frame.root.children[0] {
         Node::Group(g) => assert!(
             !g.transform.is_identity(),
@@ -104,7 +104,7 @@ fn anchor_opacity_applies_to_group() {
     <rect x="0" y="0" width="5" height="5" fill="#abcdef"/>
   </a>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     match &frame.root.children[0] {
         Node::Group(g) => assert!(
             (g.opacity - 0.5).abs() < 1e-4,
@@ -123,7 +123,7 @@ fn anchor_link_binding_captured() {
     <rect x="0" y="0" width="10" height="10" fill="#ff0000"/>
   </a>
 </svg>"##;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.links.len(), 1, "one <a> binding captured");
     let link = &extras.links[0];
     assert_eq!(link.href.as_deref(), Some("https://example.com/page"));
@@ -142,7 +142,7 @@ fn anchor_xlink_href_fallback() {
     <rect x="0" y="0" width="10" height="10" fill="#ff0000"/>
   </a>
 </svg>"##;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.links.len(), 1);
     assert_eq!(
         extras.links[0].href.as_deref(),
@@ -160,7 +160,7 @@ fn anchor_href_wins_over_xlink_href() {
     <rect x="0" y="0" width="10" height="10" fill="#ff0000"/>
   </a>
 </svg>"##;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.links[0].href.as_deref(), Some("https://new.test/"));
 }
 
@@ -172,8 +172,8 @@ fn anchor_roundtrips_through_extras() {
     <rect x="0" y="0" width="10" height="10" fill="#ff0000"/>
   </a>
 </svg>"##;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
-    let out = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).unwrap();
+    let out = write_with_extras(&frame, &extras);
     let out_str = String::from_utf8(out).unwrap();
     assert!(
         out_str.contains("<a href=\"https://example.com/\" target=\"_blank\">"),
@@ -181,7 +181,7 @@ fn anchor_roundtrips_through_extras() {
     );
     assert!(out_str.contains("</a>"), "must close the <a>");
     // Re-parse: the link survives a full cycle.
-    let (_frame2, extras2) = parse_svg_with_extras(out_str.as_bytes()).unwrap();
+    let (_frame2, extras2) = parse_with_extras(out_str.as_bytes()).unwrap();
     assert_eq!(extras2.links.len(), 1);
     assert_eq!(
         extras2.links[0].href.as_deref(),
@@ -202,11 +202,11 @@ fn nested_anchor_link_outside_group() {
     </a>
   </g>
 </svg>"##;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.links.len(), 1);
     // Path is [0, 0]: root child 0 is the <g>, whose child 0 is the <a>.
     assert_eq!(extras.links[0].path, vec![0usize, 0usize]);
-    let out = String::from_utf8(write_svg_with_extras(&frame, &extras)).unwrap();
+    let out = String::from_utf8(write_with_extras(&frame, &extras)).unwrap();
     assert!(
         out.contains("<a href=\"https://deep.test/\">"),
         "nested <a> must round-trip:\n{out}"
@@ -223,12 +223,12 @@ fn bare_anchor_without_href_still_groups() {
     <rect x="0" y="0" width="10" height="10" fill="#ff0000"/>
   </a>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     assert_eq!(all_paths(&frame).len(), 1, "child still renders");
-    let (frame2, extras) = parse_svg_with_extras(src).unwrap();
+    let (frame2, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.links.len(), 1);
     assert_eq!(extras.links[0].href, None);
-    let out = String::from_utf8(write_svg_with_extras(&frame2, &extras)).unwrap();
+    let out = String::from_utf8(write_with_extras(&frame2, &extras)).unwrap();
     assert!(out.contains("<a>"), "bare <a> round-trips as <a>:\n{out}");
 }
 
@@ -240,7 +240,7 @@ fn anchor_all_link_attributes_roundtrip() {
     <rect x="0" y="0" width="10" height="10" fill="#ff0000"/>
   </a>
 </svg>"##;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (frame, extras) = parse_with_extras(src).unwrap();
     let link = &extras.links[0];
     assert_eq!(link.download.as_deref(), Some("report.pdf"));
     assert_eq!(link.ping.as_deref(), Some("https://t.test/p"));
@@ -248,7 +248,7 @@ fn anchor_all_link_attributes_roundtrip() {
     assert_eq!(link.hreflang.as_deref(), Some("en"));
     assert_eq!(link.type_.as_deref(), Some("application/pdf"));
     assert_eq!(link.referrerpolicy.as_deref(), Some("no-referrer"));
-    let out = String::from_utf8(write_svg_with_extras(&frame, &extras)).unwrap();
+    let out = String::from_utf8(write_with_extras(&frame, &extras)).unwrap();
     for needle in [
         "download=\"report.pdf\"",
         "ping=\"https://t.test/p\"",
@@ -272,6 +272,6 @@ fn anchor_with_multiple_children_groups_all() {
     <line x1="0" y1="0" x2="9" y2="9" stroke="#0000ff"/>
   </a>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     assert_eq!(all_paths(&frame).len(), 3, "all three shapes render");
 }

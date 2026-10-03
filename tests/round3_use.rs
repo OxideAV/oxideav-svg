@@ -4,10 +4,10 @@
 //! during the pre-walk. `<symbol>` references inline the symbol's
 //! children; cycles are detected and dropped.
 
-use oxideav_core::Node;
-use oxideav_svg::parse_svg;
+use oxideav_svg::parse;
+use oxideav_svg::Node;
 
-fn count_paths(g: &oxideav_core::Group) -> usize {
+fn count_paths(g: &oxideav_svg::Group) -> usize {
     let mut n = 0;
     for c in &g.children {
         match c {
@@ -33,7 +33,7 @@ fn use_of_rect_emits_a_path_under_a_group() {
   </defs>
   <use href="#r1" x="10" y="10"/>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     assert_eq!(
         frame.root.children.len(),
         1,
@@ -67,7 +67,7 @@ fn use_of_symbol_inlines_symbol_children() {
   </defs>
   <use href="#sym1"/>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let g = match &frame.root.children[0] {
         Node::Group(g) => g,
         other => panic!("expected Group, got {:?}", other),
@@ -88,7 +88,7 @@ fn use_with_xlink_href_legacy_attribute() {
   </defs>
   <use xlink:href="#c" x="25" y="25"/>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     assert_eq!(frame.root.children.len(), 1);
     let g = match &frame.root.children[0] {
         Node::Group(g) => g,
@@ -105,7 +105,7 @@ fn use_unknown_id_is_silently_dropped() {
   <use href="#missing"/>
   <rect x="0" y="0" width="10" height="10" fill="black"/>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     // The <use> drops; the <rect> remains.
     assert_eq!(frame.root.children.len(), 1);
     assert!(matches!(&frame.root.children[0], Node::Path(_)));
@@ -116,7 +116,7 @@ fn use_without_href_is_silently_dropped() {
     let src = br##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
   <use/>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     assert!(frame.root.children.is_empty());
 }
 
@@ -126,7 +126,7 @@ fn use_external_reference_is_dropped() {
     let src = br##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
   <use href="other.svg#x"/>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     assert!(frame.root.children.is_empty());
 }
 
@@ -143,7 +143,7 @@ fn use_cycle_does_not_recurse_infinitely() {
   </defs>
   <use href="#s"/>
 </svg>"##;
-    let frame = parse_svg(src).expect("cycle parses without hanging");
+    let frame = parse(src).expect("cycle parses without hanging");
     // The outer <use> instantiates the symbol once; the inner cyclic
     // <use> is dropped. So we expect exactly one path (the rect).
     let g = match &frame.root.children[0] {
@@ -164,7 +164,7 @@ fn use_of_group_instantiates_all_children() {
   </defs>
   <use href="#duo" x="5" y="5"/>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let outer = match &frame.root.children[0] {
         Node::Group(g) => g,
         other => panic!("expected Group, got {:?}", other),
@@ -182,7 +182,7 @@ fn use_with_transform_attribute_is_honored() {
   </defs>
   <use href="#r" transform="translate(20, 30)"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let g = match &frame.root.children[0] {
         Node::Group(g) => g,
         other => panic!("expected Group, got {:?}", other),

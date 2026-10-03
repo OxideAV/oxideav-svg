@@ -12,11 +12,11 @@
 //! `PreservedExtras::switches` and collapses the selected-branch group
 //! back to the full `<switch>` on write.
 
-use oxideav_svg::{parse_svg_with_extras, write_svg_with_extras};
+use oxideav_svg::{parse_with_extras, write_with_extras};
 
 fn roundtrip(src: &[u8]) -> String {
-    let (frame, extras) = parse_svg_with_extras(src).expect("parse");
-    let out = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).expect("parse");
+    let out = write_with_extras(&frame, &extras);
     String::from_utf8(out).expect("utf8")
 }
 
@@ -68,7 +68,7 @@ fn switch_survives_reparse() {
     // fallback rect (the unsatisfiable requiredExtensions branch is
     // bypassed), proving the conditional structure round-tripped rather
     // than being frozen.
-    let (_, extras) = parse_svg_with_extras(out.as_bytes()).expect("reparse");
+    let (_, extras) = parse_with_extras(out.as_bytes()).expect("reparse");
     assert_eq!(extras.switches.len(), 1, "one switch binding on re-parse");
     assert!(
         out.contains("requiredExtensions"),
@@ -97,7 +97,7 @@ fn document_without_switch_is_unaffected() {
 <svg xmlns="http://www.w3.org/2000/svg" width="50" height="50">
   <rect x="0" y="0" width="10" height="10" fill="red"/>
 </svg>"##;
-    let (_, extras) = parse_svg_with_extras(src).expect("parse");
+    let (_, extras) = parse_with_extras(src).expect("parse");
     assert!(extras.switches.is_empty(), "no switch bindings");
     let out = roundtrip(src);
     assert!(!out.contains("<switch"), "no spurious <switch>:\n{out}");

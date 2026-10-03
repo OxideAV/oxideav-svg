@@ -12,15 +12,15 @@
 //!   `:not(simple)`).
 //!
 //! Verified by parsing a doc with a `<style>` block, then walking the
-//! resulting `VectorFrame` to assert each path's resolved fill colour
+//! resulting `SvgDocument` to assert each path's resolved fill colour
 //! matches what the cascade dictates.
 
-use oxideav_core::{Group, Node, Paint, Rgba, VectorFrame};
-use oxideav_svg::parse_svg;
+use oxideav_svg::parse;
+use oxideav_svg::{Group, Node, Paint, Rgba, SvgDocument};
 
 /// Walk every `Node::Path` in DFS order and collect its solid fill
 /// colour (or `None` if the fill isn't a solid).
-fn fills_in_order(frame: &VectorFrame) -> Vec<Option<Rgba>> {
+fn fills_in_order(frame: &SvgDocument) -> Vec<Option<Rgba>> {
     fn rec(g: &Group, out: &mut Vec<Option<Rgba>>) {
         for c in &g.children {
             match c {
@@ -48,7 +48,7 @@ fn attribute_equality_selector_applies() {
   <rect role="button" width="20" height="20"/>
   <rect role="menu" width="20" height="20"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fills = fills_in_order(&frame);
     assert_eq!(fills[0], Some(Rgba::opaque(255, 0, 0)));
     assert_ne!(fills[1], Some(Rgba::opaque(255, 0, 0)));
@@ -61,7 +61,7 @@ fn attribute_prefix_selector_applies() {
   <rect id="btn-ok" width="10" height="10"/>
   <rect id="other" width="10" height="10"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fills = fills_in_order(&frame);
     assert_eq!(fills[0], Some(Rgba::opaque(0, 255, 0)));
     assert_ne!(fills[1], Some(Rgba::opaque(0, 255, 0)));
@@ -75,7 +75,7 @@ fn attribute_dash_match_selector_applies_to_lang_tags() {
   <rect lang="en-US" width="10" height="10"/>
   <rect lang="fr" width="10" height="10"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fills = fills_in_order(&frame);
     assert_eq!(fills[0], Some(Rgba::opaque(0, 0, 255)));
     assert_eq!(fills[1], Some(Rgba::opaque(0, 0, 255)));
@@ -89,7 +89,7 @@ fn attribute_includes_selector_word_match() {
   <rect class="big card huge" width="10" height="10"/>
   <rect class="cardboard" width="10" height="10"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fills = fills_in_order(&frame);
     assert_eq!(fills[0], Some(Rgba::opaque(0xaa, 0xbb, 0xcc)));
     assert_ne!(fills[1], Some(Rgba::opaque(0xaa, 0xbb, 0xcc)));
@@ -102,7 +102,7 @@ fn attribute_substring_selector() {
   <rect id="left-middle-right" width="10" height="10"/>
   <rect id="elsewhere" width="10" height="10"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fills = fills_in_order(&frame);
     assert_eq!(fills[0], Some(Rgba::opaque(0x11, 0x22, 0x33)));
     assert_ne!(fills[1], Some(Rgba::opaque(0x11, 0x22, 0x33)));
@@ -115,7 +115,7 @@ fn attribute_existence_selector() {
   <rect data-foo="anything" width="10" height="10"/>
   <rect width="10" height="10"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fills = fills_in_order(&frame);
     assert_eq!(fills[0], Some(Rgba::opaque(255, 0, 255)));
     assert_ne!(fills[1], Some(Rgba::opaque(255, 0, 255)));
@@ -135,7 +135,7 @@ fn child_combinator_only_matches_direct_children() {
     </g>
   </g>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fills = fills_in_order(&frame);
     // Outer rect: direct child of g → matches.
     assert_eq!(fills[0], Some(Rgba::opaque(0xaa, 0, 0)));
@@ -151,7 +151,7 @@ fn child_combinator_does_not_match_grandchild_via_non_g() {
   <style>g > rect { fill: #aa0000 }</style>
   <rect width="10" height="10"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fills = fills_in_order(&frame);
     // The rect is a child of <svg>, not <g>. Should NOT be red.
     assert_ne!(fills[0], Some(Rgba::opaque(0xaa, 0, 0)));
@@ -167,7 +167,7 @@ fn descendant_combinator_matches_at_any_depth() {
     </g>
   </g>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fills = fills_in_order(&frame);
     assert_eq!(fills[0], Some(Rgba::opaque(0, 0xaa, 0)));
 }
@@ -180,7 +180,7 @@ fn adjacent_sibling_only_matches_immediate_sibling() {
   <circle cx="15" cy="5" r="5"/>
   <circle cx="25" cy="5" r="5"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fills = fills_in_order(&frame);
     // 1st circle: immediately follows rect → matches.
     assert_eq!(fills[1], Some(Rgba::opaque(0, 0, 0xaa)));
@@ -196,7 +196,7 @@ fn general_sibling_matches_any_following() {
   <circle cx="15" cy="5" r="5"/>
   <circle cx="25" cy="5" r="5"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fills = fills_in_order(&frame);
     // Both circles follow the rect (sibling order) → both match.
     assert_eq!(fills[1], Some(Rgba::opaque(0xaa, 0xaa, 0)));
@@ -210,7 +210,7 @@ fn descendant_does_not_apply_to_self() {
   <style>rect rect { fill: #ff0000 }</style>
   <rect width="10" height="10"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fills = fills_in_order(&frame);
     assert_ne!(fills[0], Some(Rgba::opaque(255, 0, 0)));
 }
@@ -229,7 +229,7 @@ fn first_child_matches_only_first() {
     <rect width="10" height="10"/>
   </g>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fills = fills_in_order(&frame);
     assert_eq!(fills[0], Some(Rgba::opaque(255, 0, 0)));
     assert_ne!(fills[1], Some(Rgba::opaque(255, 0, 0)));
@@ -244,7 +244,7 @@ fn last_child_matches_only_last() {
   <rect width="10" height="10"/>
   <rect width="10" height="10"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fills = fills_in_order(&frame);
     assert_ne!(fills[0], Some(Rgba::opaque(0, 255, 0)));
     assert_ne!(fills[1], Some(Rgba::opaque(0, 255, 0)));
@@ -262,7 +262,7 @@ fn nth_child_2n_plus_1_matches_odd_indices() {
     <rect width="10" height="10"/>
   </g>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fills = fills_in_order(&frame);
     assert_eq!(fills[0], Some(Rgba::opaque(0xab, 0xcd, 0xef)));
     assert_ne!(fills[1], Some(Rgba::opaque(0xab, 0xcd, 0xef)));
@@ -281,7 +281,7 @@ fn nth_child_keyword_even_matches_even_indices() {
     <rect width="10" height="10"/>
   </g>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fills = fills_in_order(&frame);
     assert_ne!(fills[0], Some(Rgba::opaque(0x10, 0x20, 0x30)));
     assert_eq!(fills[1], Some(Rgba::opaque(0x10, 0x20, 0x30)));
@@ -300,7 +300,7 @@ fn first_of_type_distinguishes_from_first_child() {
   <rect width="10" height="10"/>
   <rect width="10" height="10"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fills = fills_in_order(&frame);
     // First fill is the circle (default fill is opaque black), then 2 rects.
     assert_eq!(fills.len(), 3);
@@ -320,7 +320,7 @@ fn only_child_matches_solo_element() {
     <rect width="10" height="10"/>
   </g>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fills = fills_in_order(&frame);
     assert_eq!(fills[0], Some(Rgba::opaque(255, 0, 255)));
     assert_ne!(fills[1], Some(Rgba::opaque(255, 0, 255)));
@@ -336,7 +336,7 @@ fn nth_of_type_independent_of_other_tags() {
   <circle cx="25" cy="5" r="5"/>
   <rect width="10" height="10"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fills = fills_in_order(&frame);
     // Two rects → second one matches.
     // Order in output is DFS over children — circles come too.
@@ -352,7 +352,7 @@ fn not_negation_excludes_matching_simple() {
   <rect width="10" height="10"/>
   <rect class="skip" width="10" height="10"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fills = fills_in_order(&frame);
     assert_eq!(fills[0], Some(Rgba::opaque(0xff, 0x55, 0)));
     assert_ne!(fills[1], Some(Rgba::opaque(0xff, 0x55, 0)));
@@ -370,7 +370,7 @@ fn id_plus_class_outranks_two_classes() {
   </style>
   <rect id="t" class="a b" width="10" height="10"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fills = fills_in_order(&frame);
     assert_eq!(fills[0], Some(Rgba::opaque(255, 0, 0)));
 }
@@ -388,7 +388,7 @@ fn attribute_predicate_specificity_matches_class() {
   </style>
   <rect data-x="y" class="cls" width="10" height="10"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fills = fills_in_order(&frame);
     // Both [data-x=y] and .cls have specificity (0,1,0) — last wins
     // by source order → .cls.
@@ -407,7 +407,7 @@ fn unsupported_pseudo_class_doesnt_break_rule() {
   <style>.btn:hover { fill: #112233 }</style>
   <rect class="btn" width="10" height="10"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let fills = fills_in_order(&frame);
     // SVG default fill is opaque black per SVG 1.1 §11.3 — the
     // `:hover` rule is preserved on the stylesheet but doesn't apply

@@ -21,12 +21,12 @@
 //! [`oxideav_svg::length::Length::resolve`] is the identity for
 //! [`oxideav_svg::length::LengthUnit::UserUnit`].
 
-use oxideav_core::{Node, PathCommand, Point};
-use oxideav_svg::parse_svg;
+use oxideav_svg::parse;
+use oxideav_svg::{Node, PathCommand, Point};
 
 /// Walk the scene graph and find the first `Path` (skipping any
 /// wrapping `Group`s the encoder inserts for transform / opacity).
-fn first_path(node: &Node) -> &oxideav_core::Path {
+fn first_path(node: &Node) -> &oxideav_svg::Path {
     match node {
         Node::Path(p) => &p.path,
         Node::Group(g) => {
@@ -41,7 +41,7 @@ fn first_path(node: &Node) -> &oxideav_core::Path {
     }
 }
 
-fn try_first_path(node: &Node) -> Option<&oxideav_core::Path> {
+fn try_first_path(node: &Node) -> Option<&oxideav_svg::Path> {
     match node {
         Node::Path(p) => Some(&p.path),
         Node::Group(g) => g.children.iter().find_map(try_first_path),
@@ -56,7 +56,7 @@ fn rect_em_resolves_against_default_font_size_on_root() {
     let src = br#"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200">
         <rect x="1em" y="0" width="2em" height="1em"/>
     </svg>"#;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     assert_eq!(frame.root.children.len(), 1);
     let path = first_path(&frame.root.children[0]);
     // Rect emits MoveTo(x, y) first, then LineTo(x+w, y).
@@ -84,7 +84,7 @@ fn group_font_size_cascades_to_descendant_em_resolution() {
             <rect x="0" y="0" width="2em" height="1em"/>
         </g>
     </svg>"#;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let path = first_path(&frame.root.children[0]);
     // Find the LineTo after MoveTo — its x is x+w = 64.
     match path.commands[1] {
@@ -110,7 +110,7 @@ fn outer_em_unaffected_when_inner_group_overrides() {
             <rect x="0" y="100" width="2em" height="1em"/>
         </g>
     </svg>"#;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     assert_eq!(frame.root.children.len(), 2);
     let outer = first_path(&frame.root.children[0]);
     match outer.commands[1] {
@@ -135,7 +135,7 @@ fn percent_resolves_against_viewport_axis() {
     let src = br#"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="80">
         <circle cx="50%" cy="50%" r="10"/>
     </svg>"#;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let path = first_path(&frame.root.children[0]);
     // First MoveTo of the ellipse-as-circle path is at (cx + r, cy).
     match path.commands[0] {
@@ -155,7 +155,7 @@ fn vw_vh_resolve_against_root_viewport() {
     let src = br#"<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200">
         <rect x="0" y="0" width="10vw" height="50vh"/>
     </svg>"#;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let path = first_path(&frame.root.children[0]);
     // Rect path: M(x,y) L(x+w, y) L(x+w, y+h) L(x, y+h) Z
     // commands[1] = LineTo(x+w, y); commands[2] = LineTo(x+w, y+h).
@@ -182,7 +182,7 @@ fn root_font_size_cascades_to_rem() {
             <rect x="0" y="0" width="2rem" height="1rem"/>
         </g>
     </svg>"#;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let path = first_path(&frame.root.children[0]);
     // 2rem against root font-size 20 → 40, INDEPENDENT of the
     // bracketing `<g font-size="40">` (which only changes `em`).
@@ -202,7 +202,7 @@ fn bare_numeric_coords_round_trip_unchanged() {
         <rect x="1.5" y="2.25" width="10" height="20"/>
         <line x1="0" y1="0" x2="100" y2="50"/>
     </svg>"#;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     assert_eq!(frame.root.children.len(), 2);
     let rect = first_path(&frame.root.children[0]);
     assert_eq!(rect.commands[0], PathCommand::MoveTo(Point::new(1.5, 2.25)));
@@ -226,7 +226,7 @@ fn nested_group_em_inherits_through_intermediate_group() {
             </g>
         </g>
     </svg>"#;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let path = first_path(&frame.root.children[0]);
     match path.commands[1] {
         PathCommand::LineTo(p) => {

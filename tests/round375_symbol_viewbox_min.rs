@@ -10,12 +10,12 @@
 //! case, and every prior test) was unaffected, hiding the error. These
 //! tests pin a non-zero-min symbol so the corner lands where §8.2 says.
 
-use oxideav_core::{Node, Point, Transform2D};
-use oxideav_svg::parse_svg;
+use oxideav_svg::parse;
+use oxideav_svg::{Node, Point, Transform2D};
 
 /// Accumulate the transform from the root down to the first group that
 /// directly holds a `Node::Path`.
-fn transform_to_first_path(g: &oxideav_core::Group, acc: Transform2D) -> Option<Transform2D> {
+fn transform_to_first_path(g: &oxideav_svg::Group, acc: Transform2D) -> Option<Transform2D> {
     let here = acc.compose(&g.transform);
     if g.children.iter().any(|c| matches!(c, Node::Path(_))) {
         return Some(here);
@@ -45,7 +45,7 @@ fn use_of_symbol_with_nonzero_viewbox_min_maps_corner_to_origin() {
   </defs>
   <use href="#logo" width="50" height="50"/>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let t = transform_to_first_path(&frame.root, Transform2D::identity())
         .expect("a group carrying the rect");
     let corner = t.apply(Point { x: 10.0, y: 20.0 });
@@ -79,7 +79,7 @@ fn use_of_symbol_with_nonzero_min_and_use_xy_placement() {
   </defs>
   <use href="#logo" x="30" y="40" width="50" height="50"/>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let t = transform_to_first_path(&frame.root, Transform2D::identity())
         .expect("a group carrying the rect");
     let corner = t.apply(Point { x: 10.0, y: 20.0 });

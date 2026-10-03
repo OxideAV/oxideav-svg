@@ -12,13 +12,13 @@
 //! coordinates the way §8.2 prescribes — verified by applying the
 //! transform to a control point rather than by inspecting matrix cells.
 
-use oxideav_core::{Node, Point, Transform2D};
-use oxideav_svg::parse_svg;
+use oxideav_svg::parse;
+use oxideav_svg::{Node, Point, Transform2D};
 
 /// Recursively find the first `Node::Group` whose `children` contains a
 /// `Node::Path`, returning the accumulated transform from the root down
 /// to (and including) that group.
-fn first_group_with_path(g: &oxideav_core::Group, acc: Transform2D) -> Option<Transform2D> {
+fn first_group_with_path(g: &oxideav_svg::Group, acc: Transform2D) -> Option<Transform2D> {
     let here = acc.compose(&g.transform);
     if g.children.iter().any(|c| matches!(c, Node::Path(_))) {
         return Some(here);
@@ -33,7 +33,7 @@ fn first_group_with_path(g: &oxideav_core::Group, acc: Transform2D) -> Option<Tr
     None
 }
 
-fn count_paths(g: &oxideav_core::Group) -> usize {
+fn count_paths(g: &oxideav_svg::Group) -> usize {
     let mut n = 0;
     for c in &g.children {
         match c {
@@ -53,7 +53,7 @@ fn nested_svg_subtree_is_no_longer_dropped() {
     <rect x="0" y="0" width="10" height="10" fill="red"/>
   </svg>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     assert_eq!(
         count_paths(&frame.root),
         1,
@@ -72,7 +72,7 @@ fn nested_svg_x_y_translate_the_viewport() {
     <rect x="0" y="0" width="10" height="10" fill="red"/>
   </svg>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let t = first_group_with_path(&frame.root, Transform2D::identity())
         .expect("a group carrying the rect");
     let mapped = t.apply(Point { x: 0.0, y: 0.0 });
@@ -95,7 +95,7 @@ fn nested_svg_viewbox_scales_the_inner_coordinates() {
     <rect x="0" y="0" width="10" height="10" fill="red"/>
   </svg>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let t = first_group_with_path(&frame.root, Transform2D::identity())
         .expect("a group carrying the rect");
     let mid = t.apply(Point { x: 5.0, y: 5.0 });
@@ -118,7 +118,7 @@ fn nested_svg_viewbox_with_offset_and_placement() {
     <rect x="5" y="5" width="2" height="2" fill="red"/>
   </svg>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let t = first_group_with_path(&frame.root, Transform2D::identity())
         .expect("a group carrying the rect");
     let corner = t.apply(Point { x: 5.0, y: 5.0 });
@@ -140,7 +140,7 @@ fn nested_svg_zero_size_disables_rendering() {
     <rect x="0" y="0" width="10" height="10" fill="red"/>
   </svg>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     assert_eq!(
         count_paths(&frame.root),
         0,
@@ -158,7 +158,7 @@ fn nested_svg_default_dimensions_fill_parent() {
     <rect x="0" y="0" width="10" height="10" fill="red"/>
   </svg>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let t = first_group_with_path(&frame.root, Transform2D::identity())
         .expect("a group carrying the rect");
     let origin = t.apply(Point { x: 0.0, y: 0.0 });
@@ -184,7 +184,7 @@ fn nested_svg_preserve_aspect_ratio_defer_prefix_parses() {
     <rect x="0" y="0" width="10" height="10" fill="red"/>
   </svg>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let t = first_group_with_path(&frame.root, Transform2D::identity())
         .expect("a group carrying the rect");
     let p = t.apply(Point { x: 10.0, y: 10.0 });

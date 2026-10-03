@@ -5,7 +5,8 @@
 //! the items are composed left-to-right per §7.6.1 (the leftmost
 //! transform is the outermost, applied last to a point).
 
-use oxideav_core::{Error, Result, Transform2D};
+use crate::error::{Error, Result};
+use crate::model::Transform2D;
 
 /// Parse a `transform` attribute. An empty / whitespace-only string
 /// returns the identity transform.
@@ -214,7 +215,7 @@ fn read_args(bytes: &[u8], pos: &mut usize) -> Result<Vec<f32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxideav_core::Point;
+    use crate::model::Point;
 
     fn approx(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-4

@@ -10,10 +10,10 @@
 
 use oxideav_svg::filter::{FilterCoord, FilterGraph, FilterUnits};
 use oxideav_svg::filter_eval::{resolve_subregions, FilterSubregionCtx, PixelRect};
-use oxideav_svg::parse_svg_with_extras;
+use oxideav_svg::parse_with_extras;
 
 fn graph_for_filter(src: &[u8], filter_id: &str) -> FilterGraph {
-    let (_frame, extras) = parse_svg_with_extras(src).expect("parse_svg_with_extras");
+    let (_frame, extras) = parse_with_extras(src).expect("parse_with_extras");
     for el in &extras.filters {
         if el
             .attrs

@@ -4,7 +4,7 @@
 //!
 //! For every corpus document `x` the gate enforces:
 //!
-//! 1. **Parse** — `parse_svg_with_extras(x)` succeeds, and so does a
+//! 1. **Parse** — `parse_with_extras(x)` succeeds, and so does a
 //!    re-parse of the writer's output.
 //! 2. **Byte fixed point** — `write(parse(write(parse(x)))) ==
 //!    write(parse(x))`: the writer's output is *immediately* stable
@@ -18,7 +18,7 @@
 //!    invariant that caught the orphaned-gradient twin emission.)
 //! 4. **Scene equivalence** — flattening the source and the written
 //!    output through the extras-free pipeline
-//!    (`write_svg(parse_svg(·))`) yields byte-identical scene
+//!    (`write(parse(·))`) yields byte-identical scene
 //!    serialisations, so the round-tripped document resolves to the
 //!    same rendered geometry.
 //!
@@ -27,11 +27,11 @@
 //! identity (two single-purpose `<path>`s replace one `<rect>`), so
 //! shape tags are exempt from its census.
 
-use oxideav_svg::{parse_svg, parse_svg_with_extras, write_svg, write_svg_with_extras, write_svgz};
+use oxideav_svg::{parse, parse_with_extras, write, write_svgz, write_with_extras};
 
 fn rt(src: &[u8]) -> Vec<u8> {
-    let (frame, extras) = parse_svg_with_extras(src).expect("parse");
-    write_svg_with_extras(&frame, &extras)
+    let (frame, extras) = parse_with_extras(src).expect("parse");
+    write_with_extras(&frame, &extras)
 }
 
 /// Tags whose occurrence count must survive a round-trip exactly.
@@ -101,8 +101,8 @@ fn gate(name: &str, src: &[u8], census_shapes: bool) {
         );
     }
     // 4. Scene equivalence through the extras-free pipeline.
-    let flat_src = write_svg(&parse_svg(src).expect("plain parse"));
-    let flat_rt = write_svg(&parse_svg(&w1).expect("plain re-parse"));
+    let flat_src = write(&parse(src).expect("plain parse"));
+    let flat_rt = write(&parse(&w1).expect("plain re-parse"));
     assert_eq!(
         String::from_utf8_lossy(&flat_src),
         String::from_utf8_lossy(&flat_rt),
@@ -175,7 +175,7 @@ fn display_none_subtrees_survive_verbatim() {
     );
     // The hidden elements still generate no boxes on re-parse: the
     // flattened scene carries only the two visible shapes.
-    let flat = String::from_utf8_lossy(&write_svg(&parse_svg(&w1).unwrap())).to_string();
+    let flat = String::from_utf8_lossy(&write(&parse(&w1).unwrap())).to_string();
     assert_eq!(
         flat.matches("<path").count(),
         2,
@@ -198,14 +198,14 @@ fn gate_icon_house() {
 #[test]
 fn gate_svgz_roundtrip() {
     let src = include_bytes!("fixtures/corpus/shapes.svg");
-    let (frame, _extras) = parse_svg_with_extras(src).expect("parse");
+    let (frame, _extras) = parse_with_extras(src).expect("parse");
     let gz = write_svgz(&frame).expect("svgz write");
     assert!(
         gz.len() >= 2 && gz[0] == 0x1f && gz[1] == 0x8b,
         "RFC 1952 magic"
     );
-    let plain = write_svg(&frame);
-    let reparsed = write_svg(&parse_svg(&gz).expect("gz sniff + parse"));
+    let plain = write(&frame);
+    let reparsed = write(&parse(&gz).expect("gz sniff + parse"));
     assert_eq!(
         String::from_utf8_lossy(&plain),
         String::from_utf8_lossy(&reparsed),

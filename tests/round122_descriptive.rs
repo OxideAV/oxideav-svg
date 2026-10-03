@@ -7,7 +7,7 @@
 //! NOT contribute scene-graph nodes — they're accessibility metadata
 //! consumed by assistive technologies. Round 122 captures them on
 //! `PreservedExtras::titles` / `descs` / `metadata` so a
-//! `parse_svg_with_extras → write_svg_with_extras` cycle round-trips
+//! `parse_with_extras → write_with_extras` cycle round-trips
 //! the descriptive content (text body + optional `lang` selection key
 //! per §5.8 multilingual alternatives).
 //!
@@ -15,7 +15,7 @@
 //! §5.8 (anchor `struct-DescriptionAndTitleElements`) and §5.9
 //! (anchor `struct-MetadataElement`). No web, no external libs.
 
-use oxideav_svg::{parse_svg, parse_svg_with_extras, write_svg, write_svg_with_extras};
+use oxideav_svg::{parse, parse_with_extras, write, write_with_extras};
 
 /// Helper — find the first descriptive-binding entry for the given
 /// parent-path. Returns the entry by reference so the test can poke
@@ -40,7 +40,7 @@ fn title_at_root_captured_with_text() {
   <title>Hello SVG</title>
   <rect x="0" y="0" width="10" height="10" fill="#ff0000"/>
 </svg>"##;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.titles.len(), 1, "one parent has a <title> child");
     let root = binding_at(&extras.titles, &[]);
     assert_eq!(root.items.len(), 1);
@@ -60,7 +60,7 @@ fn desc_at_root_captured_with_text() {
   <desc>A 10x10 red square</desc>
   <rect x="0" y="0" width="10" height="10" fill="#ff0000"/>
 </svg>"##;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.descs.len(), 1);
     let root = binding_at(&extras.descs, &[]);
     assert_eq!(root.items.len(), 1);
@@ -79,11 +79,11 @@ fn title_and_desc_do_not_render() {
   <desc>also not in the scene</desc>
   <rect x="0" y="0" width="10" height="10" fill="#ff0000"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     // Exactly one scene child — the rect — and it's a Path.
     assert_eq!(frame.root.children.len(), 1);
     match &frame.root.children[0] {
-        oxideav_core::Node::Path(_) => {}
+        oxideav_svg::Node::Path(_) => {}
         other => panic!("expected only the rect to render, got {other:?}"),
     }
 }
@@ -98,7 +98,7 @@ fn title_lang_attribute_captured() {
   <title lang="en">Favorite</title>
   <title lang="nl">Favoriet</title>
 </svg>"##;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     let root = binding_at(&extras.titles, &[]);
     assert_eq!(root.items.len(), 2, "both language variants preserved");
     assert_eq!(root.items[0].lang.as_deref(), Some("en"));
@@ -116,7 +116,7 @@ fn xml_lang_falls_back_when_lang_absent() {
   <title xml:lang="fr">Étoile</title>
 </svg>"##
         .as_bytes();
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     let root = binding_at(&extras.titles, &[]);
     assert_eq!(root.items[0].lang.as_deref(), Some("fr"));
     assert_eq!(root.items[0].text, "Étoile");
@@ -134,7 +134,7 @@ fn title_on_nested_group_keyed_by_group_path() {
     <rect x="0" y="0" width="10" height="10" fill="#ff0000"/>
   </g>
 </svg>"##;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (frame, extras) = parse_with_extras(src).unwrap();
     // The scene-walk produces one root child (the group).
     assert_eq!(frame.root.children.len(), 1);
     // Binding keys at `[0]` — the group's slot in `root.children`.
@@ -154,7 +154,7 @@ fn metadata_captured_verbatim() {
     <dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">Sample</dc:title>
   </metadata>
 </svg>"##;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.metadata.len(), 1, "metadata captured");
     // The captured element has a `<dc:title>` child carrying "Sample".
     let md = &extras.metadata[0];
@@ -173,16 +173,16 @@ fn metadata_is_never_rendered() {
   <metadata><foo/></metadata>
   <rect x="0" y="0" width="10" height="10" fill="#ff0000"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     assert_eq!(frame.root.children.len(), 1, "only the rect renders");
     match &frame.root.children[0] {
-        oxideav_core::Node::Path(_) => {}
+        oxideav_svg::Node::Path(_) => {}
         other => panic!("expected Path for the rect, got {other:?}"),
     }
 }
 
 #[test]
-fn write_svg_with_extras_emits_root_title_first() {
+fn write_with_extras_emits_root_title_first() {
     // The encoder places root-level `<title>` / `<desc>` at the top of
     // the output document so an SVG 1.1 reader that "may not recognize
     // a title element that is not the first child of its parent" still
@@ -193,8 +193,8 @@ fn write_svg_with_extras_emits_root_title_first() {
   <desc>Tooltip body</desc>
   <rect x="0" y="0" width="10" height="10" fill="#000000"/>
 </svg>"##;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
-    let bytes = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).unwrap();
+    let bytes = write_with_extras(&frame, &extras);
     let s = String::from_utf8(bytes).unwrap();
     let title_pos = s.find("<title>").expect("title emitted");
     let desc_pos = s.find("<desc>").expect("desc emitted");
@@ -209,7 +209,7 @@ fn write_svg_with_extras_emits_root_title_first() {
 }
 
 #[test]
-fn write_svg_with_extras_emits_group_title_inside_group() {
+fn write_with_extras_emits_group_title_inside_group() {
     // A `<g><title>...</title>...</g>` round-trip emits the `<title>`
     // as the first child of the matching `<g>` in the output.
     let src = br##"<?xml version="1.0"?>
@@ -219,8 +219,8 @@ fn write_svg_with_extras_emits_group_title_inside_group() {
     <rect x="0" y="0" width="10" height="10" fill="#000000"/>
   </g>
 </svg>"##;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
-    let bytes = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).unwrap();
+    let bytes = write_with_extras(&frame, &extras);
     let s = String::from_utf8(bytes).unwrap();
     let g_pos = s.find("<g>").expect("<g> emitted");
     let title_pos = s.find("<title>").expect("title emitted");
@@ -240,13 +240,13 @@ fn round_trip_preserves_lang_attribute() {
   <title lang="en-us">Color</title>
   <title lang="en-gb">Colour</title>
 </svg>"##;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
-    let bytes = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).unwrap();
+    let bytes = write_with_extras(&frame, &extras);
     let s = String::from_utf8(bytes.clone()).unwrap();
     assert!(s.contains("lang=\"en-us\""));
     assert!(s.contains("lang=\"en-gb\""));
     // Round-trip back through the parser — both title entries survive.
-    let (_f2, extras2) = parse_svg_with_extras(&bytes).unwrap();
+    let (_f2, extras2) = parse_with_extras(&bytes).unwrap();
     let root = binding_at(&extras2.titles, &[]);
     assert_eq!(root.items.len(), 2);
     assert_eq!(root.items[0].lang.as_deref(), Some("en-us"));
@@ -265,23 +265,23 @@ fn round_trip_preserves_metadata() {
   </metadata>
   <rect x="0" y="0" width="10" height="10" fill="#000000"/>
 </svg>"##;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
-    let bytes = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).unwrap();
+    let bytes = write_with_extras(&frame, &extras);
     let s = String::from_utf8(bytes.clone()).unwrap();
     assert!(s.contains("<metadata>"), "metadata wrapper preserved");
     assert!(s.contains("<foo"));
     assert!(s.contains("bar"));
     // Re-parse the output — the metadata count is stable across round
     // trips (the encoder doesn't duplicate, the parser doesn't drop).
-    let (_f2, extras2) = parse_svg_with_extras(&bytes).unwrap();
+    let (_f2, extras2) = parse_with_extras(&bytes).unwrap();
     assert_eq!(extras2.metadata.len(), 1);
 }
 
 #[test]
-fn bare_parse_svg_does_not_populate_extras_paths() {
-    // The id-path tracking gate (`track_id_paths`) keeps `parse_svg`'s
+fn bare_parse_does_not_populate_extras_paths() {
+    // The id-path tracking gate (`track_id_paths`) keeps `parse`'s
     // hot path zero-allocation for the side-channel buffers; only
-    // `parse_svg_with_extras` opts in. This guards the gate so a
+    // `parse_with_extras` opts in. This guards the gate so a
     // future refactor doesn't accidentally allocate per shape on the
     // bare path.
     let src = br##"<?xml version="1.0"?>
@@ -289,15 +289,15 @@ fn bare_parse_svg_does_not_populate_extras_paths() {
   <title>doc title</title>
   <g><desc>group desc</desc></g>
 </svg>"##;
-    // bare parse_svg builds the scene graph but doesn't expose the
+    // bare parse builds the scene graph but doesn't expose the
     // side-channel. We can only check that the scene graph is
     // structurally correct — no title / desc nodes in the tree.
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     // Root has zero scene children (the `<title>` doesn't render and
     // the `<g>` only contained a `<desc>` which doesn't render either,
     // so the group ends up empty but still emitted as a Group node).
     assert_eq!(frame.root.children.len(), 1);
-    if let oxideav_core::Node::Group(g) = &frame.root.children[0] {
+    if let oxideav_svg::Node::Group(g) = &frame.root.children[0] {
         assert!(g.children.is_empty(), "empty group (desc doesn't render)");
     } else {
         panic!("expected Group for the <g>");
@@ -305,8 +305,8 @@ fn bare_parse_svg_does_not_populate_extras_paths() {
 }
 
 #[test]
-fn write_svg_without_extras_drops_descriptive() {
-    // The bare `write_svg(&frame)` API uses an empty `PreservedExtras`
+fn write_without_extras_drops_descriptive() {
+    // The bare `write(&frame)` API uses an empty `PreservedExtras`
     // so descriptive content is dropped on the way out. This is the
     // pre-round-122 behaviour; callers who care use the `_with_extras`
     // API.
@@ -315,10 +315,10 @@ fn write_svg_without_extras_drops_descriptive() {
   <title>Lost</title>
   <rect x="0" y="0" width="10" height="10" fill="#000000"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
-    let bytes = write_svg(&frame);
+    let frame = parse(src).unwrap();
+    let bytes = write(&frame);
     let s = String::from_utf8(bytes).unwrap();
-    assert!(!s.contains("<title>"), "bare write_svg drops descriptive");
+    assert!(!s.contains("<title>"), "bare write drops descriptive");
     assert!(!s.contains("Lost"));
 }
 
@@ -333,12 +333,12 @@ fn empty_title_round_trips() {
 <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
   <title></title>
 </svg>"##;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.titles.len(), 1);
     let root = binding_at(&extras.titles, &[]);
     assert_eq!(root.items.len(), 1);
     assert_eq!(root.items[0].text, "");
-    let bytes = write_svg_with_extras(&frame, &extras);
+    let bytes = write_with_extras(&frame, &extras);
     let s = String::from_utf8(bytes).unwrap();
     assert!(s.contains("<title/>"), "self-closing for empty body");
 }

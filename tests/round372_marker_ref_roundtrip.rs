@@ -1,18 +1,18 @@
 //! Round 372 — `marker-start` / `marker-mid` / `marker-end` (and the
 //! `marker` shorthand) reference round-trip fidelity (SVG 2 §13.7.4).
 //!
-//! `oxideav_core::Node` has no marker construct (vertex placement is
+//! `oxideav_svg::Node` has no marker construct (vertex placement is
 //! deferred to a core `Marker` node), so a shape's marker references
 //! were dropped on write even though the `<marker>` def itself rides
 //! `PreservedExtras::markers` verbatim — orphaning the def. This round
 //! records the verbatim `marker-*` attribute text per scene-graph
 //! tree-path and re-emits it on the shape on write.
 
-use oxideav_svg::{parse_svg_with_extras, write_svg_with_extras};
+use oxideav_svg::{parse_with_extras, write_with_extras};
 
 fn roundtrip(src: &[u8]) -> String {
-    let (frame, extras) = parse_svg_with_extras(src).expect("parse");
-    let out = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).expect("parse");
+    let out = write_with_extras(&frame, &extras);
     String::from_utf8(out).expect("utf8")
 }
 
@@ -88,7 +88,7 @@ fn marker_reference_reconnects_after_reparse() {
   <path d="M10,10 L90,90" stroke="black" marker-end="url(#arrow)"/>
 </svg>"##;
     let out = roundtrip(src);
-    let (_, extras) = parse_svg_with_extras(out.as_bytes()).expect("reparse");
+    let (_, extras) = parse_with_extras(out.as_bytes()).expect("reparse");
     assert_eq!(extras.marker_refs.len(), 1, "one marker-ref on re-parse");
     assert_eq!(
         extras.marker_refs[0].marker_end.as_deref(),
@@ -101,7 +101,7 @@ fn document_without_markers_is_unaffected() {
     let src = br##"<svg xmlns="http://www.w3.org/2000/svg" width="50" height="50">
   <path d="M0,0 L10,10" stroke="black"/>
 </svg>"##;
-    let (_, extras) = parse_svg_with_extras(src).expect("parse");
+    let (_, extras) = parse_with_extras(src).expect("parse");
     assert!(extras.marker_refs.is_empty(), "no marker refs");
     let out = roundtrip(src);
     assert!(!out.contains("marker-"), "no spurious marker attrs:\n{out}");

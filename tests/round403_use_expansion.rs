@@ -67,7 +67,7 @@ fn use_diamond_bomb_terminates() {
         // 2^60 nodes if unbounded — never returns without the budget.
         let doc = use_diamond(60);
         let start = std::time::Instant::now();
-        let result = oxideav_svg::parse_svg(doc.as_bytes());
+        let result = oxideav_svg::parse(doc.as_bytes());
         assert!(result.is_ok(), "count-bounded decode still succeeds");
         assert!(
             start.elapsed() < std::time::Duration::from_secs(30),
@@ -82,7 +82,7 @@ fn deep_use_chain_does_not_abort() {
         // 20_000-deep decode recursion if unbounded — stack overflow.
         // The render-depth guard turns it into a typed error.
         let doc = use_chain(20_000);
-        let result = oxideav_svg::parse_svg(doc.as_bytes());
+        let result = oxideav_svg::parse(doc.as_bytes());
         assert!(result.is_err(), "over-deep use chain must be a typed error");
         let msg = format!("{}", result.unwrap_err());
         assert!(
@@ -98,12 +98,12 @@ fn ordinary_use_still_instantiates() {
     let doc = "<svg xmlns=\"http://www.w3.org/2000/svg\">\
         <defs><rect id=\"r\" width=\"4\" height=\"4\"/></defs>\
         <use href=\"#r\" x=\"10\" y=\"10\"/></svg>";
-    let frame = oxideav_svg::parse_svg(doc.as_bytes()).expect("normal use decodes");
+    let frame = oxideav_svg::parse(doc.as_bytes()).expect("normal use decodes");
     // The instantiated target geometry must be present in the decoded
-    // frame (plain `parse_svg` flattens `<use>` into geometry).
-    let out = String::from_utf8(oxideav_svg::write_svg(&frame)).expect("utf8 output");
+    // frame (plain `parse` flattens `<use>` into geometry).
+    let out = String::from_utf8(oxideav_svg::write(&frame)).expect("utf8 output");
     assert!(!out.is_empty(), "decoded output is non-empty");
-    let extras = oxideav_svg::parse_svg_with_extras(doc.as_bytes())
+    let extras = oxideav_svg::parse_with_extras(doc.as_bytes())
         .expect("with-extras decode")
         .1;
     // The reference-preserving path keeps the `<use>` identity.
@@ -116,6 +116,6 @@ fn moderate_use_nesting_decodes() {
     // decodes fully — the guard doesn't clip real content.
     on_big_stack(|| {
         let doc = use_chain(20);
-        oxideav_svg::parse_svg(doc.as_bytes()).expect("in-bounds chain decodes");
+        oxideav_svg::parse(doc.as_bytes()).expect("in-bounds chain decodes");
     });
 }

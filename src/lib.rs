@@ -1,9 +1,37 @@
-//! Pure-Rust SVG (read + write) for the oxideav framework.
+//! Pure-Rust SVG (read + write) — a vector image crate following the
+//! OxideAV image-crate contract.
 //!
 //! Implements a focused subset of SVG 1.1 / 2.0 — enough to load
 //! ~90% of real-world icons, logos, and editor exports — without any
-//! external XML / SVG library. The decoder produces an
-//! [`oxideav_core::VectorFrame`]; the encoder serialises one back.
+//! external XML / SVG library. The parser produces an [`SvgDocument`]
+//! (the crate's own vector scene graph, no framework needed); the
+//! writer serialises one back, byte-stably.
+//!
+//! # SVG is vector: what the contract means here
+//!
+//! The contract's root vocabulary is present in full ([`probe`],
+//! [`info`], [`decode`], [`decode_with`], [`decode_rgb8`],
+//! [`decode_rgba8`], [`decode_from`], [`encode`], [`encode_rgb8`],
+//! [`encode_rgba8`], [`encode_to`], [`SvgImage`], [`RgbImage`],
+//! [`RgbaImage`], [`PixelFormat`], [`ImageInfo`], [`DecodeOptions`],
+//! [`EncodeOptions`], [`SvgError`] / [`Error`]), but SVG has no pixels
+//! of its own:
+//!
+//! * [`probe`] and [`info`] work exactly as for a raster format
+//!   (allocation-free sniff; header-only canvas size in CSS px at
+//!   96 dpi, `Rgba`, one frame).
+//! * [`parse`] → [`SvgDocument`] is the real standalone decode and
+//!   [`write`] its inverse; [`parse_with`] takes the [`DecodeOptions`]
+//!   limits (input bytes, element count, nesting depth, `strict`).
+//! * The raster verbs validate their input and then answer
+//!   [`SvgError::Unsupported`]: rasterising SVG is `oxideav-raster`'s
+//!   job through the framework, and an SVG is not a raster target.
+//!
+//! With the default-on `registry` feature, [`SvgDocument`] converts to
+//! and from `oxideav_core::VectorFrame` (`From` both ways), the
+//! framework `Decoder` / `Encoder` adapters speak `Frame::Vector`, and
+//! the deprecated `parse_svg*` / `write_svg*` wrappers keep the
+//! `VectorFrame`-typed signatures for one release.
 //!
 //! # Element subset (round 1)
 //!
@@ -43,10 +71,10 @@
 //!   blur, color matrix, …) is rendered by `oxideav-raster` in a
 //!   later round.
 //! * `<mask>` and `<clipPath>` — multi-element masks map to
-//!   [`oxideav_core::Node::SoftMask`] (luminance or alpha per
+//!   [`model::Node::SoftMask`] (luminance or alpha per
 //!   `mask-type`); multi-shape `<clipPath>` collapses children (with
 //!   their per-element `transform=`) into a single concatenated clip
-//!   [`oxideav_core::Path`] applied to the wrapping group's `clip`
+//!   [`model::Path`] applied to the wrapping group's `clip`
 //!   field. The encoder rewrites both back into `<defs>` blocks with
 //!   auto-generated ids on round-trip.
 //! * Graceful skip for `<foreignObject>` (empty `Group`),
@@ -62,7 +90,7 @@
 //!   `width` / `height` on the `<use>` are honoured. Cycles
 //!   (`use → symbol → use of same id`) are detected and the offending
 //!   instantiation is dropped instead of recursing infinitely.
-//! * `.svgz` (gzip-compressed SVG, RFC 1952) — both [`parse_svg`] and
+//! * `.svgz` (gzip-compressed SVG, RFC 1952) — both [`parse`] and
 //!   the demuxer transparently sniff the gzip magic (`1f 8b`) and
 //!   inflate; symmetric [`write_svgz`] + a `.svgz` muxer handle the
 //!   output side.
@@ -227,7 +255,7 @@
 //!   keyword (`xMin/Mid/MaxYMin/Mid/Max` × `meet`/`slice`). The
 //!   decoder applies the spec's algorithm (steps 5–14 of §8.2),
 //!   computes the equivalent translate+scale, and pre-multiplies it
-//!   into [`oxideav_core::VectorFrame::root.transform`] — so a
+//!   into `SvgDocument::root.transform` — so a
 //!   downstream rasteriser that knows nothing about
 //!   `preserveAspectRatio` (one that simply stretches viewBox →
 //!   canvas) still produces the spec-correct visual result. The
@@ -306,7 +334,7 @@
 //!   [`crate::preserved::PreservedExtras::images`]; the encoder
 //!   re-emits them at the trailing edge with a faithful round-trip
 //!   (data URIs re-encode from the decoded bytes; external URLs are
-//!   preserved as-is). `oxideav_core::Node::Image` requires a
+//!   preserved as-is). a raster image node requires a
 //!   fully-decoded `VideoFrame`, so round 15 deliberately keeps the
 //!   raster bytes opaque on the SVG side — the renderer (or a caller
 //!   that owns a PNG / JPEG decoder) decodes them lazily.
@@ -479,14 +507,14 @@
 //!   [`crate::defs::DefsTables::patterns`] during the pre-walk so
 //!   forward references resolve regardless of source order; verbatim
 //!   XML also rides on [`crate::preserved::PreservedExtras::patterns`]
-//!   so `parse_svg_with_extras` → `write_svg_with_extras` round-trips
+//!   so `parse_with_extras` → `write_with_extras` round-trips
 //!   the definition byte-faithfully.
 //! * **SVG 2 §13.2 paint-list with fallback** —
 //!   `fill="url(#pat) red"` / `fill="url(#pat) none"` /
 //!   `fill="url(#pat)"` all parse via the widened
 //!   [`crate::color::PaintValue::Reference`] struct variant. A known
 //!   pattern (or an unresolvable id) falls through to the fallback
-//!   colour today since `oxideav_core::Paint` has no `Pattern` variant
+//!   colour today since [`model::Paint`] has no `Pattern` variant
 //!   yet — Inkscape / Illustrator hatch-pattern exports therefore no
 //!   longer render as silent-empty fills while preserving the
 //!   pattern definition for a later renderer.
@@ -522,7 +550,7 @@
 //!   New [`crate::preserved::PreservedExtras::views`] +
 //!   [`crate::preserved::PreservedExtras::typed_views`] carry the
 //!   verbatim XML + typed mirror for the encoder + the resolver.
-//!   `write_svg_with_extras` re-emits each captured `<view>` at the
+//!   `write_with_extras` re-emits each captured `<view>` at the
 //!   trailing edge so a `parse → write → parse` cycle preserves both
 //!   the definitions and the bare-name fragment routing.
 //!
@@ -532,7 +560,7 @@
 //!   `SVGGeometryElement` (`<path>`, `<rect>`, `<circle>`,
 //!   `<ellipse>`, `<line>`, `<polyline>`, `<polygon>`). The decoder
 //!   parses the author's path-length, computes the **geometric**
-//!   length of the resulting [`oxideav_core::Path`] via the new
+//!   length of the resulting [`model::Path`] via the new
 //!   [`crate::path_length`] module (chord-sum for line / quadratic /
 //!   cubic segments, centre-parameterised arc sampling), and rescales
 //!   `stroke-dasharray` / `stroke-dashoffset` by
@@ -542,110 +570,89 @@
 //!   scaling, negative → error / ignored, missing → no-op) are
 //!   honoured. The author's original `pathLength` is captured into
 //!   [`crate::preserved::PathLengthBinding`] keyed by scene-graph
-//!   tree-path so [`encoder::write_svg_with_extras`] re-emits the
+//!   tree-path so [`encoder::write_with_extras`] re-emits the
 //!   attribute on round-trip.
 
 pub mod animation;
+mod api;
 pub mod color;
 pub mod conditional;
+#[cfg(feature = "registry")]
 pub mod container;
 pub mod css;
 pub mod decoder;
 pub mod defs;
 pub mod element;
 pub mod encoder;
+pub mod error;
 pub mod filter;
 pub mod filter_eval;
 pub mod image;
 pub mod keyframe;
 pub mod length;
+pub mod model;
+mod options;
 pub mod parser;
 pub mod path_data;
 pub mod path_length;
+pub mod picture;
 pub mod preserved;
+#[cfg(feature = "registry")]
+pub mod registry;
 #[cfg(feature = "text")]
 pub mod text;
 pub mod transform;
 
-pub use decoder::{
-    make_decoder, parse_svg, parse_svg_at, parse_svg_at_with_languages, parse_svg_with_extras,
-    CODEC_ID_STR,
+// ---- Image-crate contract (IMAGE_CRATE_API) ----
+pub use api::{
+    decode, decode_from, decode_rgb8, decode_rgba8, decode_with, encode, encode_rgb8, encode_rgba8,
+    encode_to, info, info_with, parse_from, probe, write_to, PROBE_WINDOW,
 };
-pub use encoder::{make_encoder, write_svg, write_svg_with_extras, write_svgz};
+pub use error::{Error, Result, SvgError};
+pub use options::{DecodeOptions, EncodeOptions};
+pub use picture::{
+    ColorInfo, ColorRange, ImageInfo, Metadata, PixelFormat, Plane, RgbImage, RgbaImage, SvgImage,
+    SvgPixelFormat,
+};
+
+// ---- The vector document API (depth) ----
+pub use decoder::{
+    parse, parse_at, parse_at_with_languages, parse_at_with_languages_opts, parse_with,
+    parse_with_extras, parse_with_extras_opts, CODEC_ID_STR,
+};
+pub use encoder::{write, write_svgz, write_with, write_with_extras, write_with_extras_opts};
+pub use model::{
+    DashPattern, FillRule, GradientStop, Group, LineCap, LineJoin, LinearGradient, MaskKind, Node,
+    Paint, Path, PathCommand, PathNode, Point, RadialGradient, Rgba, SpreadMethod, Stroke,
+    SvgDocument, Transform2D, ViewBox,
+};
 pub use preserved::{DescriptiveBinding, DescriptiveText, LinkBinding, PreservedExtras};
 
-// Round 95 — fragment-identifier routing (SVG 2 §16.3.2 / §16.3.3).
+// Fragment-identifier routing (SVG 2 §16.3.2 / §16.3.3).
 mod fragment;
 pub use fragment::{resolve_fragment, ResolvedView};
 
-use oxideav_core::{
-    CodecCapabilities, CodecId, CodecInfo, CodecRegistry, ContainerRegistry, RuntimeContext,
+// ---- Framework integration (`registry` feature) ----
+#[cfg(feature = "registry")]
+pub use registry::{
+    document_from_frame, document_into_frame, make_decoder, make_encoder, register,
+    register_codecs, register_containers,
 };
-
-/// Register the SVG codec (decoder + encoder) on `reg`.
-pub fn register_codecs(reg: &mut CodecRegistry) {
-    let caps = CodecCapabilities::video("svg_sw")
-        .with_intra_only(true)
-        .with_lossless(true)
-        // SVG is resolution-independent — pick a generous cap that
-        // mirrors the rest of the image-format crates so the registry
-        // doesn't apply implementation-side limits.
-        .with_max_size(65535, 65535);
-    reg.register(
-        CodecInfo::new(CodecId::new(CODEC_ID_STR))
-            .capabilities(caps)
-            .decoder(make_decoder)
-            .encoder(make_encoder),
-    );
-}
-
-/// Register the SVG container (demuxer + muxer + extensions + probe).
-pub fn register_containers(reg: &mut ContainerRegistry) {
-    container::register(reg);
-}
-
-/// Unified registration entry point — installs the SVG codec into the
-/// codec sub-registry and the SVG container into the container
-/// sub-registry of the supplied [`RuntimeContext`].
-///
-/// Also wired into [`oxideav_meta::register_all`] via the
-/// [`oxideav_core::register!`] macro below.
-pub fn register(ctx: &mut RuntimeContext) {
-    register_codecs(&mut ctx.codecs);
-    register_containers(&mut ctx.containers);
-}
-
-oxideav_core::register!("svg", register);
+// The `oxideav_core::register!` dispatch entry must live at the crate
+// root for `oxideav_meta::register_all`.
+#[cfg(feature = "registry")]
+#[doc(hidden)]
+pub use registry::__oxideav_entry;
+#[cfg(feature = "registry")]
+#[allow(deprecated)]
+pub use registry::{
+    parse_svg, parse_svg_at, parse_svg_at_with_languages, parse_svg_with_extras, write_svg,
+    write_svg_with_extras,
+};
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn register_does_not_panic() {
-        let mut ctx = RuntimeContext::new();
-        register(&mut ctx);
-    }
-
-    #[test]
-    fn register_via_runtime_context_installs_both_sides() {
-        let mut ctx = RuntimeContext::new();
-        register(&mut ctx);
-        let id = CodecId::new(CODEC_ID_STR);
-        assert!(
-            ctx.codecs.has_decoder(&id),
-            "SVG decoder factory not installed via RuntimeContext"
-        );
-        assert!(
-            ctx.codecs.has_encoder(&id),
-            "SVG encoder factory not installed via RuntimeContext"
-        );
-        assert_eq!(
-            ctx.containers.container_for_extension("svg"),
-            Some("svg"),
-            "SVG container extension not installed via RuntimeContext"
-        );
-    }
 
     #[test]
     fn round_trip_single_rect() {
@@ -653,11 +660,24 @@ mod tests {
 <svg xmlns="http://www.w3.org/2000/svg" width="20" height="10" viewBox="0 0 20 10">
   <rect x="0" y="0" width="20" height="10" fill="#0000ff"/>
 </svg>"##;
-        let frame = parse_svg(src).unwrap();
-        let bytes = write_svg(&frame);
-        let frame2 = parse_svg(&bytes).unwrap();
-        assert_eq!(frame.width, frame2.width);
-        assert_eq!(frame.height, frame2.height);
-        assert_eq!(frame.root.children.len(), frame2.root.children.len());
+        let doc = parse(src).unwrap();
+        let bytes = write(&doc);
+        let doc2 = parse(&bytes).unwrap();
+        assert_eq!(doc.width, doc2.width);
+        assert_eq!(doc.height, doc2.height);
+        assert_eq!(doc.root.children.len(), doc2.root.children.len());
+        assert_eq!(write(&doc2), bytes, "writer output is a fixed point");
+    }
+
+    #[test]
+    fn contract_vocabulary_is_present() {
+        let src = br##"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="2"/>"##;
+        assert!(probe(src));
+        let i = info(src).unwrap();
+        assert_eq!((i.width, i.height, i.frames), (4, 2, 1));
+        assert_eq!(i.format, PixelFormat::Rgba);
+        assert!(matches!(decode(src), Err(Error::Unsupported(_))));
+        let _ = DecodeOptions::default().with_strict(true);
+        let _ = EncodeOptions::default().with_compress(true);
     }
 }

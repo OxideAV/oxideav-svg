@@ -5,7 +5,7 @@
 //! of nested elements would overflow the native stack and *abort* the
 //! process (SIGABRT, not a catchable panic). The parser now refuses to
 //! descend past [`oxideav_svg::parser::MAX_XML_DEPTH`] and returns a
-//! typed [`oxideav_core::Error`] instead. Because that guard fires
+//! typed [`oxideav_svg::Error`] instead. Because that guard fires
 //! during the lightweight tree build — before the much heavier decode
 //! descent — bounding the parse depth transitively bounds the decode
 //! depth: an over-limit document is rejected before the model-builder
@@ -58,7 +58,7 @@ fn parse_xml_accepts_nesting_at_the_limit() {
 
 #[test]
 fn deep_but_legal_decode_does_not_abort() {
-    // Full `parse_svg` decode of a legitimately-but-deeply nested
+    // Full `parse` decode of a legitimately-but-deeply nested
     // document. The model-builder frame is heavy, so this is exercised
     // on a thread with a generous stack — the point is that an
     // in-bounds document *decodes* rather than being spuriously
@@ -67,7 +67,7 @@ fn deep_but_legal_decode_does_not_abort() {
         .stack_size(16 * 1024 * 1024)
         .spawn(|| {
             let doc = nested_svg(MAX_XML_DEPTH - 2);
-            oxideav_svg::parse_svg(doc.as_bytes()).expect("in-bounds deep document must decode");
+            oxideav_svg::parse(doc.as_bytes()).expect("in-bounds deep document must decode");
         })
         .expect("spawn decode thread");
     handle.join().expect("decode thread must not abort");
@@ -77,7 +77,7 @@ fn deep_but_legal_decode_does_not_abort() {
 fn shallow_nesting_is_unaffected() {
     // Ordinary depth round-trips exactly as before.
     let doc = nested_svg(8);
-    let frame = oxideav_svg::parse_svg(doc.as_bytes()).expect("shallow decode");
-    let out = oxideav_svg::write_svg(&frame);
+    let frame = oxideav_svg::parse(doc.as_bytes()).expect("shallow decode");
+    let out = oxideav_svg::write(&frame);
     assert!(!out.is_empty());
 }

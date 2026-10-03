@@ -11,9 +11,9 @@
 
 #![cfg(feature = "text")]
 
-use oxideav_core::Node;
 use oxideav_scribe::{Face, FaceChain};
-use oxideav_svg::{parse_svg, text::set_font_resolver};
+use oxideav_svg::Node;
+use oxideav_svg::{parse, text::set_font_resolver};
 
 const FONT: &[u8] = include_bytes!("fixtures/DejaVuSansMono.ttf");
 
@@ -42,7 +42,7 @@ fn collect_translates(node: &Node, out: &mut Vec<(f32, f32)>) {
     }
 }
 
-fn text_groups(frame: &oxideav_core::VectorFrame) -> Vec<&oxideav_core::Group> {
+fn text_groups(frame: &oxideav_svg::SvgDocument) -> Vec<&oxideav_svg::Group> {
     frame
         .root
         .children
@@ -57,7 +57,7 @@ fn text_groups(frame: &oxideav_core::VectorFrame) -> Vec<&oxideav_core::Group> {
 /// Split a text Group's child placements into two buckets by y. The
 /// chunk fixtures here put the second `<tspan>` on a different baseline
 /// (`y="…"`) so glyph y-translates cleanly partition the two chunks.
-fn split_by_y(g: &oxideav_core::Group, threshold: f32) -> (Vec<f32>, Vec<f32>) {
+fn split_by_y(g: &oxideav_svg::Group, threshold: f32) -> (Vec<f32>, Vec<f32>) {
     let mut t = Vec::new();
     for c in &g.children {
         collect_translates(c, &mut t);
@@ -95,7 +95,7 @@ fn two_tspans_with_x_form_two_chunks_end_anchored() {
     <tspan x="400" y="100">BBB</tspan>
   </text>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let groups = text_groups(&frame);
     assert_eq!(groups.len(), 1);
     let (chunk_a, chunk_b) = split_by_y(groups[0], 75.0);
@@ -153,8 +153,8 @@ fn multi_chunk_matches_two_text_elements() {
   <text x="100" y="50" font-size="16" text-anchor="middle">AAA</text>
   <text x="400" y="100" font-size="16" text-anchor="middle">BBB</text>
 </svg>"##;
-    let frame_multi = parse_svg(src_multi).expect("parse multi");
-    let frame_split = parse_svg(src_split).expect("parse split");
+    let frame_multi = parse(src_multi).expect("parse multi");
+    let frame_split = parse(src_split).expect("parse split");
 
     let multi = text_groups(&frame_multi);
     let split = text_groups(&frame_split);
@@ -211,8 +211,8 @@ fn tspan_with_dx_only_stays_in_same_chunk() {
 <svg xmlns="http://www.w3.org/2000/svg" width="600" height="200">
   <text x="200" y="50" font-size="16" text-anchor="middle">A<tspan dx="20">B</tspan></text>
 </svg>"##;
-    let f_dx = parse_svg(src_dx).expect("parse dx");
-    let f_one = parse_svg(src_one).expect("parse one");
+    let f_dx = parse(src_dx).expect("parse dx");
+    let f_one = parse(src_one).expect("parse one");
     let g_dx = &text_groups(&f_dx)[0];
     let g_one = &text_groups(&f_one)[0];
     let mut t_dx = Vec::new();
@@ -250,7 +250,7 @@ fn chunk_picks_up_tspan_text_anchor_override() {
     <tspan x="400" y="100" text-anchor="end">BBB</tspan>
   </text>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let groups = text_groups(&frame);
     assert_eq!(groups.len(), 1);
     let (chunk_a, chunk_b) = split_by_y(groups[0], 75.0);
@@ -286,7 +286,7 @@ fn three_chunks_are_each_shifted_independently() {
     <tspan x="700" y="150">CCC</tspan>
   </text>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let groups = text_groups(&frame);
     assert_eq!(groups.len(), 1);
 

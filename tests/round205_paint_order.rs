@@ -17,13 +17,13 @@
 //!   * `PreservedExtras::paint_orders` side-channel — preserves the
 //!     author's keyword string for a byte-faithful round-trip.
 
-use oxideav_core::{Node, VectorFrame};
-use oxideav_svg::{parse_svg, parse_svg_with_extras, write_svg_with_extras};
+use oxideav_svg::{parse, parse_with_extras, write_with_extras};
+use oxideav_svg::{Node, SvgDocument};
 
 /// Count the number of `Node::Path` leaves under the first scene-graph
 /// child. The round-205 `paint-order: stroke fill` split produces two
 /// PathNodes where the round-1 default produces one.
-fn count_paths(frame: &VectorFrame) -> usize {
+fn count_paths(frame: &SvgDocument) -> usize {
     fn walk(node: &Node) -> usize {
         match node {
             Node::Path(_) => 1,
@@ -38,7 +38,7 @@ fn count_paths(frame: &VectorFrame) -> usize {
 /// Collect `(has_fill, has_stroke)` for every `Node::Path` leaf in the
 /// scene graph, in scene-graph order. Used to verify the round-205
 /// stroke-first split lays down the stroke leaf before the fill leaf.
-fn fill_stroke_signatures(frame: &VectorFrame) -> Vec<(bool, bool)> {
+fn fill_stroke_signatures(frame: &SvgDocument) -> Vec<(bool, bool)> {
     fn walk(node: &Node, out: &mut Vec<(bool, bool)>) {
         match node {
             Node::Path(p) => out.push((p.fill.is_some(), p.stroke.is_some())),
@@ -69,7 +69,7 @@ fn normal_default_emits_single_path_node_with_both_fills() {
 <svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">
   <rect x="0" y="0" width="100" height="100" fill="red" stroke="blue" stroke-width="4"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     assert_eq!(count_paths(&frame), 1, "default normal: one PathNode");
     let sigs = fill_stroke_signatures(&frame);
     assert_eq!(sigs, vec![(true, true)], "fill + stroke on same leaf");
@@ -82,7 +82,7 @@ fn explicit_normal_keyword_matches_default() {
   <rect x="0" y="0" width="100" height="100"
         fill="red" stroke="blue" stroke-width="4" paint-order="normal"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     assert_eq!(count_paths(&frame), 1);
     assert_eq!(fill_stroke_signatures(&frame), vec![(true, true)]);
 }
@@ -98,7 +98,7 @@ fn paint_order_stroke_splits_into_two_path_nodes_stroke_first() {
   <rect x="0" y="0" width="100" height="100"
         fill="red" stroke="blue" stroke-width="12" paint-order="stroke"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     assert_eq!(count_paths(&frame), 2, "split into stroke + fill nodes");
     let sigs = fill_stroke_signatures(&frame);
     // First leaf: stroke only. Second leaf: fill only.
@@ -117,7 +117,7 @@ fn paint_order_stroke_fill_explicit_pair_same_behaviour() {
   <rect x="0" y="0" width="100" height="100"
         fill="red" stroke="blue" stroke-width="12" paint-order="stroke fill"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let sigs = fill_stroke_signatures(&frame);
     assert_eq!(sigs, vec![(false, true), (true, false)]);
 }
@@ -125,7 +125,7 @@ fn paint_order_stroke_fill_explicit_pair_same_behaviour() {
 #[test]
 fn paint_order_stroke_fill_markers_full_three_keyword_form() {
     // `stroke fill markers` — explicit form with markers slot at the
-    // end. `oxideav_core::Node` has no Marker variant yet, so markers
+    // end. `oxideav_svg::Node` has no Marker variant yet, so markers
     // doesn't emit a node but the stroke-first split is honoured.
     let src = br##"<?xml version="1.0"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">
@@ -133,7 +133,7 @@ fn paint_order_stroke_fill_markers_full_three_keyword_form() {
         fill="red" stroke="blue" stroke-width="12"
         paint-order="stroke fill markers"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     assert_eq!(count_paths(&frame), 2);
 }
 
@@ -147,7 +147,7 @@ fn paint_order_fill_stroke_explicit_normal_no_split() {
   <rect x="0" y="0" width="100" height="100"
         fill="red" stroke="blue" stroke-width="4" paint-order="fill stroke"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     assert_eq!(count_paths(&frame), 1);
     assert_eq!(fill_stroke_signatures(&frame), vec![(true, true)]);
 }
@@ -163,7 +163,7 @@ fn paint_order_markers_only_means_normal_for_node_emission() {
   <rect x="0" y="0" width="100" height="100"
         fill="red" stroke="blue" stroke-width="4" paint-order="markers"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     assert_eq!(count_paths(&frame), 1);
 }
 
@@ -177,7 +177,7 @@ fn paint_order_stroke_without_a_stroke_emits_one_fill_only_path() {
 <svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">
   <rect x="0" y="0" width="100" height="100" fill="red" paint-order="stroke"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     assert_eq!(count_paths(&frame), 1);
     assert_eq!(fill_stroke_signatures(&frame), vec![(true, false)]);
 }
@@ -191,7 +191,7 @@ fn paint_order_unknown_keyword_falls_back_to_normal() {
   <rect x="0" y="0" width="100" height="100"
         fill="red" stroke="blue" stroke-width="4" paint-order="bogus"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     assert_eq!(count_paths(&frame), 1);
     assert_eq!(fill_stroke_signatures(&frame), vec![(true, true)]);
 }
@@ -210,7 +210,7 @@ fn paint_order_inherited_from_g_ancestor() {
           fill="red" stroke="blue" stroke-width="12"/>
   </g>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     // The split lives somewhere under the outer `<g>` group — the
     // total leaf count is 2 (stroke + fill).
     assert_eq!(count_paths(&frame), 2);
@@ -228,7 +228,7 @@ fn paint_order_via_style_attribute_resolves_through_cascade() {
         fill="red" stroke="blue" stroke-width="12"
         style="paint-order: stroke;"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     assert_eq!(count_paths(&frame), 2);
 }
 
@@ -243,7 +243,7 @@ fn paint_order_via_style_block_rule_resolves_through_cascade() {
   <rect x="0" y="0" width="100" height="100"
         fill="red" stroke="blue" stroke-width="12"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     assert_eq!(count_paths(&frame), 2);
 }
 
@@ -256,21 +256,21 @@ fn paint_order_attribute_round_trips_via_extras() {
   <rect x="0" y="0" width="100" height="100"
         fill="red" stroke="blue" stroke-width="12" paint-order="stroke"/>
 </svg>"##;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(
         extras.paint_orders.len(),
         1,
         "one paint-order binding captured"
     );
     assert_eq!(extras.paint_orders[0].paint_order, "stroke");
-    let out = write_svg_with_extras(&frame, &extras);
+    let out = write_with_extras(&frame, &extras);
     let out_str = std::str::from_utf8(&out).unwrap();
     assert!(
         out_str.contains("paint-order=\"stroke\""),
         "expected paint-order attribute in output, got:\n{out_str}"
     );
     // Sanity round-trip: re-parsing the output preserves the split.
-    let (frame2, extras2) = parse_svg_with_extras(&out).unwrap();
+    let (frame2, extras2) = parse_with_extras(&out).unwrap();
     assert_eq!(count_paths(&frame2), 2);
     assert_eq!(extras2.paint_orders.len(), 1);
     assert_eq!(extras2.paint_orders[0].paint_order, "stroke");
@@ -286,9 +286,9 @@ fn paint_order_three_keyword_form_round_trips_canonical() {
         fill="red" stroke="blue" stroke-width="12"
         paint-order="Stroke  Fill  Markers"/>
 </svg>"##;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.paint_orders[0].paint_order, "stroke fill markers");
-    let out = write_svg_with_extras(&frame, &extras);
+    let out = write_with_extras(&frame, &extras);
     let out_str = std::str::from_utf8(&out).unwrap();
     assert!(out_str.contains("paint-order=\"stroke fill markers\""));
 }
@@ -303,7 +303,7 @@ fn paint_order_normal_or_absent_does_not_record_a_binding() {
         fill="red" stroke="blue" paint-order="normal"/>
   <rect x="0" y="0" width="100" height="100" fill="red" stroke="blue"/>
 </svg>"##;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(
         extras.paint_orders.is_empty(),
         "no bindings expected for normal / absent paint-order"

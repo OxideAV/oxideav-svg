@@ -13,11 +13,11 @@
 //! Source of truth: `docs/image/svg/svg11-second-edition.pdf` §11.5
 //! ("Controlling visibility").
 
-use oxideav_core::{Node, PathNode};
-use oxideav_svg::parse_svg;
+use oxideav_svg::parse;
+use oxideav_svg::{Node, PathNode};
 
 /// Find every `Node::Path` in the scene graph, in pre-order.
-fn all_paths(frame: &oxideav_core::VectorFrame) -> Vec<&PathNode> {
+fn all_paths(frame: &oxideav_svg::SvgDocument) -> Vec<&PathNode> {
     fn walk<'a>(n: &'a Node, out: &mut Vec<&'a PathNode>) {
         match n {
             Node::Path(p) => out.push(p),
@@ -51,7 +51,7 @@ fn display_none_attribute_drops_shape() {
   <rect x="0" y="0" width="10" height="10" fill="#ff0000"/>
   <rect x="0" y="0" width="10" height="10" fill="#00ff00" display="none"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let paths = all_paths(&frame);
     assert_eq!(paths.len(), 1, "display:none rect must not be in the tree");
 }
@@ -64,7 +64,7 @@ fn display_inline_renders_normally() {
   <rect x="0" y="0" width="10" height="10" fill="#ff0000" display="inline"/>
   <rect x="0" y="0" width="10" height="10" fill="#00ff00" display="block"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     assert_eq!(all_paths(&frame).len(), 2);
 }
 
@@ -80,7 +80,7 @@ fn display_none_on_group_drops_whole_subtree() {
   </g>
   <rect x="0" y="0" width="10" height="10" fill="#0000ff"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let paths = all_paths(&frame);
     assert_eq!(paths.len(), 1, "only the sibling rect survives");
 }
@@ -95,7 +95,7 @@ fn display_none_via_css_drops_shape() {
   <rect class="hidden" x="0" y="0" width="10" height="10" fill="#ff0000"/>
   <rect x="0" y="0" width="10" height="10" fill="#00ff00"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     assert_eq!(all_paths(&frame).len(), 1);
 }
 
@@ -114,7 +114,7 @@ fn display_is_not_inherited() {
     <rect x="0" y="0" width="10" height="10" fill="#00ff00"/>
   </g>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     // The display:none rect is dropped; its sibling (which does NOT
     // inherit display:none) renders.
     assert_eq!(all_paths(&frame).len(), 1);
@@ -133,7 +133,7 @@ fn display_none_definition_still_referenced_by_use() {
   </defs>
   <use href="#box"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let paths = all_paths(&frame);
     assert_eq!(
         paths.len(),
@@ -157,7 +157,7 @@ fn use_instance_root_exempt_but_nested_display_none_still_drops() {
   </defs>
   <use href="#grp"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let paths = all_paths(&frame);
     // The group root is exempt (renders); its inner display:none rect
     // still drops, so only the first rect survives.
@@ -177,7 +177,7 @@ fn visibility_hidden_keeps_node_but_paints_nothing() {
 <svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">
   <rect x="0" y="0" width="10" height="10" fill="#ff0000" visibility="hidden"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let paths = all_paths(&frame);
     assert_eq!(paths.len(), 1, "hidden node stays in the tree");
     assert!(paths[0].fill.is_none(), "hidden element paints no fill");
@@ -190,7 +190,7 @@ fn visibility_collapse_is_treated_as_hidden() {
 <svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">
   <rect x="0" y="0" width="10" height="10" fill="#ff0000" stroke="#00ff00" stroke-width="2" visibility="collapse"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let paths = all_paths(&frame);
     assert_eq!(paths.len(), 1);
     assert!(paths[0].fill.is_none());
@@ -209,7 +209,7 @@ fn visibility_inherits_then_child_overrides_to_visible() {
     <rect x="0" y="0" width="10" height="10" fill="#00ff00" visibility="visible"/>
   </g>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let paths = all_paths(&frame);
     assert_eq!(paths.len(), 2, "both shapes stay in the tree");
     // First inherits hidden → no fill; second overrides to visible.
@@ -227,7 +227,7 @@ fn visibility_hidden_via_css() {
   <style>rect { visibility: hidden; }</style>
   <rect x="0" y="0" width="10" height="10" fill="#ff0000"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let paths = all_paths(&frame);
     assert_eq!(paths.len(), 1);
     assert!(
@@ -244,7 +244,7 @@ fn visibility_visible_default_paints() {
 <svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">
   <rect x="0" y="0" width="10" height="10" fill="#ff0000"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let paths = all_paths(&frame);
     assert_eq!(paths.len(), 1);
     assert!(
@@ -260,6 +260,6 @@ fn display_none_beats_visibility_on_same_element() {
 <svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">
   <rect x="0" y="0" width="10" height="10" fill="#ff0000" display="none" visibility="visible"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     assert_eq!(all_paths(&frame).len(), 0);
 }

@@ -1,20 +1,20 @@
 //! Round 4 — encoder-side preservation of source XML elements that
-//! `oxideav_core::Node` doesn't represent natively.
+//! `crate::model::Node` doesn't represent natively.
 //!
 //! The decoder produces a [`VectorFrame`] whose scene graph holds only
 //! shapes / groups / soft-masks / images. Round 1-3 already throws
 //! away the original `<style>`, `<filter>`, `<animate>` definitions —
 //! they're either consumed (snapshot at t=0) or held only as parser
-//! side tables. After `parse → write_svg`, a round-trip therefore loses
+//! side tables. After `parse → write`, a round-trip therefore loses
 //! the dynamic / filter / CSS pieces.
 //!
 //! Round 4 introduces an out-of-band [`PreservedExtras`] container.
 //! Callers who care about lossless round-tripping use the paired API:
 //!
 //! ```ignore
-//! let (frame, extras) = oxideav_svg::parse_svg_with_extras(bytes)?;
+//! let (frame, extras) = oxideav_svg::parse_with_extras(bytes)?;
 //! // ...mutate frame...
-//! let bytes = oxideav_svg::write_svg_with_extras(&frame, &extras);
+//! let bytes = oxideav_svg::write_with_extras(&frame, &extras);
 //! ```
 //!
 //! `extras` carries each `<style>`, `<filter>`, `<animate>` (and
@@ -31,9 +31,9 @@ use crate::parser::Element;
 /// Side-channel buffer of source-XML fragments the encoder needs to
 /// re-emit alongside the [`VectorFrame`] scene graph.
 ///
-/// Populated by [`crate::decoder::parse_svg_with_extras`] during the
+/// Populated by [`crate::decoder::parse_with_extras`] during the
 /// document pre-walk; consumed by
-/// [`crate::encoder::write_svg_with_extras`].
+/// [`crate::encoder::write_with_extras`].
 #[derive(Clone, Debug, Default)]
 pub struct PreservedExtras {
     /// `<style>` element bodies (CSS source). Kept verbatim so an
@@ -72,7 +72,7 @@ pub struct PreservedExtras {
     /// Round 12 — verbatim text of the root `<svg>` element's
     /// `preserveAspectRatio` attribute (e.g. `"xMinYMid slice"`). The
     /// decoder bakes the spec-mandated mapping into
-    /// [`oxideav_core::VectorFrame::root.transform`] so rasterisers
+    /// [`crate::model::VectorFrame::root.transform`] so rasterisers
     /// without aspect-ratio knowledge produce the correct visual
     /// result; this side-channel preserves the original keyword pair
     /// so the encoder can re-emit it verbatim.
@@ -92,7 +92,7 @@ pub struct PreservedExtras {
     ///    the document with a parent-id comment hint (the round-12
     ///    fallback).
     ///
-    /// Built only by [`crate::decoder::parse_svg_with_extras`]. Empty
+    /// Built only by [`crate::decoder::parse_with_extras`]. Empty
     /// for documents that have no id-bearing elements.
     pub id_paths: Vec<IdScenePath>,
     /// Round 20 — `<pattern>` paint-server definitions captured
@@ -112,7 +112,7 @@ pub struct PreservedExtras {
     /// children, content shapes, and any attributes the typed view
     /// doesn't model). The encoder re-emits each in a `<defs>` block so
     /// a `parse → write` round-trip preserves the marker definition.
-    /// `oxideav_core::Node` has no `Marker` construct, so the marker is
+    /// `crate::model::Node` has no `Marker` construct, so the marker is
     /// never drawn into the rasterised scene graph — only preserved.
     pub markers: Vec<Element>,
     /// Round 81 — `<linearGradient>` / `<radialGradient>` paint-server
@@ -123,7 +123,7 @@ pub struct PreservedExtras {
     /// `gradientUnits` / `gradientTransform` / `href` /
     /// `xlink:href` exactly as authored, plus any author-specified
     /// attribute ordering. The encoder re-emits each in a `<defs>`
-    /// block so a `parse → write_svg_with_extras` round-trip preserves
+    /// block so a `parse → write_with_extras` round-trip preserves
     /// the paint server alongside the flattened scene graph.
     pub gradients: Vec<Element>,
     /// Round 15 — `<image>` elements captured from the source SVG.
@@ -134,7 +134,7 @@ pub struct PreservedExtras {
     /// element at the trailing edge of the document, preserving the
     /// data URI / external URL and dimensions for round-trip.
     ///
-    /// `oxideav_core::Node::Image` requires a fully-decoded
+    /// `crate::model::Node::Image` requires a fully-decoded
     /// `VideoFrame`; round 15 deliberately avoids pulling
     /// oxideav-png / oxideav-jpeg / oxideav-webp into the SVG crate's
     /// dep tree by carrying the raster payload as opaque bytes here
@@ -152,14 +152,14 @@ pub struct PreservedExtras {
     /// `geometric_length / pathLength` ratio (per §9.6.1), so the
     /// emitted document with this attribute carries the same visual
     /// dash pattern as the source. Populated only by
-    /// [`crate::decoder::parse_svg_with_extras`].
+    /// [`crate::decoder::parse_with_extras`].
     pub path_lengths: Vec<PathLengthBinding>,
     /// Round 95 — `<view>` element trees captured verbatim from the
     /// source SVG. The verbatim element is the round-trip source of
     /// truth so attribute ordering, descriptive children (`<title>` /
     /// `<desc>` / `<metadata>`), and any attributes the typed view
-    /// doesn't yet model survive a `parse_svg_with_extras →
-    /// write_svg_with_extras` cycle. The typed view (keyed by `id`)
+    /// doesn't yet model survive a `parse_with_extras →
+    /// write_with_extras` cycle. The typed view (keyed by `id`)
     /// rides on [`typed_views`](Self::typed_views) for fragment-
     /// identifier resolution via [`crate::resolve_fragment`].
     pub views: Vec<Element>,
@@ -169,18 +169,18 @@ pub struct PreservedExtras {
     /// id-bearing `<view>` elements.
     pub typed_views: HashMap<String, ViewDef>,
     /// Round 115 — SVG 2 §16.5 `<a>` hyperlink bindings, recorded per
-    /// emitted [`oxideav_core::Node::Group`] so the encoder can wrap the
+    /// emitted [`crate::model::Node::Group`] so the encoder can wrap the
     /// `<g>` back in its `<a href="...">…</a>` element on round-trip.
     ///
     /// `<a>` is a *container + renderable* element: it renders its
     /// children exactly like `<g>` (transform / opacity / paint
     /// cascade), so the decoder produces a `Node::Group` for it. But
-    /// `oxideav_core::Group` has no hyperlink field, so the link target
+    /// `crate::model::Group` has no hyperlink field, so the link target
     /// and its companion HTML attributes (`target` / `download` /
     /// `ping` / `rel` / `hreflang` / `type` / `referrerpolicy`) are
     /// stowed here keyed by the group's scene-graph tree-path (same
     /// layout as [`id_paths`](Self::id_paths)). Populated only by
-    /// [`crate::decoder::parse_svg_with_extras`].
+    /// [`crate::decoder::parse_with_extras`].
     pub links: Vec<LinkBinding>,
     /// Round 122 — SVG 2 §5.8 `<title>` descriptive-element bindings,
     /// keyed by the scene-graph tree-path of the *parent* container
@@ -192,7 +192,7 @@ pub struct PreservedExtras {
     /// at render / serialise time. `<title>` is never-rendered (the UA
     /// stylesheet forces `display:none`), so it produces no scene-graph
     /// node — the binding is the round-trip source of truth.
-    /// Populated only by [`crate::decoder::parse_svg_with_extras`].
+    /// Populated only by [`crate::decoder::parse_with_extras`].
     pub titles: Vec<DescriptiveBinding>,
     /// Round 122 — SVG 2 §5.8 `<desc>` descriptive-element bindings.
     /// Same layout as [`titles`](Self::titles) — keyed by the parent
@@ -200,7 +200,7 @@ pub struct PreservedExtras {
     /// in document order with its optional `lang` / `xml:lang`. `<desc>`
     /// is never-rendered (same UA `display:none` rule) so the binding
     /// is the only round-trip carrier. Populated only by
-    /// [`crate::decoder::parse_svg_with_extras`].
+    /// [`crate::decoder::parse_with_extras`].
     pub descs: Vec<DescriptiveBinding>,
     /// Round 122 — SVG 2 §5.9 `<metadata>` element trees captured
     /// verbatim from the source SVG. The `<metadata>` content model is
@@ -223,9 +223,9 @@ pub struct PreservedExtras {
     /// order to the scene graph (splitting fill+stroke into two
     /// PathNodes when the stroke must paint first); this side-channel
     /// preserves the **author's original keyword string** so a
-    /// `parse_svg_with_extras → write_svg_with_extras` cycle emits
+    /// `parse_with_extras → write_with_extras` cycle emits
     /// the source-equivalent attribute. Populated only by
-    /// [`crate::decoder::parse_svg_with_extras`].
+    /// [`crate::decoder::parse_with_extras`].
     pub paint_orders: Vec<PaintOrderBinding>,
     /// Round 209 — SVG 2 §8.13 `vector-effect` source-text bindings,
     /// recorded per emitted shape (or `<use>` group) so the encoder can
@@ -233,7 +233,7 @@ pub struct PreservedExtras {
     /// on round-trip. The property is NOT inherited per §8.13, so a
     /// binding records exactly where the author wrote the attribute —
     /// the decoder never propagates the value to descendants. Populated
-    /// only by [`crate::decoder::parse_svg_with_extras`].
+    /// only by [`crate::decoder::parse_with_extras`].
     pub vector_effects: Vec<VectorEffectBinding>,
     /// Round 215 — SVG 1.1 §14.3.5 `clip-rule` bindings, recorded per
     /// captured `<clipPath id="...">` so the encoder can re-emit
@@ -243,7 +243,7 @@ pub struct PreservedExtras {
     /// graphics elements that are contained within a 'clipPath'
     /// element"), so the binding keys on the source `<clipPath>` id
     /// instead of a scene-graph tree-path. Populated only by
-    /// [`crate::decoder::parse_svg_with_extras`].
+    /// [`crate::decoder::parse_with_extras`].
     pub clip_rules: Vec<ClipRuleBinding>,
     /// Round 221 — SVG 2 §13.10.2 `shape-rendering` source-text
     /// bindings, recorded per emitted shape so the encoder can re-emit
@@ -254,7 +254,7 @@ pub struct PreservedExtras {
     /// exactly where the author wrote the attribute (the topmost emit
     /// site for the shape, mirroring the round-205 `paint-order` and
     /// round-209 `vector-effect` carriers). Populated only by
-    /// [`crate::decoder::parse_svg_with_extras`].
+    /// [`crate::decoder::parse_with_extras`].
     pub shape_renderings: Vec<ShapeRenderingBinding>,
     /// Round 228 — SVG 2 §13.10.3 `text-rendering` source-text
     /// bindings, recorded per emitted `<text>` so the encoder can
@@ -264,7 +264,7 @@ pub struct PreservedExtras {
     /// §13.10.3, but the binding is purely lexical so the round-trip
     /// preserves exactly where the author wrote the attribute (the
     /// topmost emit site for the run). Populated only by
-    /// [`crate::decoder::parse_svg_with_extras`].
+    /// [`crate::decoder::parse_with_extras`].
     pub text_renderings: Vec<TextRenderingBinding>,
     /// Round 247 — SVG 2 §13.10.1 `color-rendering` source-text
     /// bindings, recorded per emitted shape / `<g>` so the encoder can
@@ -274,7 +274,7 @@ pub struct PreservedExtras {
     /// §13.10.1, but the binding is purely lexical so the round-trip
     /// preserves exactly where the author wrote the attribute (the
     /// topmost emit site for the element). Populated only by
-    /// [`crate::decoder::parse_svg_with_extras`].
+    /// [`crate::decoder::parse_with_extras`].
     pub color_renderings: Vec<ColorRenderingBinding>,
     /// Round 252 — SVG 2 §13.9 `color-interpolation` source-text
     /// bindings, recorded per emitted shape / `<g>` so the encoder can
@@ -283,7 +283,7 @@ pub struct PreservedExtras {
     /// the property is inherited per §13.9, but the binding is purely
     /// lexical so the round-trip preserves exactly where the author
     /// wrote the attribute (the topmost emit site for the element).
-    /// Populated only by [`crate::decoder::parse_svg_with_extras`].
+    /// Populated only by [`crate::decoder::parse_with_extras`].
     ///
     /// §13.9 selects the working colour space for gradient stop
     /// interpolation, SMIL colour animation, and graphics-element
@@ -299,7 +299,7 @@ pub struct PreservedExtras {
     /// inherited per CSS 2.1 the round-trip still captures exactly
     /// where the author wrote the attribute (the topmost emit site
     /// for the element). Populated only by
-    /// [`crate::decoder::parse_svg_with_extras`].
+    /// [`crate::decoder::parse_with_extras`].
     ///
     /// §3.11 selects whether a UA establishes a clipping rectangle
     /// for an element's content; the actual clipping behaviour +
@@ -314,7 +314,7 @@ pub struct PreservedExtras {
     /// inherited per §15.6, but the binding is purely lexical so the
     /// round-trip preserves exactly where the author wrote the
     /// attribute (the topmost emit site for the element). Populated
-    /// only by [`crate::decoder::parse_svg_with_extras`].
+    /// only by [`crate::decoder::parse_with_extras`].
     ///
     /// §15.6 selects the circumstances under which an element can be
     /// the target of a pointer event (mouse click, hover, hyperlink);
@@ -331,7 +331,7 @@ pub struct PreservedExtras {
     /// purely lexical so the round-trip preserves exactly where the
     /// author wrote the attribute (the topmost emit site for the
     /// element). Populated only by
-    /// [`crate::decoder::parse_svg_with_extras`].
+    /// [`crate::decoder::parse_with_extras`].
     ///
     /// §16.8.2 selects the cursor displayed while the pointing device
     /// hovers the element — zero or more `<funciri>` custom-cursor
@@ -346,7 +346,7 @@ pub struct PreservedExtras {
     /// property is NOT inherited per §10.9.2, but the binding is purely
     /// lexical so the round-trip preserves exactly where the author
     /// wrote the attribute (the topmost emit site for the element).
-    /// Populated only by [`crate::decoder::parse_svg_with_extras`].
+    /// Populated only by [`crate::decoder::parse_with_extras`].
     ///
     /// §10.9.2 selects the scaled-baseline-table that positions the
     /// glyphs of a text content element; the actual baseline-table
@@ -354,9 +354,9 @@ pub struct PreservedExtras {
     /// `oxideav-raster`.
     pub dominant_baselines: Vec<DominantBaselineBinding>,
     /// Round 372 — SVG 2 §5.6 `<use>` reference bindings, recorded per
-    /// emitted [`oxideav_core::Node::Group`] (the decoder instantiates
+    /// emitted [`crate::model::Node::Group`] (the decoder instantiates
     /// each `<use>` as a `Group` wrapping the referenced element's
-    /// flattened geometry). `oxideav_core::Group` has no "this group is
+    /// flattened geometry). `crate::model::Group` has no "this group is
     /// a `<use>` instance of #id" field, so the structural reference
     /// identity (`href` + `x`/`y`/`width`/`height` + the `<use>`'s own
     /// `transform`) is stowed here keyed by the group's scene-graph
@@ -364,11 +364,11 @@ pub struct PreservedExtras {
     /// encoder, when it reaches a group whose path matches a binding,
     /// emits `<use href="#id" …/>` and **skips re-walking the
     /// instantiated children** — collapsing the flattened geometry back
-    /// to the source `<use>` so a `parse_svg_with_extras →
-    /// write_svg_with_extras` cycle preserves the reference structure
+    /// to the source `<use>` so a `parse_with_extras →
+    /// write_with_extras` cycle preserves the reference structure
     /// (and the document stays small instead of inlining the target N
     /// times). Populated only by
-    /// [`crate::decoder::parse_svg_with_extras`].
+    /// [`crate::decoder::parse_with_extras`].
     pub uses: Vec<UseBinding>,
     /// Round 372 — verbatim `<defs>`-housed reference targets that
     /// produce no scene-graph node of their own (SVG 1.1 §5.5). A
@@ -383,13 +383,13 @@ pub struct PreservedExtras {
     /// block so a `<use href="#id">` the encoder produces (see
     /// [`Self::uses`]) still resolves after round-trip. Captured
     /// verbatim (attribute ordering + descendant structure preserved).
-    /// Populated only by [`crate::decoder::parse_svg_with_extras`].
+    /// Populated only by [`crate::decoder::parse_with_extras`].
     pub defs_targets: Vec<Element>,
     /// Round 372 — SVG 2 §5.7 `<switch>` verbatim bindings, recorded per
-    /// emitted [`oxideav_core::Node::Group`] (the decoder renders the
+    /// emitted [`crate::model::Node::Group`] (the decoder renders the
     /// first child whose conditional-processing attributes test true and
     /// wraps it in a `Group`, discarding the unselected alternatives and
-    /// the `<switch>` element identity). `oxideav_core::Group` cannot
+    /// the `<switch>` element identity). `crate::model::Group` cannot
     /// represent "first-match container", so the whole `<switch>`
     /// subtree — every alternative + their `requiredExtensions` /
     /// `requiredFeatures` / `systemLanguage` conditional attributes — is
@@ -397,11 +397,11 @@ pub struct PreservedExtras {
     /// (same layout as [`id_paths`](Self::id_paths)). On write the
     /// encoder replaces the matching `Group` with the verbatim
     /// `<switch>` and skips re-walking the selected child, so a
-    /// `parse_svg_with_extras → write_svg_with_extras` cycle preserves
+    /// `parse_with_extras → write_with_extras` cycle preserves
     /// the conditional structure (and re-parsing under a *different*
     /// `systemLanguage` re-selects correctly rather than being frozen on
     /// the first decode's choice). Populated only by
-    /// [`crate::decoder::parse_svg_with_extras`].
+    /// [`crate::decoder::parse_with_extras`].
     pub switches: Vec<SwitchBinding>,
     /// Round 372 — SVG 1.1 §15 `filter="url(#id)"` reference bindings,
     /// recorded per emitted node so the encoder can re-attach the
@@ -412,22 +412,22 @@ pub struct PreservedExtras {
     /// graphics element to the filter was dropped on write, orphaning
     /// the def. This binding records the original `url(#id)` text keyed
     /// by the wrapper group's scene-graph tree-path (same layout as
-    /// [`id_paths`](Self::id_paths)) so a `parse_svg_with_extras →
-    /// write_svg_with_extras` cycle re-emits `filter="url(#id)"` on the
+    /// [`id_paths`](Self::id_paths)) so a `parse_with_extras →
+    /// write_with_extras` cycle re-emits `filter="url(#id)"` on the
     /// matching `<g>`, reconnecting the graphics element to its
     /// preserved filter. Populated only by
-    /// [`crate::decoder::parse_svg_with_extras`].
+    /// [`crate::decoder::parse_with_extras`].
     pub filter_refs: Vec<FilterRefBinding>,
     /// Round 372 — verbatim `<clipPath>` def elements (SVG 1.1 §14.3).
     /// The decoder collapses each referenced clip path into a single
-    /// merged `oxideav_core::Path` on `Group.clip` (baking per-shape
+    /// merged `crate::model::Path` on `Group.clip` (baking per-shape
     /// transforms in, dropping `clipPathUnits`, the original `id`, and
     /// the multi-shape structure). The encoder normally re-synthesises a
     /// `<clipPath id="clip{N}">` from that merged path; when a clip
     /// reference is bound (see [`Self::clip_refs`]) it instead re-emits
     /// the verbatim def captured here so the original id / units /
     /// shapes survive. Populated only by
-    /// [`crate::decoder::parse_svg_with_extras`].
+    /// [`crate::decoder::parse_with_extras`].
     pub clip_paths_raw: Vec<Element>,
     /// Round 372 — verbatim `<mask>` def elements (SVG 1.1 §14.4). Same
     /// role as [`Self::clip_paths_raw`] for the soft-mask path: the
@@ -437,7 +437,7 @@ pub struct PreservedExtras {
     /// region). When the mask reference is bound (see [`Self::mask_refs`])
     /// the encoder re-emits this verbatim def instead of the synthesised
     /// `<mask id="mask{N}">`. Populated only by
-    /// [`crate::decoder::parse_svg_with_extras`].
+    /// [`crate::decoder::parse_with_extras`].
     pub masks_raw: Vec<Element>,
     /// Round 372 — `clip-path="url(#id)"` reference bindings (SVG 1.1
     /// §14.3.1), keyed by the **merged-clip-path fingerprint** the
@@ -450,28 +450,28 @@ pub struct PreservedExtras {
     /// fingerprint (not tree-path) naturally handles the
     /// `filter(mask(clip(node)))` wrapper stack where the clip group's
     /// scene-graph path is aliased. Populated only by
-    /// [`crate::decoder::parse_svg_with_extras`].
+    /// [`crate::decoder::parse_with_extras`].
     pub clip_refs: Vec<RefBinding>,
     /// Round 372 — `mask="url(#id)"` reference bindings (SVG 1.1 §14.4),
     /// the soft-mask analogue of [`Self::clip_refs`]. Keyed by the
     /// **mask-subtree fingerprint** the encoder's `MaskCollector` uses
     /// for its dedup (`"{MaskKind:?}:{node_fingerprint}"`). Populated
-    /// only by [`crate::decoder::parse_svg_with_extras`].
+    /// only by [`crate::decoder::parse_with_extras`].
     pub mask_refs: Vec<RefBinding>,
     /// Round 372 — SVG 2 §13.7.4 `marker-start` / `marker-mid` /
     /// `marker-end` (and the `marker` shorthand) reference bindings,
     /// recorded per emitted shape so the encoder can re-attach the
-    /// vertex-marker references on round-trip. `oxideav_core::Node` has
+    /// vertex-marker references on round-trip. `crate::model::Node` has
     /// no marker construct (vertex placement is deferred to a core
     /// `Marker` node), so the shape's marker references were dropped on
     /// write even though the `<marker>` def itself rides
     /// [`Self::markers`] verbatim — orphaning the def. This binding
     /// records the verbatim `marker-*` attribute text keyed by the
     /// shape's scene-graph tree-path (same layout as
-    /// [`id_paths`](Self::id_paths)) so a `parse_svg_with_extras →
-    /// write_svg_with_extras` cycle re-emits `marker-start="url(#id)"`
+    /// [`id_paths`](Self::id_paths)) so a `parse_with_extras →
+    /// write_with_extras` cycle re-emits `marker-start="url(#id)"`
     /// etc. on the matching `<path>` / `<g>`. Populated only by
-    /// [`crate::decoder::parse_svg_with_extras`].
+    /// [`crate::decoder::parse_with_extras`].
     pub marker_refs: Vec<MarkerRefBinding>,
     /// Round 449 — `<text>` elements captured verbatim, keyed by the
     /// scene-graph tree-path of the node the decoder produced for the
@@ -480,13 +480,13 @@ pub struct PreservedExtras {
     /// font resolver is installed), which loses the source string, the
     /// font selection properties, the `<tspan>` per-character
     /// positioning arrays (`x` / `y` / `dx` / `dy` / `rotate`), and any
-    /// `<textPath>` layout — none of which `oxideav_core::Node` can
+    /// `<textPath>` layout — none of which `crate::model::Node` can
     /// model. The verbatim element restores full write-side fidelity: a
-    /// `parse_svg_with_extras → write_svg_with_extras` round-trip
+    /// `parse_with_extras → write_with_extras` round-trip
     /// replaces the flattened node with the source `<text>…</text>`
     /// (every attribute + child span verbatim), so a re-parse recovers
     /// the identical text layout. Populated only by
-    /// [`crate::decoder::parse_svg_with_extras`].
+    /// [`crate::decoder::parse_with_extras`].
     pub texts: Vec<TextBinding>,
     /// Round 449 — SMIL animation elements keyed by the scene-graph
     /// tree-path of their *direct parent* element. The round-13
@@ -502,7 +502,7 @@ pub struct PreservedExtras {
     /// path, and any [`Self::animations`] fragment structurally equal
     /// to a path-routed (or verbatim-carried) animation is suppressed
     /// so each source animation is emitted exactly once. Populated only
-    /// by [`crate::decoder::parse_svg_with_extras`].
+    /// by [`crate::decoder::parse_with_extras`].
     pub anim_targets: Vec<AnimTargetBinding>,
     /// Round 449 — native shape identity, keyed by the scene-graph
     /// tree-path of the inner geometry `Path` node the decoder built
@@ -518,7 +518,7 @@ pub struct PreservedExtras {
     /// plus the verbatim geometry attributes; on write the encoder
     /// emits the native tag with those attributes instead of the
     /// flattened `d`. Populated only by
-    /// [`crate::decoder::parse_svg_with_extras`], and only when the
+    /// [`crate::decoder::parse_with_extras`], and only when the
     /// shape produced a single unambiguous geometry node (the §13.8
     /// stroke-first `paint-order` split keeps the flattened-path
     /// emission). Percentage / unit-bearing geometry re-resolves
@@ -537,7 +537,7 @@ pub struct PreservedExtras {
     /// round-372 [`Self::clip_refs`] / [`Self::mask_refs`]); on write
     /// the reference attribute substitutes the source id and the
     /// synthesised twin def is skipped. Populated only by
-    /// [`crate::decoder::parse_svg_with_extras`].
+    /// [`crate::decoder::parse_with_extras`].
     pub gradient_refs: Vec<RefBinding>,
     /// Round 449 — verbatim renderable elements suppressed by an
     /// *inline* `display:none` (a `display="none"` presentation
@@ -551,7 +551,7 @@ pub struct PreservedExtras {
     /// the suppression are captured — a stylesheet-driven
     /// `display:none` cannot be detected symmetrically by the XML-walk
     /// capture pass, so those still drop (documented limitation).
-    /// Populated only by [`crate::decoder::parse_svg_with_extras`].
+    /// Populated only by [`crate::decoder::parse_with_extras`].
     pub unrendered: Vec<UnrenderedBinding>,
 }
 
@@ -676,7 +676,7 @@ pub struct TextBinding {
 }
 
 /// Round 372 — one captured `<switch>` element, keyed by the
-/// scene-graph tree-path of the [`oxideav_core::Node::Group`] the
+/// scene-graph tree-path of the [`crate::model::Node::Group`] the
 /// decoder produced for the selected branch (SVG 2 §5.7). The element
 /// is captured whole (every conditional alternative + the switch's own
 /// `transform` / conditional attributes) so the round-trip preserves
@@ -731,7 +731,7 @@ pub struct PathLengthBinding {
 }
 
 /// Round 115 — one captured `<a>` hyperlink, keyed by the scene-graph
-/// tree-path of the [`oxideav_core::Node::Group`] the decoder produced
+/// tree-path of the [`crate::model::Node::Group`] the decoder produced
 /// for it. SVG 2 §16.5 defines the `<a>` element + the HTML-aligned
 /// link attributes; only the `href` is structurally required, the rest
 /// are optional descriptors the encoder re-emits verbatim on the
@@ -829,7 +829,7 @@ impl PreservedExtras {
 }
 
 /// Round 372 — one captured `<use>` element, keyed by the scene-graph
-/// tree-path of the [`oxideav_core::Node::Group`] the decoder produced
+/// tree-path of the [`crate::model::Node::Group`] the decoder produced
 /// for it. SVG 2 §5.6 defines `<use>` as a reference that instantiates
 /// the target element (`href` / deprecated `xlink:href`) at an
 /// additive `x`/`y` translate, with an optional `transform` and (for
@@ -901,14 +901,14 @@ pub struct PaintOrderBinding {
 /// keyword string) pair. Same shape as [`PaintOrderBinding`] but
 /// scoped to the SVG 2 §8.13 grammar. The scene graph does not yet
 /// expose a typed coordinate-suppression hook
-/// (`oxideav_core::PathNode` carries no vector-effect field today —
+/// (`crate::model::PathNode` carries no vector-effect field today —
 /// rasterisation lives in `oxideav-raster`), so the binding's job is
 /// purely to round-trip the source attribute so a `parse → write`
 /// cycle preserves the author's request.
 /// Round 221 — one (scene-graph tree-path, author `shape-rendering`
 /// keyword) pair. Same shape as [`PaintOrderBinding`] /
 /// [`VectorEffectBinding`] — the scene graph does not yet expose a
-/// typed rendering-hint hook (`oxideav_core::PathNode` carries no
+/// typed rendering-hint hook (`crate::model::PathNode` carries no
 /// rendering-quality field; the hint consumption lives in
 /// `oxideav-raster`), so the binding's job is purely to round-trip
 /// the source attribute so a `parse → write` cycle preserves the

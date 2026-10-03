@@ -78,7 +78,7 @@ pub fn open_demuxer(
     let mut buf = Vec::new();
     input.read_to_end(&mut buf)?;
     // Round 3: transparently inflate `.svgz` (gzip RFC 1952). The
-    // codec only sees raw XML bytes — `parse_svg` also does this sniff
+    // codec only sees raw XML bytes — `parse` also does this sniff
     // when called directly, so callers using either entry point get
     // gzip handling for free.
     if is_gzip(&buf) {

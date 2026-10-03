@@ -27,7 +27,7 @@
 
 use oxideav_svg::element::{PaintState, PointerEvents};
 use oxideav_svg::parser::{parse_xml, Element, Node as XmlNode};
-use oxideav_svg::{parse_svg, parse_svg_with_extras, write_svg_with_extras};
+use oxideav_svg::{parse, parse_with_extras, write_with_extras};
 
 /// Default `pointer-events` is `visiblePainted` per the §15.6
 /// attribute table.
@@ -45,7 +45,7 @@ fn baseline_no_pointer_events_attr_no_binding() {
                        viewBox="0 0 100 100">
         <rect x="10" y="10" width="50" height="50" fill="red"/>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(
         extras.pointer_eventss.is_empty(),
         "round 260: a document without pointer-events= must not record a binding"
@@ -62,7 +62,7 @@ fn none_on_g_records_binding() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(
         extras.pointer_eventss.len(),
         1,
@@ -96,7 +96,7 @@ fn each_keyword_records_canonical_form() {
             </svg>"#,
             input
         );
-        let (_frame, extras) = parse_svg_with_extras(src.as_bytes()).unwrap();
+        let (_frame, extras) = parse_with_extras(src.as_bytes()).unwrap();
         assert_eq!(extras.pointer_eventss.len(), 1, "input={}", input);
         assert_eq!(
             extras.pointer_eventss[0].pointer_events, expected,
@@ -135,7 +135,7 @@ fn keyword_matching_is_case_insensitive() {
             </svg>"#,
             input
         );
-        let (_frame, extras) = parse_svg_with_extras(src.as_bytes()).unwrap();
+        let (_frame, extras) = parse_with_extras(src.as_bytes()).unwrap();
         assert_eq!(extras.pointer_eventss.len(), 1, "input={}", input);
         assert_eq!(
             extras.pointer_eventss[0].pointer_events, expected,
@@ -158,7 +158,7 @@ fn explicit_visible_painted_is_recorded() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(
         extras.pointer_eventss.len(),
         1,
@@ -177,7 +177,7 @@ fn inherit_keyword_skips_recording() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(
         extras.pointer_eventss.is_empty(),
         "round 260: `inherit` keeps the resolved value and skips recording"
@@ -196,12 +196,12 @@ fn unknown_keyword_skips_recording() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(
         extras.pointer_eventss.is_empty(),
         "round 260: unrecognised keyword keeps the resolved value and skips recording"
     );
-    let _ = parse_svg(src).unwrap();
+    let _ = parse(src).unwrap();
 }
 
 /// Round 260: empty `pointer-events=""` skips recording.
@@ -213,7 +213,7 @@ fn empty_value_skips_recording() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(extras.pointer_eventss.is_empty());
 }
 
@@ -349,7 +349,7 @@ fn child_attribute_overrides_inherited_value() {
 }
 
 /// Round 260: round-trip preserves `pointer-events=` on a `<g>` — a
-/// `parse_svg_with_extras → write_svg_with_extras` cycle re-emits the
+/// `parse_with_extras → write_with_extras` cycle re-emits the
 /// attribute on the matching element.
 #[test]
 fn roundtrip_emits_attribute_on_group() {
@@ -359,8 +359,8 @@ fn roundtrip_emits_attribute_on_group() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
-    let out = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).unwrap();
+    let out = write_with_extras(&frame, &extras);
     let out_s = String::from_utf8(out).unwrap();
     assert!(
         out_s.contains("pointer-events=\"none\""),
@@ -378,10 +378,10 @@ fn roundtrip_emits_attribute_on_shape() {
                        viewBox="0 0 100 100">
         <rect x="10" y="10" width="50" height="50" fill="red" pointer-events="visibleStroke"/>
     </svg>"#;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.pointer_eventss.len(), 1);
     assert_eq!(extras.pointer_eventss[0].pointer_events, "visibleStroke");
-    let out = write_svg_with_extras(&frame, &extras);
+    let out = write_with_extras(&frame, &extras);
     let out_s = String::from_utf8(out).unwrap();
     assert!(
         out_s.contains("pointer-events=\"visibleStroke\""),
@@ -400,10 +400,10 @@ fn roundtrip_is_idempotent() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (frame1, extras1) = parse_svg_with_extras(src).unwrap();
-    let out1 = write_svg_with_extras(&frame1, &extras1);
-    let (frame2, extras2) = parse_svg_with_extras(&out1).unwrap();
-    let out2 = write_svg_with_extras(&frame2, &extras2);
+    let (frame1, extras1) = parse_with_extras(src).unwrap();
+    let out1 = write_with_extras(&frame1, &extras1);
+    let (frame2, extras2) = parse_with_extras(&out1).unwrap();
+    let out2 = write_with_extras(&frame2, &extras2);
     assert_eq!(
         out1, out2,
         "round 260: parse → write → parse → write must converge"
@@ -422,8 +422,8 @@ fn roundtrip_canonicalises_source_case_visible_painted() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
-    let out = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).unwrap();
+    let out = write_with_extras(&frame, &extras);
     let out_s = String::from_utf8(out).unwrap();
     assert!(
         out_s.contains("pointer-events=\"visiblePainted\""),
@@ -443,8 +443,8 @@ fn roundtrip_canonicalises_bounding_box_hyphen() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
-    let out = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).unwrap();
+    let out = write_with_extras(&frame, &extras);
     let out_s = String::from_utf8(out).unwrap();
     assert!(
         out_s.contains("pointer-events=\"bounding-box\""),
@@ -453,17 +453,17 @@ fn roundtrip_canonicalises_bounding_box_hyphen() {
     );
 }
 
-/// Round 260: `parse_svg` (no extras) still loads the document cleanly
+/// Round 260: `parse` (no extras) still loads the document cleanly
 /// — the property cascade machinery doesn't require the side-channel.
 #[test]
-fn parse_svg_without_extras_still_loads() {
+fn parse_without_extras_still_loads() {
     let src = br#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"
                        viewBox="0 0 100 100">
         <g pointer-events="all">
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let _ = parse_svg(src).unwrap();
+    let _ = parse(src).unwrap();
 }
 
 /// Round 260: a `<g pointer-events=…>` ancestor records the attribute
@@ -479,7 +479,7 @@ fn group_attribute_records_once_not_per_child() {
             <rect x="30" y="30" width="50" height="50" fill="blue"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(
         extras.pointer_eventss.len(),
         1,
@@ -501,14 +501,14 @@ fn coexists_with_other_painting_hints_on_same_group() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.pointer_eventss.len(), 1);
     assert_eq!(extras.overflows.len(), 1);
     assert_eq!(extras.color_interpolations.len(), 1);
     assert_eq!(extras.color_renderings.len(), 1);
     assert_eq!(extras.shape_renderings.len(), 1);
     assert_eq!(extras.text_renderings.len(), 1);
-    let out = write_svg_with_extras(&frame, &extras);
+    let out = write_with_extras(&frame, &extras);
     let s = String::from_utf8(out).unwrap();
     assert!(s.contains("pointer-events=\"none\""));
     assert!(s.contains("overflow=\"hidden\""));
@@ -532,7 +532,7 @@ fn per_child_override_records_separately() {
             </g>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.pointer_eventss.len(), 2);
     let kinds: Vec<&str> = extras
         .pointer_eventss
@@ -571,7 +571,7 @@ fn css_block_rule_resolves() {
     </svg>"#;
     // Re-parse with the full decoder so the <style> block hits the
     // cascade.
-    let _ = parse_svg(src).unwrap();
+    let _ = parse(src).unwrap();
     // Smoke-test only — the cascade resolution is verified through
     // the PaintState route by the presentation-attribute test above.
 }

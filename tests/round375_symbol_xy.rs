@@ -7,10 +7,10 @@
 //! `x` / `y` translate is layered on top. Before this round the symbol's
 //! `x` / `y` were ignored.
 
-use oxideav_core::{Node, Point, Transform2D};
-use oxideav_svg::parse_svg;
+use oxideav_svg::parse;
+use oxideav_svg::{Node, Point, Transform2D};
 
-fn transform_to_first_path(g: &oxideav_core::Group, acc: Transform2D) -> Option<Transform2D> {
+fn transform_to_first_path(g: &oxideav_svg::Group, acc: Transform2D) -> Option<Transform2D> {
     let here = acc.compose(&g.transform);
     if g.children.iter().any(|c| matches!(c, Node::Path(_))) {
         return Some(here);
@@ -40,7 +40,7 @@ fn symbol_xy_offsets_the_instantiated_viewport() {
   </defs>
   <use href="#box" width="50" height="50"/>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let t = transform_to_first_path(&frame.root, Transform2D::identity())
         .expect("a group carrying the rect");
     let origin = t.apply(Point { x: 0.0, y: 0.0 });
@@ -65,7 +65,7 @@ fn symbol_xy_composes_with_use_xy() {
   </defs>
   <use href="#box" x="5" y="7" width="50" height="50"/>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let t = transform_to_first_path(&frame.root, Transform2D::identity())
         .expect("a group carrying the rect");
     let origin = t.apply(Point { x: 0.0, y: 0.0 });
@@ -89,7 +89,7 @@ fn symbol_without_xy_unchanged() {
   </defs>
   <use href="#box" width="50" height="50"/>
 </svg>"##;
-    let frame = parse_svg(src).expect("parse");
+    let frame = parse(src).expect("parse");
     let t = transform_to_first_path(&frame.root, Transform2D::identity())
         .expect("a group carrying the rect");
     let origin = t.apply(Point { x: 0.0, y: 0.0 });

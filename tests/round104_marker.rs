@@ -1,6 +1,6 @@
 //! Round 104 — `<marker>` definition capture (SVG 2 §13.7.1).
 //!
-//! `oxideav_core::Node` has no `Marker` construct, so — mirroring the
+//! `oxideav_svg::Node` has no `Marker` construct, so — mirroring the
 //! round-20 `<pattern>` capture — round 104 records a typed
 //! [`oxideav_svg::defs::MarkerDef`] (consumable by a downstream
 //! rasterizer) plus the verbatim source XML on
@@ -28,7 +28,7 @@
 use oxideav_svg::defs::{MarkerOrient, MarkerUnits};
 use oxideav_svg::element::{parse_marker_def, ParseContext};
 use oxideav_svg::parser::{parse_xml, tag_local, Node as XmlNode};
-use oxideav_svg::{parse_svg, parse_svg_with_extras, write_svg_with_extras};
+use oxideav_svg::{parse, parse_with_extras, write_with_extras};
 
 /// Pull the first `<marker>` child of the document `<defs>` (or the
 /// document root) so a test can feed it to [`parse_marker_def`].
@@ -243,7 +243,7 @@ fn marker_is_never_rendered_and_does_not_break_document() {
   </defs>
   <path d="M 10,50 L 90,50" stroke="black" fill="none" marker-end="url(#arrow)"/>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     // Exactly one scene-graph child: the <path>. The <defs> + <marker>
     // produce nothing.
     assert_eq!(
@@ -266,13 +266,13 @@ fn marker_round_trips_through_preserved_extras() {
   </defs>
   <path d="M10,15 h80" fill="none" stroke="black" marker-start="url(#dot)"/>
 </svg>"##;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(
         extras.markers.len(),
         1,
         "<marker> not captured into PreservedExtras"
     );
-    let out = write_svg_with_extras(&frame, &extras);
+    let out = write_with_extras(&frame, &extras);
     let out_str = std::str::from_utf8(&out).unwrap();
     assert!(
         out_str.contains("<marker"),
@@ -289,7 +289,7 @@ fn marker_round_trips_through_preserved_extras() {
 
     // Re-parse the emitted document and confirm the marker survives a
     // second cycle and the typed parse still recovers the attributes.
-    let (_frame2, extras2) = parse_svg_with_extras(&out).unwrap();
+    let (_frame2, extras2) = parse_with_extras(&out).unwrap();
     assert_eq!(extras2.markers.len(), 1);
     let el = first_marker_element(&out);
     let mut ctx = ParseContext::new();

@@ -20,7 +20,7 @@
 
 use oxideav_svg::element::{DominantBaseline, PaintState};
 use oxideav_svg::parser::{parse_xml, Element, Node as XmlNode};
-use oxideav_svg::{parse_svg, parse_svg_with_extras, write_svg_with_extras};
+use oxideav_svg::{parse, parse_with_extras, write_with_extras};
 
 /// Default `dominant-baseline` is `auto` per the §10.9.2 attribute
 /// table.
@@ -38,7 +38,7 @@ fn baseline_no_attr_no_binding() {
                        viewBox="0 0 100 100">
         <rect x="10" y="10" width="50" height="50" fill="red"/>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(
         extras.dominant_baselines.is_empty(),
         "round 291: a document without dominant-baseline= must not record a binding"
@@ -55,7 +55,7 @@ fn hanging_on_g_records_binding() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(
         extras.dominant_baselines.len(),
         1,
@@ -91,7 +91,7 @@ fn each_keyword_records_canonical_form() {
             </svg>"#,
             kw
         );
-        let (_frame, extras) = parse_svg_with_extras(src.as_bytes()).unwrap();
+        let (_frame, extras) = parse_with_extras(src.as_bytes()).unwrap();
         assert_eq!(extras.dominant_baselines.len(), 1, "kw={}", kw);
         assert_eq!(
             extras.dominant_baselines[0].dominant_baseline, kw,
@@ -123,7 +123,7 @@ fn keyword_matching_is_case_insensitive() {
             </svg>"#,
             input
         );
-        let (_frame, extras) = parse_svg_with_extras(src.as_bytes()).unwrap();
+        let (_frame, extras) = parse_with_extras(src.as_bytes()).unwrap();
         assert_eq!(extras.dominant_baselines.len(), 1, "input={}", input);
         assert_eq!(
             extras.dominant_baselines[0].dominant_baseline, expected,
@@ -146,7 +146,7 @@ fn explicit_auto_is_recorded() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(
         extras.dominant_baselines.len(),
         1,
@@ -166,7 +166,7 @@ fn inherit_keyword_skips_recording() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(
         extras.dominant_baselines.is_empty(),
         "round 291: `inherit` keeps the resolved value and skips recording"
@@ -184,13 +184,13 @@ fn unknown_keyword_skips_recording() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(
         extras.dominant_baselines.is_empty(),
         "round 291: unrecognised keyword keeps the resolved value and skips recording"
     );
     // The document still loads (no parse failure).
-    let _ = parse_svg(src).unwrap();
+    let _ = parse(src).unwrap();
 }
 
 /// Round 291: empty `dominant-baseline=""` skips recording (no keyword
@@ -203,7 +203,7 @@ fn empty_value_skips_recording() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(extras.dominant_baselines.is_empty());
 }
 
@@ -270,7 +270,7 @@ fn style_block_rule_resolves_in_cascade() {
         <text dominant-baseline="alphabetic" x="0" y="0">hi</text>
     </svg>"#;
     // Document loads cleanly; the cascade machinery applies the rule.
-    let _ = parse_svg(src).unwrap();
+    let _ = parse(src).unwrap();
 }
 
 /// Round 291: the property is NOT inherited per the §10.9.2 attribute
@@ -347,7 +347,7 @@ fn child_attribute_wins_after_reset() {
 }
 
 /// Round 291: round-trip preserves `dominant-baseline=` on a `<g>` — a
-/// `parse_svg_with_extras → write_svg_with_extras` cycle re-emits the
+/// `parse_with_extras → write_with_extras` cycle re-emits the
 /// attribute on the matching element.
 #[test]
 fn roundtrip_emits_attribute_on_group() {
@@ -357,8 +357,8 @@ fn roundtrip_emits_attribute_on_group() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
-    let out = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).unwrap();
+    let out = write_with_extras(&frame, &extras);
     let out_s = String::from_utf8(out).unwrap();
     assert!(
         out_s.contains("dominant-baseline=\"hanging\""),
@@ -376,10 +376,10 @@ fn roundtrip_emits_attribute_on_shape() {
                        viewBox="0 0 100 100">
         <rect x="10" y="10" width="50" height="50" fill="red" dominant-baseline="central"/>
     </svg>"#;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.dominant_baselines.len(), 1);
     assert_eq!(extras.dominant_baselines[0].dominant_baseline, "central");
-    let out = write_svg_with_extras(&frame, &extras);
+    let out = write_with_extras(&frame, &extras);
     let out_s = String::from_utf8(out).unwrap();
     assert!(
         out_s.contains("dominant-baseline=\"central\""),
@@ -398,10 +398,10 @@ fn roundtrip_is_idempotent() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (frame1, extras1) = parse_svg_with_extras(src).unwrap();
-    let out1 = write_svg_with_extras(&frame1, &extras1);
-    let (frame2, extras2) = parse_svg_with_extras(&out1).unwrap();
-    let out2 = write_svg_with_extras(&frame2, &extras2);
+    let (frame1, extras1) = parse_with_extras(src).unwrap();
+    let out1 = write_with_extras(&frame1, &extras1);
+    let (frame2, extras2) = parse_with_extras(&out1).unwrap();
+    let out2 = write_with_extras(&frame2, &extras2);
     assert_eq!(
         out1, out2,
         "round 291: parse → write → parse → write must converge"
@@ -420,8 +420,8 @@ fn roundtrip_canonicalises_source_case() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
-    let out = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).unwrap();
+    let out = write_with_extras(&frame, &extras);
     let out_s = String::from_utf8(out).unwrap();
     assert!(
         out_s.contains("dominant-baseline=\"text-after-edge\""),
@@ -430,17 +430,17 @@ fn roundtrip_canonicalises_source_case() {
     );
 }
 
-/// Round 291: `parse_svg` (no extras) still loads the document cleanly
+/// Round 291: `parse` (no extras) still loads the document cleanly
 /// — the property cascade machinery doesn't require the side-channel.
 #[test]
-fn parse_svg_without_extras_still_loads() {
+fn parse_without_extras_still_loads() {
     let src = br#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"
                        viewBox="0 0 100 100">
         <g dominant-baseline="hanging">
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let _ = parse_svg(src).unwrap();
+    let _ = parse(src).unwrap();
 }
 
 /// Round 291: a `<g dominant-baseline=…>` ancestor records the
@@ -455,7 +455,7 @@ fn group_attribute_records_once_not_per_child() {
             <rect x="30" y="30" width="50" height="50" fill="blue"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(
         extras.dominant_baselines.len(),
         1,
@@ -477,7 +477,7 @@ fn per_child_override_records_separately() {
             <rect x="10" y="10" width="50" height="50" fill="red" dominant-baseline="middle"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(
         extras.dominant_baselines.len(),
         2,
@@ -504,11 +504,11 @@ fn coexists_with_other_hints_on_same_group() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.dominant_baselines.len(), 1);
     assert_eq!(extras.overflows.len(), 1);
     assert_eq!(extras.text_renderings.len(), 1);
-    let out = write_svg_with_extras(&frame, &extras);
+    let out = write_with_extras(&frame, &extras);
     let s = String::from_utf8(out).unwrap();
     assert!(s.contains("dominant-baseline=\"central\""));
     assert!(s.contains("overflow=\"hidden\""));

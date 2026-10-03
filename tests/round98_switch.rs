@@ -5,20 +5,20 @@
 //! elements in order, and renders the first child for which all of
 //! these attributes test true; all others are bypassed.
 
-use oxideav_core::{Paint, PathNode, Rgba};
-use oxideav_svg::{parse_svg, parse_svg_at_with_languages};
+use oxideav_svg::{parse, parse_at_with_languages};
+use oxideav_svg::{Paint, PathNode, Rgba};
 
 /// Find every `Node::Path` in the scene graph, in pre-order.
-fn all_paths(frame: &oxideav_core::VectorFrame) -> Vec<&PathNode> {
-    fn walk<'a>(n: &'a oxideav_core::Node, out: &mut Vec<&'a PathNode>) {
+fn all_paths(frame: &oxideav_svg::SvgDocument) -> Vec<&PathNode> {
+    fn walk<'a>(n: &'a oxideav_svg::Node, out: &mut Vec<&'a PathNode>) {
         match n {
-            oxideav_core::Node::Path(p) => out.push(p),
-            oxideav_core::Node::Group(g) => {
+            oxideav_svg::Node::Path(p) => out.push(p),
+            oxideav_svg::Node::Group(g) => {
                 for c in &g.children {
                     walk(c, out);
                 }
             }
-            oxideav_core::Node::SoftMask { content, .. } => walk(content, out),
+            oxideav_svg::Node::SoftMask { content, .. } => walk(content, out),
             _ => {}
         }
     }
@@ -48,7 +48,7 @@ fn switch_renders_only_first_passing_child() {
     <rect x="0" y="0" width="10" height="10" fill="#0000ff"/>
   </switch>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let paths = all_paths(&frame);
     assert_eq!(paths.len(), 1, "switch must render exactly one child");
     let c = fill_rgba(paths[0]).expect("solid fill");
@@ -66,7 +66,7 @@ fn switch_skips_failing_required_extensions() {
     <rect width="10" height="10" fill="#00ff00"/>
   </switch>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let paths = all_paths(&frame);
     assert_eq!(paths.len(), 1);
     let c = fill_rgba(paths[0]).unwrap();
@@ -83,7 +83,7 @@ fn switch_empty_required_extensions_is_false() {
     <rect width="10" height="10" fill="#00ff00"/>
   </switch>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let paths = all_paths(&frame);
     assert_eq!(paths.len(), 1);
     let c = fill_rgba(paths[0]).unwrap();
@@ -102,7 +102,7 @@ fn switch_system_language_picks_matching_locale() {
     <rect width="10" height="10" fill="#0000ff"/>
   </switch>
 </svg>"##;
-    let frame = parse_svg_at_with_languages(src, 0.0, &["fr"]).unwrap();
+    let frame = parse_at_with_languages(src, 0.0, &["fr"]).unwrap();
     let paths = all_paths(&frame);
     assert_eq!(paths.len(), 1);
     let c = fill_rgba(paths[0]).unwrap();
@@ -120,7 +120,7 @@ fn switch_system_language_prefix_match() {
     <rect width="10" height="10" fill="#00ff00"/>
   </switch>
 </svg>"##;
-    let frame = parse_svg_at_with_languages(src, 0.0, &["en"]).unwrap();
+    let frame = parse_at_with_languages(src, 0.0, &["en"]).unwrap();
     let paths = all_paths(&frame);
     assert_eq!(paths.len(), 1);
     let c = fill_rgba(paths[0]).unwrap();
@@ -143,7 +143,7 @@ fn switch_falls_through_to_catch_all_when_no_language_matches() {
     <rect width="10" height="10" fill="#0000ff"/>
   </switch>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let paths = all_paths(&frame);
     assert_eq!(paths.len(), 1);
     let c = fill_rgba(paths[0]).unwrap();
@@ -161,7 +161,7 @@ fn switch_renders_nothing_when_no_child_passes() {
     <rect width="10" height="10" fill="#00ff00" systemLanguage="de"/>
   </switch>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let paths = all_paths(&frame);
     assert!(paths.is_empty(), "no passing child → no rendered path");
 }
@@ -183,7 +183,7 @@ fn switch_selects_group_subtree_whole() {
     </g>
   </switch>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let paths = all_paths(&frame);
     // The first <g> is bypassed; the second <g> renders BOTH its rects.
     assert_eq!(paths.len(), 2, "whole second-group subtree renders");
@@ -207,7 +207,7 @@ fn switch_skips_never_rendered_children_without_consuming_slot() {
     <rect width="10" height="10" fill="#00ff00"/>
   </switch>
 </svg>"##;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     let paths = all_paths(&frame);
     assert_eq!(paths.len(), 1);
     let c = fill_rgba(paths[0]).unwrap();

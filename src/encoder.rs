@@ -1,4 +1,4 @@
-//! [`VectorFrame`] → SVG bytes encoder.
+//! [`SvgDocument`] → SVG bytes writer.
 //!
 //! Round 1 emits one `<path>` per `PathNode` (lossless preservation of
 //! the exact command sequence the decoder produces) plus a flat
@@ -8,30 +8,56 @@
 
 use std::collections::HashMap;
 
-use oxideav_core::{
-    DashPattern, Encoder, Error, FillRule, Frame, Group, LineCap, LineJoin, LinearGradient,
-    MaskKind, Node, Packet, Paint, Path, PathCommand, PathNode, Point, RadialGradient, Result,
-    Rgba, SpreadMethod, TimeBase, Transform2D, VectorFrame,
+use crate::error::Result;
+use crate::model::{
+    DashPattern, FillRule, Group, LineCap, LineJoin, LinearGradient, MaskKind, Node, Paint, Path,
+    PathCommand, PathNode, Point, RadialGradient, Rgba, SpreadMethod, SvgDocument, Transform2D,
 };
+use crate::options::EncodeOptions;
 
-use crate::decoder::CODEC_ID_STR;
 use crate::parser::{escape_attr, Element, Node as XmlNode};
 use crate::preserved::{
     AnimationFragment, DescriptiveBinding, DescriptiveText, LinkBinding, PreservedExtras,
 };
 
-/// Round 3: serialise a [`VectorFrame`] into a gzip-compressed
-/// `.svgz` byte buffer. Equivalent to `gzip(write_svg(frame))`.
-pub fn write_svgz(frame: &VectorFrame) -> Result<Vec<u8>> {
-    let xml = write_svg(frame);
+/// Serialise an [`SvgDocument`] into a gzip-compressed `.svgz` byte
+/// buffer. Equivalent to `gzip(write(doc))`.
+pub fn write_svgz(doc: &SvgDocument) -> Result<Vec<u8>> {
+    let xml = write(doc);
     crate::parser::deflate_gzip(&xml)
 }
 
-/// Serialise a [`VectorFrame`] into a UTF-8 SVG byte buffer.
+/// Serialise an [`SvgDocument`] into a UTF-8 SVG byte buffer.
 ///
-/// Equivalent to `write_svg_with_extras(frame, &PreservedExtras::default())`.
-pub fn write_svg(frame: &VectorFrame) -> Vec<u8> {
-    write_svg_with_extras(frame, &PreservedExtras::default())
+/// Equivalent to `write_with_extras(doc, &PreservedExtras::default())`.
+/// The output is a fixed point of the parser: `write(parse(write(doc)))
+/// == write(doc)`.
+pub fn write(doc: &SvgDocument) -> Vec<u8> {
+    write_with_extras(doc, &PreservedExtras::default())
+}
+
+/// [`write`] driven by [`EncodeOptions`]: plain XML, or a gzip
+/// `.svgz` body when `opts.compress` is set.
+pub fn write_with(doc: &SvgDocument, opts: &EncodeOptions) -> Result<Vec<u8>> {
+    if opts.compress {
+        write_svgz(doc)
+    } else {
+        Ok(write(doc))
+    }
+}
+
+/// [`write_with_extras`] driven by [`EncodeOptions`] (see [`write_with`]).
+pub fn write_with_extras_opts(
+    doc: &SvgDocument,
+    extras: &PreservedExtras,
+    opts: &EncodeOptions,
+) -> Result<Vec<u8>> {
+    let xml = write_with_extras(doc, extras);
+    if opts.compress {
+        crate::parser::deflate_gzip(&xml)
+    } else {
+        Ok(xml)
+    }
 }
 
 /// Round 449 — the read-only lookup tables threaded through the
@@ -39,7 +65,7 @@ pub fn write_svg(frame: &VectorFrame) -> Vec<u8> {
 /// `write_node`). Each map indexes a [`PreservedExtras`] side-channel
 /// by scene-graph tree-path (or by parent id for the round-13
 /// animation routing) exactly as the per-round build comments in
-/// [`write_svg_with_extras`] describe; bundling them in one struct
+/// [`write_with_extras`] describe; bundling them in one struct
 /// keeps the recursion signature stable as side-channels accrue.
 #[derive(Default)]
 struct EmitIndex<'a> {
@@ -69,11 +95,11 @@ struct EmitIndex<'a> {
     anim_by_parent: HashMap<String, Vec<&'a AnimationFragment>>,
 }
 
-/// Round 4 — serialise a [`VectorFrame`] *and* re-emit every preserved
+/// Serialise an [`SvgDocument`] *and* re-emit every preserved
 /// `<style>` / `<filter>` / `<animate>` / `<foreignObject>` fragment
 /// supplied in `extras`. Pair with
-/// [`crate::decoder::parse_svg_with_extras`] for a structural
-/// round-trip that doesn't lose CSS / filter / animation definitions.
+/// [`crate::decoder::parse_with_extras`] for a structural round-trip
+/// that doesn't lose CSS / filter / animation definitions.
 ///
 /// Round 13 — when `extras.id_paths` is populated, each scene-graph
 /// node whose tree-path matches a recorded entry is emitted with the
@@ -81,7 +107,7 @@ struct EmitIndex<'a> {
 /// `<set>` / `<animateTransform>` whose `parent_id == id` is inlined
 /// as a child of that node (instead of dumped at the trailing edge of
 /// the document with a parent-id comment hint).
-pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> Vec<u8> {
+pub fn write_with_extras(frame: &SvgDocument, extras: &PreservedExtras) -> Vec<u8> {
     // Round 13 — index id_paths by `Vec<usize>` for O(1) per-node
     // lookup, and group animations by `parent_id` so we can drain a
     // single id's children inline.
@@ -498,7 +524,7 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
     // Round 81 — collect the set of gradient ids carried by the
     // preserved-extras side-channel so we skip the scene-walk's
     // flattened emission for any id the author originally provided
-    // verbatim. Without this guard, a `parse → write_svg_with_extras`
+    // verbatim. Without this guard, a `parse → write_with_extras`
     // would emit each gradient twice (once verbatim from extras, once
     // flattened from the scene-walk).
     let extras_gradient_ids: std::collections::HashSet<&str> = extras
@@ -751,7 +777,7 @@ pub fn write_svg_with_extras(frame: &VectorFrame, extras: &PreservedExtras) -> V
     // `extras.id_paths` are inlined inside the matching scene-graph
     // emit site by `write_node`. Anything that didn't match (no
     // parent_id, or the parent_id wasn't recorded — happens for
-    // documents constructed without `parse_svg_with_extras`, or for
+    // documents constructed without `parse_with_extras`, or for
     // animations whose parent didn't survive the scene-graph build)
     // falls back to the round-4 trailing-edge emission with a parent
     // comment hint so it isn't lost.
@@ -1758,13 +1784,6 @@ fn write_node(
             out.push_str(&indent);
             out.push_str("</g>\n");
         }
-        Node::Image(_) => {
-            // Round 1: serialising embedded raster images would
-            // require base64 + a `<image>` href — defer.
-        }
-        // `Node` is `#[non_exhaustive]` upstream; future variants are
-        // silently dropped.
-        _ => {}
     }
 }
 
@@ -1851,9 +1870,6 @@ fn paint_to_attr(p: &Paint, gradients: &GradientCollector) -> String {
                 None => "none".to_string(),
             }
         }
-        // `Paint` is `#[non_exhaustive]` upstream; unknown future
-        // paint servers serialise as `none` rather than failing.
-        _ => "none".to_string(),
     }
 }
 
@@ -1951,9 +1967,6 @@ fn write_path_d(out: &mut String, cmds: &[PathCommand]) {
                 ));
             }
             PathCommand::Close => out.push('Z'),
-            // `PathCommand` is `#[non_exhaustive]` upstream; future
-            // shorthand variants are dropped from the serialisation.
-            _ => {}
         }
     }
 }
@@ -2131,10 +2144,6 @@ fn walk_collect_defs_node(
             walk_collect_defs_node(content, gradients, clips, masks);
             masks.ensure(*mask_kind, mask_node);
         }
-        Node::Image(_) => {}
-        // `Node` is `#[non_exhaustive]` upstream; ignore unknown
-        // variants when collecting referenced paints.
-        _ => {}
     }
 }
 
@@ -2253,7 +2262,6 @@ pub(crate) fn path_fingerprint(p: &Path) -> String {
                 trim_float(end.y)
             )),
             PathCommand::Close => s.push_str("Z;"),
-            _ => s.push('?'),
         }
     }
     s
@@ -2293,8 +2301,6 @@ fn node_fingerprint(n: &Node) -> String {
             node_fingerprint(mask),
             node_fingerprint(content)
         ),
-        Node::Image(_) => "I".to_string(),
-        _ => "?".to_string(),
     }
 }
 
@@ -2404,7 +2410,7 @@ fn write_gradient(out: &mut String, id: &str, paint: &Paint) {
     }
 }
 
-fn write_stop(out: &mut String, stop: oxideav_core::GradientStop) {
+fn write_stop(out: &mut String, stop: crate::model::GradientStop) {
     let color = format!(
         "#{:02x}{:02x}{:02x}",
         stop.color.r, stop.color.g, stop.color.b
@@ -2431,72 +2437,12 @@ fn spread_str(s: SpreadMethod) -> &'static str {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Encoder trait adapter
-// ---------------------------------------------------------------------------
-
-pub fn make_encoder(_params: &oxideav_core::CodecParameters) -> Result<Box<dyn Encoder>> {
-    let mut out_params =
-        oxideav_core::CodecParameters::video(oxideav_core::CodecId::new(CODEC_ID_STR));
-    out_params.media_type = oxideav_core::MediaType::Video;
-    Ok(Box::new(SvgEncoder {
-        codec_id: oxideav_core::CodecId::new(CODEC_ID_STR),
-        out_params,
-        pending: None,
-        eof: false,
-    }))
-}
-
-struct SvgEncoder {
-    codec_id: oxideav_core::CodecId,
-    out_params: oxideav_core::CodecParameters,
-    pending: Option<Vec<u8>>,
-    eof: bool,
-}
-
-impl Encoder for SvgEncoder {
-    fn codec_id(&self) -> &oxideav_core::CodecId {
-        &self.codec_id
-    }
-    fn output_params(&self) -> &oxideav_core::CodecParameters {
-        &self.out_params
-    }
-    fn send_frame(&mut self, frame: &Frame) -> Result<()> {
-        let vf = match frame {
-            Frame::Vector(v) => v,
-            _ => return Err(Error::invalid("SVG encoder: expected vector frame")),
-        };
-        self.pending = Some(write_svg(vf));
-        Ok(())
-    }
-    fn receive_packet(&mut self) -> Result<Packet> {
-        match self.pending.take() {
-            Some(bytes) => {
-                let mut pkt = Packet::new(0, TimeBase::new(1, 1), bytes);
-                pkt.flags.keyframe = true;
-                Ok(pkt)
-            }
-            None => {
-                if self.eof {
-                    Err(Error::Eof)
-                } else {
-                    Err(Error::NeedMore)
-                }
-            }
-        }
-    }
-    fn flush(&mut self) -> Result<()> {
-        self.eof = true;
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxideav_core::{FillRule, GradientStop, Group, Node, Path, PathNode, Point, Rgba, ViewBox};
+    use crate::model::{GradientStop, ViewBox};
 
-    fn make_simple_frame() -> VectorFrame {
+    fn make_simple_frame() -> SvgDocument {
         let mut path = Path::new();
         path.move_to(Point::new(0.0, 0.0));
         path.line_to(Point::new(10.0, 0.0));
@@ -2508,7 +2454,7 @@ mod tests {
             stroke: None,
             fill_rule: FillRule::NonZero,
         };
-        VectorFrame {
+        SvgDocument {
             width: 10.0,
             height: 10.0,
             view_box: Some(ViewBox {
@@ -2521,14 +2467,12 @@ mod tests {
                 children: vec![Node::Path(pn)],
                 ..Group::default()
             },
-            pts: None,
-            time_base: TimeBase::new(1, 1),
         }
     }
 
     #[test]
     fn writes_minimal_svg_with_red_triangle() {
-        let bytes = write_svg(&make_simple_frame());
+        let bytes = write(&make_simple_frame());
         let s = std::str::from_utf8(&bytes).unwrap();
         assert!(s.starts_with("<?xml"));
         assert!(s.contains("<svg"));
@@ -2560,7 +2504,7 @@ mod tests {
         let mut path = Path::new();
         path.move_to(Point::new(0.0, 0.0));
         path.line_to(Point::new(10.0, 10.0));
-        let frame = VectorFrame {
+        let frame = SvgDocument {
             width: 10.0,
             height: 10.0,
             view_box: None,
@@ -2573,10 +2517,8 @@ mod tests {
                 })],
                 ..Group::default()
             },
-            pts: None,
-            time_base: TimeBase::new(1, 1),
         };
-        let s = String::from_utf8(write_svg(&frame)).unwrap();
+        let s = String::from_utf8(write(&frame)).unwrap();
         assert!(s.contains("<defs>"));
         assert!(s.contains("<linearGradient"));
         assert!(s.contains("url(#grad1)"));

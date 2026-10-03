@@ -25,7 +25,7 @@
 
 use oxideav_svg::element::{CursorKeyword, PaintState};
 use oxideav_svg::parser::{parse_xml, Element, Node as XmlNode};
-use oxideav_svg::{parse_svg, parse_svg_with_extras, write_svg_with_extras};
+use oxideav_svg::{parse, parse_with_extras, write_with_extras};
 
 /// Default `cursor` is `auto` with no custom funciris per the §16.8.2
 /// attribute table.
@@ -44,7 +44,7 @@ fn baseline_no_cursor_attr_no_binding() {
                        viewBox="0 0 100 100">
         <rect x="10" y="10" width="50" height="50" fill="red"/>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(
         extras.cursors.is_empty(),
         "round 261: a document without cursor= must not record a binding"
@@ -61,7 +61,7 @@ fn wait_on_g_records_binding() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(
         extras.cursors.len(),
         1,
@@ -101,7 +101,7 @@ fn each_keyword_records_canonical_form() {
             </svg>"#,
             kw
         );
-        let (_frame, extras) = parse_svg_with_extras(src.as_bytes()).unwrap();
+        let (_frame, extras) = parse_with_extras(src.as_bytes()).unwrap();
         assert_eq!(extras.cursors.len(), 1, "input={}", kw);
         assert_eq!(extras.cursors[0].cursor, kw, "input={}", kw);
     }
@@ -133,7 +133,7 @@ fn keyword_matching_is_case_insensitive() {
             </svg>"#,
             input
         );
-        let (_frame, extras) = parse_svg_with_extras(src.as_bytes()).unwrap();
+        let (_frame, extras) = parse_with_extras(src.as_bytes()).unwrap();
         assert_eq!(extras.cursors.len(), 1, "input={}", input);
         assert_eq!(extras.cursors[0].cursor, expected, "input={}", input);
     }
@@ -151,7 +151,7 @@ fn explicit_auto_is_recorded() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(
         extras.cursors.len(),
         1,
@@ -170,7 +170,7 @@ fn inherit_keyword_skips_recording() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(
         extras.cursors.is_empty(),
         "round 261: `inherit` keeps the resolved value and skips recording"
@@ -189,12 +189,12 @@ fn unknown_keyword_skips_recording() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(
         extras.cursors.is_empty(),
         "round 261: unrecognised keyword keeps the resolved value and skips recording"
     );
-    let _ = parse_svg(src).unwrap();
+    let _ = parse(src).unwrap();
 }
 
 /// Round 261: empty `cursor=""` skips recording.
@@ -206,7 +206,7 @@ fn empty_value_skips_recording() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(extras.cursors.is_empty());
 }
 
@@ -221,7 +221,7 @@ fn funciri_plus_keyword_records_canonical_list() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.cursors.len(), 1);
     assert_eq!(extras.cursors[0].cursor, "url(#hot), pointer");
 }
@@ -238,7 +238,7 @@ fn multiple_funciris_canonicalise_spacing() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.cursors.len(), 1);
     assert_eq!(
         extras.cursors[0].cursor,
@@ -257,7 +257,7 @@ fn funciri_with_internal_comma_stays_one_item() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.cursors.len(), 1);
     assert_eq!(
         extras.cursors[0].cursor,
@@ -277,12 +277,12 @@ fn funciri_without_trailing_keyword_is_invalid() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(
         extras.cursors.is_empty(),
         "round 261: a funciri list without a generic fallback keyword is invalid"
     );
-    let _ = parse_svg(src).unwrap();
+    let _ = parse(src).unwrap();
 }
 
 /// Round 261: a non-funciri item before the generic keyword is invalid
@@ -296,7 +296,7 @@ fn non_funciri_list_item_is_invalid() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(
         extras.cursors.is_empty(),
         "round 261: only <funciri> items may precede the generic keyword"
@@ -452,7 +452,7 @@ fn style_block_rule_resolves_in_cascade() {
     </svg>"#;
     // The document loads and the side-channel stays clean (no
     // presentation attribute was written in the source).
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert!(
         extras.cursors.is_empty(),
         "round 261: a <style>-block rule has no source-attribute slot to record"
@@ -460,7 +460,7 @@ fn style_block_rule_resolves_in_cascade() {
 }
 
 /// Round 261: round-trip preserves `cursor=` on a `<g>` — a
-/// `parse_svg_with_extras → write_svg_with_extras` cycle re-emits the
+/// `parse_with_extras → write_with_extras` cycle re-emits the
 /// attribute on the matching element.
 #[test]
 fn roundtrip_emits_attribute_on_group() {
@@ -470,8 +470,8 @@ fn roundtrip_emits_attribute_on_group() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
-    let out = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).unwrap();
+    let out = write_with_extras(&frame, &extras);
     let out_s = String::from_utf8(out).unwrap();
     assert!(
         out_s.contains("cursor=\"wait\""),
@@ -489,10 +489,10 @@ fn roundtrip_emits_attribute_on_shape() {
                        viewBox="0 0 100 100">
         <rect x="10" y="10" width="50" height="50" fill="red" cursor="url(#hot), pointer"/>
     </svg>"#;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.cursors.len(), 1);
     assert_eq!(extras.cursors[0].cursor, "url(#hot), pointer");
-    let out = write_svg_with_extras(&frame, &extras);
+    let out = write_with_extras(&frame, &extras);
     let out_s = String::from_utf8(out).unwrap();
     assert!(
         out_s.contains("cursor=\"url(#hot), pointer\""),
@@ -511,10 +511,10 @@ fn roundtrip_is_idempotent() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (frame1, extras1) = parse_svg_with_extras(src).unwrap();
-    let out1 = write_svg_with_extras(&frame1, &extras1);
-    let (frame2, extras2) = parse_svg_with_extras(&out1).unwrap();
-    let out2 = write_svg_with_extras(&frame2, &extras2);
+    let (frame1, extras1) = parse_with_extras(src).unwrap();
+    let out1 = write_with_extras(&frame1, &extras1);
+    let (frame2, extras2) = parse_with_extras(&out1).unwrap();
+    let out2 = write_with_extras(&frame2, &extras2);
     assert_eq!(
         out1, out2,
         "round 261: parse → write → parse → write must converge"
@@ -533,8 +533,8 @@ fn roundtrip_canonicalises_source_case() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
-    let out = write_svg_with_extras(&frame, &extras);
+    let (frame, extras) = parse_with_extras(src).unwrap();
+    let out = write_with_extras(&frame, &extras);
     let out_s = String::from_utf8(out).unwrap();
     assert!(
         out_s.contains("cursor=\"nw-resize\""),
@@ -543,18 +543,18 @@ fn roundtrip_canonicalises_source_case() {
     );
 }
 
-/// Round 261: `parse_svg` (no extras) still loads a document carrying
+/// Round 261: `parse` (no extras) still loads a document carrying
 /// `cursor=` — the side-channel is an opt-in of the `_with_extras`
 /// entry point only.
 #[test]
-fn parse_svg_without_extras_still_loads() {
+fn parse_without_extras_still_loads() {
     let src = br#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"
                        viewBox="0 0 100 100">
         <g cursor="pointer">
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let frame = parse_svg(src).unwrap();
+    let frame = parse(src).unwrap();
     assert_eq!(frame.root.children.len(), 1);
 }
 
@@ -570,7 +570,7 @@ fn group_records_once_not_per_child() {
             <rect x="70" y="10" width="20" height="20" fill="green"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(
         extras.cursors.len(),
         1,
@@ -590,7 +590,7 @@ fn per_child_override_records_separately() {
             <rect cursor="auto" x="40" y="10" width="20" height="20" fill="blue"/>
         </g>
     </svg>"#;
-    let (_frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (_frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(
         extras.cursors.len(),
         2,
@@ -613,11 +613,11 @@ fn coexists_with_pointer_events_and_overflow() {
             <rect x="10" y="10" width="50" height="50" fill="red"/>
         </g>
     </svg>"#;
-    let (frame, extras) = parse_svg_with_extras(src).unwrap();
+    let (frame, extras) = parse_with_extras(src).unwrap();
     assert_eq!(extras.cursors.len(), 1);
     assert_eq!(extras.pointer_eventss.len(), 1);
     assert_eq!(extras.overflows.len(), 1);
-    let out = write_svg_with_extras(&frame, &extras);
+    let out = write_with_extras(&frame, &extras);
     let out_s = String::from_utf8(out).unwrap();
     assert!(out_s.contains("cursor=\"pointer\""));
     assert!(out_s.contains("pointer-events=\"all\""));
