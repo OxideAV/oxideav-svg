@@ -1619,13 +1619,28 @@ impl PaintState {
         // slot instead.
         s.dominant_baseline = DominantBaseline::Auto;
         let el = mctx.el;
-        // 1) presentation attributes from `el`.
+        // 1) presentation attributes from `el`. SVG 2 §4.2 (attribute
+        //    syntax): a presentation attribute whose value fails to
+        //    parse "is assumed to have been specified as the given
+        //    initial value" — it is not a document error. Apply on a
+        //    scratch copy so a failed parse leaves the other fields of
+        //    the partially-applied property untouched.
         for (name, _) in &el.attrs {
-            self.apply_one(&mut s, name, attr(el, name).unwrap_or(""))?;
+            let value = attr(el, name).unwrap_or("");
+            let mut trial = s.clone();
+            match self.apply_one(&mut trial, name, value) {
+                Ok(()) => s = trial,
+                Err(_) => reset_to_initial(&mut s, name),
+            }
         }
-        // 2) matched CSS rules + inline style — last write wins.
+        // 2) matched CSS rules + inline style — last write wins. A
+        //    declaration with an invalid value is ignored (CSS 2.1
+        //    §4.1.8, cited by SVG 2 §4.2): the previous value stands.
         for (name, value) in declarations_for(mctx, sheet) {
-            self.apply_one(&mut s, &name, &value)?;
+            let mut trial = s.clone();
+            if self.apply_one(&mut trial, &name, &value).is_ok() {
+                s = trial;
+            }
         }
         Ok(s)
     }
@@ -3049,10 +3064,7 @@ fn gradient_def_common(el: &Element, kind: GradientKind) -> Result<GradientDef> 
         Some(s) => parse_gradient_units_opt(s),
         None => None,
     };
-    let transform = match attr(el, "gradientTransform") {
-        Some(s) => Some(parse_transform(s)?),
-        None => None,
-    };
+    let transform = attr(el, "gradientTransform").map(transform_or_initial);
     let spread = match attr(el, "spreadMethod") {
         Some(s) => Some(parse_spread_method_value(s)?),
         None => None,
@@ -3881,7 +3893,7 @@ fn parse_element_to_node_ctx_inner(
             let saved_pending_dominant_baseline = ctx.pending_dominant_baseline.take();
             let group_dominant_baseline = capture_dominant_baseline_attr(el);
             let transform = match attr(el, "transform") {
-                Some(v) => parse_transform(v)?,
+                Some(v) => transform_or_initial(v),
                 None => Transform2D::identity(),
             };
             let mut group = Group {
@@ -3973,7 +3985,7 @@ fn parse_element_to_node_ctx_inner(
             let saved_ctx = ctx.resolve_ctx;
             ctx.resolve_ctx = derive_child_ctx(el, mctx, &ctx.stylesheet, &saved_ctx);
             let transform = match attr(el, "transform") {
-                Some(v) => parse_transform(v)?,
+                Some(v) => transform_or_initial(v),
                 None => Transform2D::identity(),
             };
             let mut group = Group {
@@ -4026,7 +4038,7 @@ fn parse_element_to_node_ctx_inner(
             let saved_ctx = ctx.resolve_ctx;
             ctx.resolve_ctx = derive_child_ctx(el, mctx, &ctx.stylesheet, &saved_ctx);
             let transform = match attr(el, "transform") {
-                Some(v) => parse_transform(v)?,
+                Some(v) => transform_or_initial(v),
                 None => Transform2D::identity(),
             };
             let mut group = Group {
@@ -4299,7 +4311,7 @@ fn parse_element_to_node_ctx_inner(
             // common-sense default is "no fill on lines unless asked".
             // We follow the spec literally; users who don't want a
             // fill set fill="none".
-            let transform = attr(el, "transform").map(parse_transform).transpose()?;
+            let transform = attr(el, "transform").map(transform_or_initial);
             // Round 118 — SVG 1.1 §11.5 `visibility: hidden | collapse`.
             // The graphics element is "invisible (i.e., nothing is
             // painted on the canvas)" but, unlike `display:none`, "the
@@ -5357,7 +5369,7 @@ pub fn parse_clip_path_def(
             if let Some(p) = sub {
                 // Apply per-element transform if present.
                 let transformed = match attr(c, "transform") {
-                    Some(v) => transform_path(p, &parse_transform(v)?),
+                    Some(v) => transform_path(p, &transform_or_initial(v)),
                     None => p,
                 };
                 path.commands.extend(transformed.commands);
@@ -5495,7 +5507,7 @@ pub fn parse_pattern_def(
         PatternUnits::UserSpaceOnUse,
     );
     let pattern_transform = match attr(el, "patternTransform") {
-        Some(s) => parse_transform(s)?,
+        Some(s) => transform_or_initial(s),
         None => Transform2D::identity(),
     };
     let view_box = match attr(el, "viewBox") {
@@ -5860,7 +5872,7 @@ pub fn parse_use_element(
     let x = parse_length_attr(attr(el, "x"), 0.0, LengthAxis::X, &ctx.resolve_ctx)?;
     let y = parse_length_attr(attr(el, "y"), 0.0, LengthAxis::Y, &ctx.resolve_ctx)?;
     let use_transform = match attr(el, "transform") {
-        Some(v) => parse_transform(v)?,
+        Some(v) => transform_or_initial(v),
         None => Transform2D::identity(),
     };
     // Compose: (use transform) ∘ translate(x, y) — so the translate
@@ -6270,7 +6282,8 @@ pub fn parse_length_attr(
         }
         // Fall back to the legacy lenient parser — keeps round-1..18
         // behaviour for the rare malformed-but-numeric-prefix inputs
-        // the typed parser rejects (`12foo`).
+        // the typed parser rejects (`12foo`) — and, when that fails
+        // too, to the attribute's initial value (SVG 2 §4.2).
         Err(_) => parse_number(Some(s), default),
     }
 }
@@ -6340,6 +6353,41 @@ pub fn derive_child_ctx(
 /// Parse a number literal — strips optional unit suffix (`px`, `pt`,
 /// `em`, `%`, etc.). Round 1 treats every unit as user units, so the
 /// numeric value is preserved as f32 with no scaling.
+/// SVG 2 §4.2: a presentation attribute with an invalid value is
+/// treated as if the property's *initial* value had been specified.
+/// Resets the one property `name` names on `s` to that initial value
+/// (the [`PaintState::default`] field); properties the state does not
+/// model are left alone.
+fn reset_to_initial(s: &mut PaintState, name: &str) {
+    let init = PaintState::default();
+    match name.to_ascii_lowercase().as_str() {
+        "fill" => s.fill = init.fill,
+        "fill-opacity" => s.fill_opacity = init.fill_opacity,
+        "stroke" => s.stroke = init.stroke,
+        "stroke-opacity" => s.stroke_opacity = init.stroke_opacity,
+        "stroke-width" => s.stroke_width = init.stroke_width,
+        "stroke-linecap" => s.stroke_linecap = init.stroke_linecap,
+        "stroke-linejoin" => s.stroke_linejoin = init.stroke_linejoin,
+        "stroke-miterlimit" => s.stroke_miterlimit = init.stroke_miterlimit,
+        "stroke-dasharray" => s.stroke_dasharray = init.stroke_dasharray,
+        "stroke-dashoffset" => s.stroke_dashoffset = init.stroke_dashoffset,
+        "opacity" => s.opacity = init.opacity,
+        "fill-rule" => s.fill_rule = init.fill_rule,
+        _ => {}
+    }
+}
+
+/// SVG 2 §4.2 (attribute syntax): a `transform` / `gradientTransform`
+/// / `patternTransform` value that fails to parse "is assumed to have
+/// been specified as the given initial value" — the identity — rather
+/// than making the document an error. (The `transform` attribute is a
+/// presentation attribute in SVG 2; a value the SMIL evaluator folded
+/// in, e.g. `<set attributeName="transform" to="0">`, goes through the
+/// same rule.)
+fn transform_or_initial(v: &str) -> Transform2D {
+    parse_transform(v).unwrap_or_else(|_| Transform2D::identity())
+}
+
 pub fn parse_number(v: Option<&str>, default: f32) -> Result<f32> {
     let s = match v {
         None => return Ok(default),
@@ -6369,7 +6417,18 @@ pub fn parse_number(v: Option<&str>, default: f32) -> Result<f32> {
         }
         i += 1;
     }
-    best.ok_or_else(|| Error::invalid("SVG: malformed number"))
+    // SVG 2 §4.2 (attribute syntax): when parsing an attribute value
+    // "indicates failure, the attribute is assumed to have been
+    // specified as the given initial value" — `default` here. That
+    // covers both a malformed literal and one whose magnitude
+    // overflows `f32` (an infinity must never reach the scene graph:
+    // the writer could not print it back as a `<number>`). The
+    // `Result` is kept for signature stability; this function no
+    // longer fails.
+    match best {
+        Some(v) if v.is_finite() => Ok(v),
+        _ => Ok(default),
+    }
 }
 
 #[cfg(test)]

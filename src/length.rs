@@ -298,6 +298,10 @@ pub fn parse_length(input: &str) -> Result<Length, ParseError> {
         i += 1;
     }
     let value = best.ok_or(ParseError::BadNumber)?;
+    if !value.is_finite() {
+        // Overflowed `f32` — out of range (SVG 1.1 §F.2), not a number.
+        return Err(ParseError::BadNumber);
+    }
     let suffix = s[split_at..].trim().to_ascii_lowercase();
     let unit = match suffix.as_str() {
         "" => LengthUnit::UserUnit,

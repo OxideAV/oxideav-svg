@@ -1339,7 +1339,7 @@ fn write_node(
             if let Some(id) = id_here {
                 out.push_str(&format!(" id=\"{}\"", escape_attr(id)));
             }
-            if !g.transform.is_identity() {
+            if !prints_as_identity(&g.transform) {
                 out.push_str(&format!(
                     " transform=\"{}\"",
                     format_transform(&g.transform)
@@ -1718,7 +1718,7 @@ fn write_node(
             // point.
             let plain_group: Option<&Group> = match &**content {
                 Node::Group(cg)
-                    if cg.transform.is_identity()
+                    if prints_as_identity(&cg.transform)
                         && (cg.opacity - 1.0).abs() <= f32::EPSILON
                         && cg.clip.is_none()
                         && cg.cache_key.is_none()
@@ -1917,6 +1917,21 @@ fn format_transform(t: &Transform2D) -> String {
     )
 }
 
+/// The identity matrix as [`format_transform`] prints it.
+const IDENTITY_TRANSFORM_ATTR: &str = "matrix(1 0 0 1 0 0)";
+
+/// `true` when `t` prints as the identity matrix — the criterion every
+/// emission decision uses instead of `Transform2D::is_identity`. A
+/// transform that is identity up to the writer's six-decimal precision
+/// (e.g. the `sin(2π)` residue of an evaluated `rotate(360)`) must be
+/// treated exactly like the identity its re-parse produces, otherwise
+/// the first write emits a `transform="matrix(1 0 0 1 0 0)"` (or keeps a
+/// wrapper group) that the second write drops, and the writer never
+/// reaches its fixed point.
+fn prints_as_identity(t: &Transform2D) -> bool {
+    t.is_identity() || format_transform(t) == IDENTITY_TRANSFORM_ATTR
+}
+
 fn write_path_d(out: &mut String, cmds: &[PathCommand]) {
     let mut first = true;
     for cmd in cmds {
@@ -1981,14 +1996,20 @@ fn write_pt(out: &mut String, cmd: &str, p: Point) {
 
 fn trim_float(v: f32) -> String {
     // Normalise both +0.0 and -0.0 to "0" — the sign is invisible in
-    // SVG output and a bare "0" is one byte shorter.
-    if v == 0.0 {
+    // SVG output and a bare "0" is one byte shorter. A non-finite value
+    // has no `<number>` spelling (the parser rejects out-of-range
+    // literals, so none should reach here); print it as "0" rather
+    // than an `inf` / `NaN` token the parser cannot read back.
+    if v == 0.0 || !v.is_finite() {
         return "0".to_string();
     }
     // Print with up to 6 significant decimals, trim trailing zeros.
     let s = format!("{v:.6}");
     let trimmed = s.trim_end_matches('0').trim_end_matches('.');
-    if trimmed.is_empty() || trimmed == "-" {
+    if trimmed.is_empty() || trimmed == "-" || trimmed == "-0" {
+        // A magnitude below the printed precision is a zero; never
+        // emit "-0" (its re-parse is -0.0, which compares equal to
+        // 0.0 and would print differently next time).
         "0".into()
     } else {
         trimmed.to_string()
@@ -2349,16 +2370,42 @@ fn write_mask(
     let empty_masks = MaskCollector::default();
     let empty_idx = EmitIndex::default();
     let mut empty_stack: Vec<usize> = Vec::new();
-    write_node(
-        out,
-        content,
-        3,
-        gradients,
-        &empty_clips,
-        &empty_masks,
-        &empty_idx,
-        &mut empty_stack,
-    );
+    // The parser wraps a `<mask>`'s children in one plain `Group`
+    // (identity transform, full opacity, no clip, no cache key). Such
+    // a wrapper merges into the `<mask>` element itself — its children
+    // emit directly — because that is exactly the structure a re-parse
+    // of this output produces; emitting it as `<g>` nested one more
+    // level per parse → write cycle, so the mask side never reached a
+    // fixed point (the same merge the `<g mask>` wrapper applies).
+    match content {
+        Node::Group(cg)
+            if prints_as_identity(&cg.transform)
+                && (cg.opacity - 1.0).abs() <= f32::EPSILON
+                && cg.clip.is_none()
+                && cg.cache_key.is_none() =>
+        {
+            write_group_children(
+                out,
+                cg,
+                3,
+                gradients,
+                &empty_clips,
+                &empty_masks,
+                &empty_idx,
+                &mut empty_stack,
+            );
+        }
+        _ => write_node(
+            out,
+            content,
+            3,
+            gradients,
+            &empty_clips,
+            &empty_masks,
+            &empty_idx,
+            &mut empty_stack,
+        ),
+    }
     out.push_str("    </mask>\n");
 }
 
@@ -2486,6 +2533,10 @@ mod tests {
         assert_eq!(trim_float(1.5), "1.5");
         assert_eq!(trim_float(2.0), "2");
         assert_eq!(trim_float(-0.0), "0");
+        assert_eq!(trim_float(-1.0e-8), "0");
+        assert_eq!(trim_float(f32::INFINITY), "0");
+        assert_eq!(trim_float(f32::NAN), "0");
+        assert_eq!(trim_float(1.0e-8), "0");
         assert_eq!(trim_float(0.123456), "0.123456");
     }
 

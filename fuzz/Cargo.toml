@@ -1,0 +1,46 @@
+[package]
+name = "oxideav-svg-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+# Standalone build: the fuzz surface is the framework-free contract
+# layer + the vector document API, so no `oxideav-core` in the tree.
+[dependencies.oxideav-svg]
+path = ".."
+default-features = false
+
+# Prevent this from interfering with workspaces
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+# Raw-bytes target: feed arbitrary input at `probe` / `info` /
+# `decode` / `decode_with` / `decode_rgb8` / `decode_rgba8` / `parse` /
+# `parse_with` / `parse_with_extras` / `parse_at`. Liveness only — the
+# parser must return a `Result` for any input, never panic / abort /
+# OOM (the `DecodeOptions` defaults bound inflation, element count and
+# nesting depth).
+[[bin]]
+name = "decode"
+path = "fuzz_targets/decode.rs"
+test = false
+doc = false
+
+# Writer fixed-point target: for any input the parser accepts,
+# `write(parse(write(parse(x)))) == write(parse(x))` (plain and with
+# the `PreservedExtras` side-channel), and the `.svgz` path inflates
+# back to the plain bytes.
+[[bin]]
+name = "write_roundtrip"
+path = "fuzz_targets/write_roundtrip.rs"
+test = false
+doc = false
