@@ -2,14 +2,168 @@
 
 [![CI](https://github.com/OxideAV/oxideav-svg/actions/workflows/ci.yml/badge.svg)](https://github.com/OxideAV/oxideav-svg/actions/workflows/ci.yml) [![crates.io](https://img.shields.io/crates/v/oxideav-svg.svg)](https://crates.io/crates/oxideav-svg) [![docs.rs](https://docs.rs/oxideav-svg/badge.svg)](https://docs.rs/oxideav-svg) [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Pure-Rust SVG read + write for the
+Pure-Rust SVG read + write, following the OxideAV image-crate contract
+(`IMAGE_CRATE_API`), usable with or without the
 [`oxideav`](https://github.com/OxideAV/oxideav) framework. Implements a
 focused subset of SVG 1.1 / 2.0 — enough to load the great majority of
 real-world icons, logos, and editor exports — with a hand-rolled SAX
-parser and no external XML / SVG dependency. The decoder produces an
-[`oxideav_core::VectorFrame`]; the encoder serialises one back, and a
-`parse → write` round-trip preserves dynamic / filter / CSS definitions
-the IR cannot model directly via a `PreservedExtras` side-channel.
+parser and no external XML / SVG dependency. The parser produces an
+[`SvgDocument`] (the crate's own vector scene graph); the writer
+serialises one back byte-stably, and a `parse → write` round-trip
+preserves dynamic / filter / CSS definitions the scene graph cannot
+model via a `PreservedExtras` side-channel.
+
+## SVG is vector: what the contract means here
+
+Every other image crate decodes to pixels. SVG has none: a document is
+paths, paints, strokes, transforms and groups, and producing pixels
+from it is rasterisation — `oxideav-raster`'s job, through the
+framework. So the contract vocabulary is present in full, with these
+meanings:
+
+| Verb | Standalone (`default-features = false`) | With `registry` |
+|---|---|---|
+| `probe` | allocation-free `<svg` / gzip sniff | same |
+| `info` → `ImageInfo` | header-only: the canvas a rasteriser would produce (CSS px at 96 dpi), `Rgba`, one frame, sRGB, plus `view_box` / `user_width` / `user_height` / `animated` / `compressed` | same |
+| **`parse`** → `SvgDocument` | **the real decode**: the vector document | same; `VectorFrame::from(doc)` |
+| **`write`** → `Vec<u8>` | **the real encode**: SVG text (or `.svgz`) | same; `SvgDocument::from(&frame)` |
+| `decode` / `decode_with` / `decode_rgb8` / `decode_rgba8` / `decode_from` | parse + limits, then `Error::Unsupported` ("rasterising SVG needs oxideav-raster through the framework") | same — the framework `Decoder` emits `Frame::Vector`, which `oxideav-raster` paints |
+| `encode` / `encode_rgb8` / `encode_rgba8` / `encode_to` | validate, then `Error::Unsupported` (an SVG is not a raster target) | same |
+
+`SvgImage` / `RgbImage` / `RgbaImage` / `PixelFormat` (`Rgba`, `Rgb24`)
+exist so callers can be generic over image crates (and so a framework
+`VideoFrame` can be held in the contract shape); this crate never
+produces one. `info`'s canvas and `DecodeOptions`' geometry limits
+describe what a rasteriser *would* allocate.
+
+## Standalone use
+
+```toml
+[dependencies]
+oxideav-svg = { version = "0.1", default-features = false }
+```
+
+```rust,no_run
+let bytes = std::fs::read("icon.svg").unwrap();
+if oxideav_svg::probe(&bytes) {
+    let info = oxideav_svg::info(&bytes).unwrap();      // header only
+    println!("{}×{} px canvas, view box {:?}", info.width, info.height, info.view_box);
+
+    let doc = oxideav_svg::parse(&bytes).unwrap();      // SvgDocument: the scene graph
+    for node in &doc.root.children { let _ = node; }     // Node::Path / Group / SoftMask
+
+    let out = oxideav_svg::write(&doc);                 // byte-stable SVG text
+    std::fs::write("icon.out.svg", out).unwrap();
+
+    let opts = oxideav_svg::DecodeOptions::default().with_max_elements(10_000u64);
+    let (doc, extras) = oxideav_svg::parse_with_extras_opts(&bytes, &opts).unwrap();
+    let faithful = oxideav_svg::write_with_extras(&doc, &extras); // CSS / filters / SMIL kept
+    let svgz = oxideav_svg::write_with(&doc, &oxideav_svg::EncodeOptions::new().with_compress(true)).unwrap();
+    let _ = (faithful, svgz);
+}
+```
+
+Depth entry points: `parse_at(bytes, t_seconds)` samples the SMIL
+timeline, `parse_at_with_languages` drives `<switch systemLanguage>`,
+`parse_with_extras` / `write_with_extras` carry the `PreservedExtras`
+side-channel, `write_svgz` gzips, `parse_from` / `write_to` stream,
+`resolve_fragment` routes SVG 2 §16.3 fragment identifiers. The
+`text` feature (default-on, implies `registry`) shapes `<text>` into
+glyph outlines through `oxideav-scribe`; without it a `<text>` element
+keeps its slot as an empty group and still round-trips verbatim.
+
+## Framework use
+
+```rust,no_run
+let mut ctx = oxideav_core::RuntimeContext::new();
+oxideav_svg::register(&mut ctx);                 // codec "svg" + containers svg / svgz
+// or: register_codecs(&mut ctx.codecs); register_containers(&mut ctx.containers);
+let params = oxideav_core::CodecParameters::video(oxideav_core::CodecId::new(oxideav_svg::CODEC_ID_STR));
+let _dec = oxideav_svg::make_decoder(&params).unwrap();   // Packet → Frame::Vector
+let _enc = oxideav_svg::make_encoder(&params).unwrap();   // Frame::Vector → Packet
+
+let doc = oxideav_svg::parse(b"<svg width='1' height='1'/>").unwrap();
+let frame: oxideav_core::VectorFrame = doc.into();        // and back: SvgDocument::from(&frame)
+```
+
+The framework `Decoder` / `Encoder` are thin adapters over `parse` /
+`write` (one implementation); `SvgDocument` ↔ `VectorFrame` converts
+field for field (a frame's raster `Node::Image` becomes an empty group:
+the SVG writer never serialised it). `SvgImage` bridges to `VideoFrame`
+(`From`, `from_video_frame`, `TryFrom<(&VideoFrame, &CodecParameters)>`)
+with the sRGB colour signal stamped. `SvgError` maps onto
+`oxideav_core::Error` (`LimitExceeded` → `ResourceExhausted`).
+The deprecated `parse_svg*` / `write_svg*` wrappers keep their
+`VectorFrame` signatures for one release.
+
+`<text>` / `<tspan>` emit glyph paths only when a font resolver is
+installed (the crate does not own a font registry):
+
+```rust,no_run
+use oxideav_scribe::{Face, FaceChain};
+
+let dejavu = std::fs::read("DejaVuSans.ttf").unwrap();
+oxideav_svg::text::set_font_resolver(move |_family, _size_px| {
+    Face::from_ttf_bytes(dejavu.clone()).ok().map(FaceChain::new)
+}).ok();
+```
+
+## Supported layouts
+
+| Layout | `info` | `decode` | `encode` |
+|---|---|---|---|
+| `Rgba` | reported (the canvas a rasteriser produces) | `Unsupported` — vector, see above | `Unsupported` — not a raster target |
+| `Rgb24` | — | — | accepted by `SvgImage::from_rgb8`, then `Unsupported` |
+
+The vector document (`parse` / `write`) is the real decode / encode
+pair; its element coverage is listed under **Elements** below.
+
+## Options
+
+`DecodeOptions` (`#[non_exhaustive]`, `Default`, `with_*`):
+
+| Field | Default | Applies to |
+|---|---|---|
+| `max_bytes` | 128 MiB | input length and the inflated size of an `.svgz` (`parse*`, `info`, `decode*`) |
+| `max_elements` | 1 048 576 | XML elements per document (`parse*`, `decode*`) |
+| `max_depth` | 128 | XML nesting depth (`parse*`, `decode*`) |
+| `max_width` / `max_height` / `max_pixels` | `None` / `None` / 256 Mpx | the `info` canvas, checked by `decode*` only — parsing allocates no pixels |
+| `strict` | `false` | reject mismatched / unterminated tags, a document element other than `<svg>`, more than one top-level element |
+
+`EncodeOptions` has one field, `compress` (gzip `.svgz` body), because
+SVG offers exactly one encoding choice; `write_with` /
+`write_with_extras_opts` / `write_to` honour it.
+
+## Metadata and colour
+
+SVG colours are sRGB by definition (SVG 1.1 §4.2 / CSS Color), so
+`ImageInfo.color` and `SvgImage::color` default to
+`ColorInfo::srgb()` — full range, primaries `1`, transfer `13`, matrix
+`0` — and the raster bridge stamps that signal on the frame (the
+format defines it). SVG embeds no ICC profile or Exif payload
+(`has_icc` / `has_exif` are `false`); `has_xmp` is `true` when a
+`<metadata>` element carries an `<x:xmpmeta>` / `<rdf:RDF>` packet.
+`Metadata.gamma` is always `None`.
+
+`info`'s canvas: the root `width` / `height` with absolute units
+converted at 96 dpi (`in`, `cm`, `mm`, `Q`, `pt`, `pc`, `px`; a bare
+number is one user unit = 1 px), percentages and font-relative lengths
+falling back to the `viewBox`, a missing axis derived from the other
+via the `viewBox` aspect ratio, rounded up to whole pixels; `0 × 0`
+when the document has no intrinsic size. `user_width` / `user_height`
+carry the raw user-unit values `parse` stores in `SvgDocument`.
+`frames` is always `1`: SMIL animation is a continuous timeline
+(`parse_at`), flagged by `animated`.
+
+## Limits
+
+Beyond `DecodeOptions`: the model builder caps render depth at
+`element::MAX_RENDER_DEPTH` (128) and `<use>` instantiation at
+`element::MAX_USE_EXPANSIONS`; gradient / pattern / filter reference
+chains stop after eight hops; `probe` inspects the first `PROBE_WINDOW`
+(4 KiB) bytes. `info` may report a canvas larger than any rasteriser
+could allocate — it is header-only — and `decode_with` turns that into
+`LimitExceeded` against `max_width` / `max_height` / `max_pixels`.
 
 ## Elements
 
@@ -30,7 +184,7 @@ the IR cannot model directly via a `PreservedExtras` side-channel.
   `<line>`, `<polyline>`, `<polygon>`, `<path>` (full `d` mini-language:
   M/m L/l H/h V/v C/c S/s Q/q T/t A/a Z/z, smooth-curve reflection),
   plus the `pathLength` rescaling of dash patterns. A
-  `parse_svg_with_extras → write_svg_with_extras` round-trip keeps each
+  `parse_with_extras → write_with_extras` round-trip keeps each
   basic shape's **native identity** (SVG 2 §9.2–§9.7): the encoder
   re-emits `<rect x=… width=…>` / `<circle cx=…>` / … with the verbatim
   geometry attributes instead of the flattened `<path d>`, so
@@ -42,7 +196,7 @@ the IR cannot model directly via a `PreservedExtras` side-channel.
   so the §9.6.1 rescale is applied exactly once per parse.
 * **Paint servers** — `<linearGradient>` / `<radialGradient>` with
   `<stop>` children and `spreadMethod`, resolved via `fill="url(#id)"`.
-  A `parse_svg_with_extras → write_svg_with_extras` round-trip
+  A `parse_with_extras → write_with_extras` round-trip
   preserves the **reference identity**: the author's verbatim gradient
   def (original id, `gradientUnits`, `gradientTransform`, `href`
   template chain) is re-emitted and the `fill=` / `stroke=` reference
@@ -53,7 +207,7 @@ the IR cannot model directly via a `PreservedExtras` side-channel.
   [`oxideav-scribe`](https://github.com/OxideAV/oxideav-scribe); the
   caller installs a font resolver once at startup. Gated behind the
   default-on `text` feature. A
-  `parse_svg_with_extras → write_svg_with_extras` round-trip re-emits
+  `parse_with_extras → write_with_extras` round-trip re-emits
   the **verbatim `<text>` element** (SVG 2 §11.2) in place of the
   flattened glyph outlines — string content, font selection properties,
   the §11.2.2 `<tspan>` per-character positioning arrays
@@ -65,15 +219,15 @@ the IR cannot model directly via a `PreservedExtras` side-channel.
 * **References** — `<use href="#id">` (SVG 2 `href` + SVG 1.1
   `xlink:href`), with cycle detection. The decoder flattens each `<use>`
   into the instantiated geometry for rendering, but a
-  `parse_svg_with_extras → write_svg_with_extras` round-trip *collapses*
+  `parse_with_extras → write_with_extras` round-trip *collapses*
   the instance back to a single `<use href="#id" …/>` (preserving the
   reference identity + `x`/`y`/`width`/`height`/`transform`/own-`id`)
   instead of inlining the target N times, and re-emits the
   `<defs>`-housed target (plain shape / `<g>` / `<symbol>`) so the
   reference still resolves.
-* **Masking / clipping** — `<mask>` → `oxideav_core::Node::SoftMask`
+* **Masking / clipping** — `<mask>` → `Node::SoftMask`
   honouring `mask-type`; `<clipPath>` collapsed into the group's `clip`.
-  A `parse_svg_with_extras → write_svg_with_extras` round-trip preserves
+  A `parse_with_extras → write_with_extras` round-trip preserves
   the *reference identity*: the verbatim `<clipPath>` / `<mask>` def
   (original id, `clipPathUnits` / `maskUnits`, and every clip shape) is
   re-emitted and the `clip-path=` / `mask=` reference re-points at the
@@ -144,21 +298,21 @@ the IR cannot model directly via a `PreservedExtras` side-channel.
   `evaluate_filter_graph_resolved` composes the resolver with the clipped
   evaluator, deriving the working-raster size from the filter region. The
   general rasteriser surface remains `oxideav-raster` work. A
-  `parse_svg_with_extras → write_svg_with_extras` round-trip re-attaches
+  `parse_with_extras → write_with_extras` round-trip re-attaches
   the `filter="url(#id)"` reference on the wrapper group so the preserved
   `<filter>` def stays connected to its graphics element (a chained
   `url(#a) url(#b)` list round-trips verbatim).
 * **Markers** — `<marker>` definitions parse into a typed `MarkerDef`
-  and round-trip; a `parse_svg_with_extras → write_svg_with_extras`
+  and round-trip; a `parse_with_extras → write_with_extras`
   round-trip also re-attaches the shape's `marker-start` / `marker-mid`
   / `marker-end` references (the `marker` shorthand expands into the
   three longhands) so the preserved def stays referenced. Vertex
   placement / `orient` rendering is deferred to a core `Marker` node.
 * **Animation** — `<animate>` / `<set>` / `<animateTransform>`
-  snapshotting via `parse_svg_at(bytes, t)` with the SMIL timing model
+  snapshotting via `parse_at(bytes, t)` with the SMIL timing model
   (`begin` / `dur` / `repeatCount` / `keyTimes` / `values` /
   `from`/`to`/`by`, `calcMode` `discrete`/`linear`/`paced`/`spline`).
-  `parse_svg` snapshots first-paint at `t = 0`. On round-trip every
+  `parse` snapshots first-paint at `t = 0`. On round-trip every
   animation element is re-emitted **as a child of its direct XML
   parent** (SMIL Animation §3.1 implicit targeting), keyed by
   scene-graph path — id-less parents included — and a structural
@@ -167,7 +321,7 @@ the IR cannot model directly via a `PreservedExtras` side-channel.
   defs target / `<text>` / `<switch>` / captured `<image>`).
 * **Conditional processing** — `<switch>` evaluates
   `requiredExtensions` / `systemLanguage` and renders the first passing
-  child; a `parse_svg_with_extras → write_svg_with_extras` round-trip
+  child; a `parse_with_extras → write_with_extras` round-trip
   re-emits the whole `<switch>` verbatim (every alternative + the
   conditional attributes) rather than freezing the decode-time
   selection, so a re-parse under a different `systemLanguage` re-selects
@@ -177,7 +331,7 @@ the IR cannot model directly via a `PreservedExtras` side-channel.
   into `PreservedExtras::images` as a typed `SvgImage`: inline
   `data:` payloads are base64-decoded (MIME recorded), external URLs
   preserved verbatim (the decoder never fetches). A
-  `parse_svg_with_extras → write_svg_with_extras` round-trip is
+  `parse_with_extras → write_with_extras` round-trip is
   lossless — the geometry `x` / `y` / `width` / `height` keep their
   source `<length>` unit / percentage token (`width="50%"` survives as
   `50%`), `preserveAspectRatio` / `image-rendering` / `crossorigin` are
@@ -191,7 +345,7 @@ the IR cannot model directly via a `PreservedExtras` side-channel.
 * **Hidden content** — a renderable element carrying an inline
   `display:none` (attribute or its own `style="…"` declaration; CSS 2.1
   §9.2.4) builds no scene node but survives the
-  `parse_svg_with_extras → write_svg_with_extras` round-trip verbatim,
+  `parse_with_extras → write_with_extras` round-trip verbatim,
   re-emitted at the tail of its parent container. Stylesheet-driven
   `display:none` subtrees still drop (documented limitation).
 * **Graceful handling** — `<foreignObject>` contributes no scene node
@@ -238,14 +392,16 @@ through four invariants:
 ## Compression
 
 `.svgz` (gzip-compressed SVG, RFC 1952) is sniffed transparently on
-read; `write_svgz()` and the `svgz` muxer produce gzipped output. Pure
-Rust, no C dependencies.
+read (`probe` / `info` / `parse` / `decode*`); `write_svgz`,
+`write_with(…, &EncodeOptions::new().with_compress(true))` and the
+`svgz` muxer produce gzipped output through compcol. Pure Rust, no C
+dependencies.
 
 ## Robustness
 
 The parse/model surface is hardened against adversarial input — every
-public parser returns a typed `oxideav_core::Error` (or a value) and
-never panics or aborts, and every unbounded-resource path carries an
+public parser returns a typed [`SvgError`] (or a value) and never
+panics or aborts, and every unbounded-resource path carries an
 explicit ceiling:
 
 * **Nesting depth** — the SAX parser refuses to descend past
@@ -258,16 +414,29 @@ explicit ceiling:
   blow-up (`#n0 → #n1 ×2 → …`, 2ⁿ nodes with no repeated id), and the
   render-depth guard caps a *linear* `<use>` chain (a decode recursion
   as deep as the chain even though the XML is flat).
-* **`.svgz` inflation** — gzip input is inflated through a limited
-  reader capped at `parser::MAX_SVGZ_INFLATED` (128 MiB), so a
-  decompression bomb is refused before its payload is ever materialised.
+* **`.svgz` inflation** — gzip input is inflated through compcol's
+  capped decoder, bounded by `DecodeOptions::max_bytes` (default
+  `parser::MAX_SVGZ_INFLATED`, 128 MiB), so a decompression bomb is
+  refused with `LimitExceeded` before its payload is ever materialised.
+* **Element count** — `DecodeOptions::max_elements` (default 1 M)
+  bounds the XML tree a hostile `<g/><g/>…` stream can allocate.
+* **Invalid values** — SVG 2 §4.2: a presentation attribute whose value
+  fails to parse takes the property's initial value and a CSS
+  declaration with an invalid value is ignored (CSS 2.1 §4.1.8), so a
+  stray `fill=""`, `transform="0"` or a number that overflows `f32`
+  degrades one property instead of failing the document; `strict`
+  mode still rejects malformed XML structure.
 * **Reference chains** — gradient/pattern template inheritance and
   `<filter>` `href` inheritance each combine a visited-set cycle guard
   with an eight-hop depth cap.
 
 A curated adversarial corpus plus a seeded byte-mutation fuzzer over the
 path/transform/length/paint/XML/document parsers (see
-`tests/round403_parser_robustness.rs`) enforce the no-panic invariant.
+`tests/round403_parser_robustness.rs`) enforce the no-panic invariant,
+and two `cargo fuzz` targets under `fuzz/` run it continuously:
+`decode` (probe / info / decode* / parse* over raw bytes, default and
+tight limits) and `write_roundtrip` (the plain writer fixed point,
+`.svgz` round-trip and re-parseability of the extras writer's output).
 
 ## Not yet supported
 
@@ -284,44 +453,6 @@ path/transform/length/paint/XML/document parsers (see
   capture** above), and live pseudo-element / stateful pseudo-class
   evaluation (selectors parse + round-trip; the synthesised-box renderer
   is `oxideav-raster` work).
-
-## Usage
-
-```rust,no_run
-use oxideav_svg::{parse_svg, write_svg};
-
-let bytes = std::fs::read("icon.svg").unwrap();
-let frame = parse_svg(&bytes).unwrap();
-let out = write_svg(&frame);
-std::fs::write("icon.out.svg", out).unwrap();
-```
-
-Register the codec into a runtime context:
-
-```rust,no_run
-let mut ctx = oxideav_core::RuntimeContext::new();
-oxideav_svg::register(&mut ctx);
-```
-
-`<text>` / `<tspan>` emit glyph paths only when a font resolver is
-installed (the crate does not own a font registry):
-
-```rust,no_run
-use oxideav_scribe::{Face, FaceChain};
-
-let dejavu = std::fs::read("DejaVuSans.ttf").unwrap();
-oxideav_svg::text::set_font_resolver(move |_family, _size_px| {
-    Face::from_ttf_bytes(dejavu.clone()).ok().map(FaceChain::new)
-}).ok();
-```
-
-```toml
-[dependencies]
-oxideav-svg = "0.1"
-```
-
-Disable default features (`default-features = false`) to drop the
-`<text>` path and the scribe dependency tree.
 
 ## License
 

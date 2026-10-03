@@ -21,7 +21,7 @@
 //!   (allocation-free sniff; header-only canvas size in CSS px at
 //!   96 dpi, `Rgba`, one frame).
 //! * [`parse`] → [`SvgDocument`] is the real standalone decode and
-//!   [`write`] its inverse; [`parse_with`] takes the [`DecodeOptions`]
+//!   [`write()`] its inverse; [`parse_with`] takes the [`DecodeOptions`]
 //!   limits (input bytes, element count, nesting depth, `strict`).
 //! * The raster verbs validate their input and then answer
 //!   [`SvgError::Unsupported`]: rasterising SVG is `oxideav-raster`'s

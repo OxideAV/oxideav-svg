@@ -15,6 +15,13 @@ use crate::model::{
 };
 use crate::options::EncodeOptions;
 
+// The pre-contract module paths (`oxideav_svg::encoder::write_svg`, …)
+// stay importable for one release; they resolve to the deprecated
+// `VectorFrame`-typed wrappers in [`crate::registry`].
+#[cfg(feature = "registry")]
+#[allow(deprecated)]
+pub use crate::registry::{make_encoder, write_svg, write_svg_with_extras};
+
 use crate::parser::{escape_attr, Element, Node as XmlNode};
 use crate::preserved::{
     AnimationFragment, DescriptiveBinding, DescriptiveText, LinkBinding, PreservedExtras,

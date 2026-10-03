@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Image-crate contract surface (`IMAGE_CRATE_API`) at the root: `probe`, `info` → `ImageInfo` (header-only canvas in CSS px at 96 dpi, `Rgba`, one frame, sRGB, plus `view_box` / `user_width` / `user_height` / `animated` / `compressed`), `decode` / `decode_with` / `decode_rgb8` / `decode_rgba8` / `decode_from`, `encode` / `encode_rgb8` / `encode_rgba8` / `encode_to` (the raster verbs validate their input and answer `Unsupported`: SVG is vector — rasterising is oxideav-raster's job through the framework), `SvgImage` / `RgbImage` / `RgbaImage` / `SvgPixelFormat` + `PixelFormat` alias / `Plane` / `ColorInfo` / `ColorRange` / `Metadata`, `SvgError` + `Error` alias (`InvalidData` / `Unsupported` / `LimitExceeded` / `Io`), `DecodeOptions` (`max_width` / `max_height` / `max_pixels` / `max_bytes` / `strict` + `max_elements` / `max_depth`), `EncodeOptions { compress }`.
+- `model` module: the crate-local vector scene graph (`SvgDocument`, `Node`, `Group`, `PathNode`, `Path`, `PathCommand`, `Point`, `Paint`, `Rgba`, gradients, `Stroke`, `Transform2D`, `ViewBox`, …) the parser produces and the writer consumes without `oxideav-core`.
+- `registry` feature (default-on) carrying every framework item: `register` / `register_codecs` / `register_containers`, `make_decoder` / `make_encoder` (thin `Frame::Vector` adapters over `parse` / `write`), `From<SvgDocument> for VectorFrame` and `From<VectorFrame> for SvgDocument` (+ `document_into_frame` / `document_from_frame`, node-level `node_to_core` / `node_from_core`), the `SvgImage` ↔ `VideoFrame` bridge (`From`, `from_video_frame`, `TryFrom<(&VideoFrame, &CodecParameters)>`), `From<SvgError> for oxideav_core::Error`.
+- Vector API: `parse_with` / `parse_at_with_languages_opts` / `parse_with_extras_opts` (limits), `write_with` / `write_with_extras_opts` (gzip via `EncodeOptions`), `parse_from` / `write_to` (streaming), `info_with`, `PROBE_WINDOW`; `parser::parse_xml_with_limits` + `XmlLimits`, `parser::parse_root_start_tag`, `parser::inflate_gzip_capped`.
+- Inline `ci-standalone` CI job (`--no-default-features` build + tests); `fuzz/` sub-crate with `decode` and `write_roundtrip` targets.
+- SVG 2 §4.2 error handling: a presentation attribute whose value fails to parse (paints, opacities, stroke properties, `fill-rule`, `transform` / `gradientTransform` / `patternTransform`, numeric and length attributes — including literals that overflow `f32`) takes the property's initial value; a CSS declaration with an invalid value is ignored (CSS 2.1 §4.1.8). Neither is a document error any more.
+- `strict` parsing: mismatched or unterminated tags, a document element other than `<svg>` and more than one top-level element are rejected.
+
+### Changed
+
+- `oxideav-core` is optional behind the default-on `registry` feature; `text` implies `registry` (scribe hands back framework nodes). The crate builds and passes its suite with `default-features = false`.
+- Entry points renamed (format name out of the function name): `parse_svg` → `parse`, `parse_svg_at` → `parse_at`, `parse_svg_at_with_languages` → `parse_at_with_languages`, `parse_svg_with_extras` → `parse_with_extras`, `write_svg` → `write`, `write_svg_with_extras` → `write_with_extras`. They return / take `SvgDocument`; `write_svgz` keeps its name and now takes `&SvgDocument`; `resolve_fragment` takes `&SvgDocument`.
+- `.svgz` inflate / deflate moved from flate2 to compcol's gzip; the inflation cap is `DecodeOptions::max_bytes` (default 128 MiB) and an over-cap stream is `LimitExceeded` (was `InvalidData`). The XML depth guard is `LimitExceeded` too.
+- `<mask>` definitions reach the writer's fixed point: the parser's plain wrapper group merges into the `<mask>` element instead of nesting one more `<g>` per `parse → write` cycle (changes `write` output for mask-bearing documents by one `<g>` level).
+- Transform emission decides on the printed form: a transform that is identity up to six decimals is written as none, and `-0` / non-finite values print as `0`.
+- Without the `text` feature a `<text>` element keeps its scene-graph slot as an empty group, so the verbatim capture round-trips it.
+- `Cargo.toml` gains `exclude = ["/tests", "/fuzz"]`.
+
+### Deprecated
+
+- `parse_svg`, `parse_svg_at`, `parse_svg_at_with_languages`, `parse_svg_with_extras`, `write_svg`, `write_svg_with_extras` (`registry` only) — thin wrappers keeping the `VectorFrame` signatures for one release.
+
+### Removed
+
+- The `flate2` dependency (and dev-dependency).
+
 ## [0.1.8](https://github.com/OxideAV/oxideav-svg/compare/v0.1.7...v0.1.8) - 2026-08-20
 
 ### Added

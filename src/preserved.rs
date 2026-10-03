@@ -1,7 +1,7 @@
 //! Round 4 — encoder-side preservation of source XML elements that
 //! `crate::model::Node` doesn't represent natively.
 //!
-//! The decoder produces a [`VectorFrame`] whose scene graph holds only
+//! The decoder produces a [`SvgDocument`](crate::SvgDocument) whose scene graph holds only
 //! shapes / groups / soft-masks / images. Round 1-3 already throws
 //! away the original `<style>`, `<filter>`, `<animate>` definitions —
 //! they're either consumed (snapshot at t=0) or held only as parser
@@ -29,7 +29,7 @@ use crate::image::SvgImage;
 use crate::parser::Element;
 
 /// Side-channel buffer of source-XML fragments the encoder needs to
-/// re-emit alongside the [`VectorFrame`] scene graph.
+/// re-emit alongside the [`SvgDocument`](crate::SvgDocument) scene graph.
 ///
 /// Populated by [`crate::decoder::parse_with_extras`] during the
 /// document pre-walk; consumed by
@@ -72,7 +72,7 @@ pub struct PreservedExtras {
     /// Round 12 — verbatim text of the root `<svg>` element's
     /// `preserveAspectRatio` attribute (e.g. `"xMinYMid slice"`). The
     /// decoder bakes the spec-mandated mapping into
-    /// [`crate::model::VectorFrame::root.transform`] so rasterisers
+    /// `SvgDocument::root.transform` so rasterisers
     /// without aspect-ratio knowledge produce the correct visual
     /// result; this side-channel preserves the original keyword pair
     /// so the encoder can re-emit it verbatim.

@@ -6,6 +6,15 @@ use crate::error::{Error, Result};
 use crate::model::{Group, SvgDocument, Transform2D, ViewBox};
 use crate::options::DecodeOptions;
 
+// The pre-contract module paths (`oxideav_svg::decoder::parse_svg`, …)
+// stay importable for one release; they resolve to the deprecated
+// `VectorFrame`-typed wrappers in [`crate::registry`].
+#[cfg(feature = "registry")]
+#[allow(deprecated)]
+pub use crate::registry::{
+    make_decoder, parse_svg, parse_svg_at, parse_svg_at_with_languages, parse_svg_with_extras,
+};
+
 use crate::css::MatchContext;
 use crate::element::{
     derive_child_ctx, flatten_gradient_to_paint, parse_clip_path_def, parse_clip_rule_attr,
