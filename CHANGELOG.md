@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.9](https://github.com/OxideAV/oxideav-svg/compare/v0.1.8...v0.1.9) - 2026-10-03
+
+### Other
+
+- README in the contract order + CHANGELOG; pre-contract module paths kept as deprecated aliases
+- fuzz targets + writer fixed point on masks / near-identity transforms + SVG 2 §4.2 invalid-value handling
+- image-crate contract — core optional behind `registry`, SvgDocument model, probe/info/decode*/encode* vocabulary
+
 ### Added
 
 - Image-crate contract surface (`IMAGE_CRATE_API`) at the root: `probe`, `info` → `ImageInfo` (header-only canvas in CSS px at 96 dpi, `Rgba`, one frame, sRGB, plus `view_box` / `user_width` / `user_height` / `animated` / `compressed`), `decode` / `decode_with` / `decode_rgb8` / `decode_rgba8` / `decode_from`, `encode` / `encode_rgb8` / `encode_rgba8` / `encode_to` (the raster verbs validate their input and answer `Unsupported`: SVG is vector — rasterising is oxideav-raster's job through the framework), `SvgImage` / `RgbImage` / `RgbaImage` / `SvgPixelFormat` + `PixelFormat` alias / `Plane` / `ColorInfo` / `ColorRange` / `Metadata`, `SvgError` + `Error` alias (`InvalidData` / `Unsupported` / `LimitExceeded` / `Io`), `DecodeOptions` (`max_width` / `max_height` / `max_pixels` / `max_bytes` / `strict` + `max_elements` / `max_depth`), `EncodeOptions { compress }`.
