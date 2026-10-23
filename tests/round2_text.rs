@@ -6,8 +6,8 @@
 
 #![cfg(feature = "text")]
 
-use oxideav_svg::parse;
 use oxideav_svg::Node;
+use oxideav_svg::parse;
 
 #[test]
 fn text_without_font_resolver_parses_to_empty_group() {

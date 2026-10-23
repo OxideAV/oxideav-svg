@@ -10,8 +10,8 @@
 //! * Round-trip preservation: the `<animateMotion>` element survives a
 //!   `parse_with_extras → write_with_extras` cycle verbatim.
 
-use oxideav_svg::{parse_at, parse_with_extras, write_with_extras};
 use oxideav_svg::{Node, Path, PathCommand};
+use oxideav_svg::{parse_at, parse_with_extras, write_with_extras};
 
 /// Extract the transform Matrix3x2 from the first child of the scene
 /// root. A shape with a `transform=` (e.g. one we injected via

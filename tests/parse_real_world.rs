@@ -2,8 +2,8 @@
 //! re-emit it, parse the output back, and assert structural equality:
 //! same shape count, same width/height, same stroke widths.
 
-use oxideav_svg::{parse, write};
 use oxideav_svg::{Node, Paint, SvgDocument};
+use oxideav_svg::{parse, write};
 
 const FIXTURE: &[u8] = include_bytes!("fixtures/icon-house.svg");
 

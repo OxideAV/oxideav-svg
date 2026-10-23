@@ -26,7 +26,7 @@
 //! `bounding-box` / `painted`.
 
 use oxideav_svg::element::{PaintState, PointerEvents};
-use oxideav_svg::parser::{parse_xml, Element, Node as XmlNode};
+use oxideav_svg::parser::{Element, Node as XmlNode, parse_xml};
 use oxideav_svg::{parse, parse_with_extras, write_with_extras};
 
 /// Default `pointer-events` is `visiblePainted` per the §15.6

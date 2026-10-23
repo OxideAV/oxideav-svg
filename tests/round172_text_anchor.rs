@@ -11,7 +11,7 @@
 
 use oxideav_svg::element::{PaintState, TextAnchor};
 use oxideav_svg::parse;
-use oxideav_svg::parser::{parse_xml, Element};
+use oxideav_svg::parser::{Element, parse_xml};
 
 /// Default `text-anchor` is `start` (per §11.10.1.1 Initial table).
 #[test]

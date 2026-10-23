@@ -2,11 +2,11 @@
 //! result back, and assert structural equality of the round-tripped
 //! scene graph.
 
-use oxideav_svg::{parse, write};
 use oxideav_svg::{
     FillRule, GradientStop, Group, LineCap, LineJoin, LinearGradient, Node, Paint, Path, PathNode,
     Point, Rgba, SpreadMethod, Stroke, SvgDocument, Transform2D, ViewBox,
 };
+use oxideav_svg::{parse, write};
 
 fn red_triangle() -> PathNode {
     let mut path = Path::new();

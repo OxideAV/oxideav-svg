@@ -11,8 +11,8 @@
 //! round-trip check.
 
 use oxideav_svg::filter::{
-    parse_filter_graph, resolve_filter_element_chain, ColorInterpolationFilters, FilterGraph,
-    FilterPrimitive, FilterRes, FilterUnits,
+    ColorInterpolationFilters, FilterGraph, FilterPrimitive, FilterRes, FilterUnits,
+    parse_filter_graph, resolve_filter_element_chain,
 };
 use oxideav_svg::parser::Element;
 use oxideav_svg::{parse_with_extras, write_with_extras};

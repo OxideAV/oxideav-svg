@@ -9,7 +9,7 @@
 //! no pixels.
 
 use crate::error::{Result, SvgError};
-use crate::parser::{XmlLimits, DEFAULT_MAX_ELEMENTS, MAX_SVGZ_INFLATED, MAX_XML_DEPTH};
+use crate::parser::{DEFAULT_MAX_ELEMENTS, MAX_SVGZ_INFLATED, MAX_XML_DEPTH, XmlLimits};
 
 /// Limits and strictness for [`crate::parse_with`] / [`crate::decode_with`].
 ///
@@ -127,19 +127,19 @@ impl DecodeOptions {
 
     /// Canvas-geometry check used by the `decode*` functions.
     pub(crate) fn check_canvas(&self, width: u32, height: u32) -> Result<()> {
-        if let Some(m) = self.max_width {
-            if width > m {
-                return Err(SvgError::limit(format!(
-                    "SVG: canvas width {width} exceeds max_width {m}"
-                )));
-            }
+        if let Some(m) = self.max_width
+            && width > m
+        {
+            return Err(SvgError::limit(format!(
+                "SVG: canvas width {width} exceeds max_width {m}"
+            )));
         }
-        if let Some(m) = self.max_height {
-            if height > m {
-                return Err(SvgError::limit(format!(
-                    "SVG: canvas height {height} exceeds max_height {m}"
-                )));
-            }
+        if let Some(m) = self.max_height
+            && height > m
+        {
+            return Err(SvgError::limit(format!(
+                "SVG: canvas height {height} exceeds max_height {m}"
+            )));
         }
         if let Some(m) = self.max_pixels {
             let pixels = u64::from(width) * u64::from(height);

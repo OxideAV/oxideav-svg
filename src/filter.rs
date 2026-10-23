@@ -43,7 +43,7 @@
 //! chain before graph parsing).
 
 use crate::element::parse_number;
-use crate::parser::{attr, tag_local, Element, Node as XmlNode};
+use crate::parser::{Element, Node as XmlNode, attr, tag_local};
 
 /// One source of pixels feeding a primitive's `in` / `in2` slot.
 #[derive(Clone, Debug, PartialEq)]
@@ -1169,10 +1169,10 @@ pub fn resolve_filter_element_chain(start: &Element, filters: &[Element]) -> Ele
             }
         }
     }
-    if !has_filter_nodes(start) {
-        if let Some(src) = chain[1..].iter().find(|e| has_filter_nodes(e)) {
-            merged.children = src.children.clone();
-        }
+    if !has_filter_nodes(start)
+        && let Some(src) = chain[1..].iter().find(|e| has_filter_nodes(e))
+    {
+        merged.children = src.children.clone();
     }
     merged
 }
@@ -1644,7 +1644,7 @@ fn parse_lighting_color(s: Option<&str>) -> FloodColor {
             a: 255,
         };
     };
-    use crate::color::{parse_paint, PaintValue};
+    use crate::color::{PaintValue, parse_paint};
     match parse_paint(raw) {
         Ok(PaintValue::Color(rgba)) => FloodColor {
             r: rgba.r,
@@ -1761,7 +1761,7 @@ fn parse_two_numbers(s: Option<&str>) -> (f32, Option<f32>) {
 /// Parse a CSS-named or `#rrggbb[aa]` flood colour. Anything unknown
 /// (including `currentColor`) resolves to opaque black.
 fn parse_flood_color(s: &str) -> FloodColor {
-    use crate::color::{parse_paint, PaintValue};
+    use crate::color::{PaintValue, parse_paint};
     match parse_paint(s) {
         Ok(PaintValue::Color(rgba)) => FloodColor {
             r: rgba.r,

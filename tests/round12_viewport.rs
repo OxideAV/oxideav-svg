@@ -26,8 +26,8 @@
 //! (0, 0) → (50, 0). The "meet" letterbox shows up as 50px of empty
 //! canvas at left and right.
 
-use oxideav_svg::{parse, parse_with_extras, write_with_extras};
 use oxideav_svg::{Point, Transform2D};
+use oxideav_svg::{parse, parse_with_extras, write_with_extras};
 
 /// Apply a [`Transform2D`] to a `(x, y)` point. Mirrors the
 /// renderer's left-multiply convention (`a*x + c*y + e`).

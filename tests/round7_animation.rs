@@ -17,10 +17,10 @@ fn find_first_path(frame: &oxideav_svg::SvgDocument) -> &oxideav_svg::Node {
             if let oxideav_svg::Node::Path(_) = c {
                 return Some(c);
             }
-            if let oxideav_svg::Node::Group(sg) = c {
-                if let Some(hit) = walk(sg) {
-                    return Some(hit);
-                }
+            if let oxideav_svg::Node::Group(sg) = c
+                && let Some(hit) = walk(sg)
+            {
+                return Some(hit);
             }
         }
         None

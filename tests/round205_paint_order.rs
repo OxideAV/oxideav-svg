@@ -17,8 +17,8 @@
 //!   * `PreservedExtras::paint_orders` side-channel — preserves the
 //!     author's keyword string for a byte-faithful round-trip.
 
-use oxideav_svg::{parse, parse_with_extras, write_with_extras};
 use oxideav_svg::{Node, SvgDocument};
+use oxideav_svg::{parse, parse_with_extras, write_with_extras};
 
 /// Count the number of `Node::Path` leaves under the first scene-graph
 /// child. The round-205 `paint-order: stroke fill` split produces two

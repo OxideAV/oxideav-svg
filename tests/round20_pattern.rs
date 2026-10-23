@@ -125,7 +125,7 @@ fn typed_pattern_def_records_default_units() {
     // entry — but parse_with_extras already populated the defs
     // inside its internal ctx and dropped it. Test the typed view by
     // parsing through the element module directly.
-    use oxideav_svg::element::{parse_pattern_def, ParseContext};
+    use oxideav_svg::element::{ParseContext, parse_pattern_def};
     use oxideav_svg::parser::parse_xml;
     let xml = std::str::from_utf8(src).unwrap();
     let nodes = parse_xml(xml).unwrap();
@@ -185,8 +185,8 @@ fn pattern_units_user_space_on_use_recorded() {
     </pattern>
   </defs>
 </svg>"##;
-    use oxideav_svg::element::{parse_pattern_def, ParseContext};
-    use oxideav_svg::parser::{parse_xml, tag_local, Node as XmlNode};
+    use oxideav_svg::element::{ParseContext, parse_pattern_def};
+    use oxideav_svg::parser::{Node as XmlNode, parse_xml, tag_local};
     let nodes = parse_xml(std::str::from_utf8(src).unwrap()).unwrap();
     let svg = match &nodes[0] {
         XmlNode::Element(e) => e,
@@ -292,8 +292,8 @@ fn pattern_with_xlink_href_template_reference() {
     <pattern id="p1" xlink:href="#tpl"/>
   </defs>
 </svg>"##;
-    use oxideav_svg::element::{parse_pattern_def, ParseContext};
-    use oxideav_svg::parser::{parse_xml, tag_local, Node as XmlNode};
+    use oxideav_svg::element::{ParseContext, parse_pattern_def};
+    use oxideav_svg::parser::{Node as XmlNode, parse_xml, tag_local};
     let nodes = parse_xml(std::str::from_utf8(src).unwrap()).unwrap();
     let svg = match &nodes[0] {
         XmlNode::Element(e) => e,

@@ -8,7 +8,7 @@
 //! the round-trip honest for fixtures that use only numeric
 //! attributes.
 
-use oxideav_svg::length::{parse_length, Length, LengthUnit, ParseError, ResolveContext};
+use oxideav_svg::length::{Length, LengthUnit, ParseError, ResolveContext, parse_length};
 
 #[test]
 fn user_unit_resolution_matches_legacy_f32_parse() {
@@ -148,7 +148,7 @@ fn synthetic_svg_attribute_set_at_two_viewports() {
     assert!((parsed[0].resolve(ctx_a) - 10.0).abs() < 1e-6); // 1em → 10
     assert!((parsed[1].resolve(ctx_a) - 50.0).abs() < 1e-6); // 50% of 100 → 50
     assert!((parsed[2].resolve(ctx_a) - 2.0).abs() < 1e-6); //  2vw of 100 → 2
-                                                            // Viewport 2000x500, font-size 20, % basis 800.
+    // Viewport 2000x500, font-size 20, % basis 800.
     let ctx_b = ResolveContext::default()
         .with_viewport(2000.0, 500.0)
         .with_font_size(20.0)

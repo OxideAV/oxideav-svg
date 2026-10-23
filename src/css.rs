@@ -67,7 +67,7 @@
 //!   imported sheet is up to the caller (we deliberately don't fetch
 //!   external resources from the parser).
 
-use crate::parser::{attr, tag_local, Element, Node as XmlNode};
+use crate::parser::{Element, Node as XmlNode, attr, tag_local};
 
 /// One parsed CSS rule.
 #[derive(Clone, Debug, Default)]
@@ -322,10 +322,10 @@ impl SimpleSelector {
             return false;
         }
         let el = mctx.el;
-        if let Some(tag) = &self.tag {
-            if !tag_local(&el.name).eq_ignore_ascii_case(tag) {
-                return false;
-            }
+        if let Some(tag) = &self.tag
+            && !tag_local(&el.name).eq_ignore_ascii_case(tag)
+        {
+            return false;
         }
         if let Some(want_id) = &self.id {
             match attr(el, "id") {
@@ -544,11 +544,7 @@ fn find_match<'a>(
     match combo {
         Combinator::Child => {
             let p = cursor.parent.copied()?;
-            if left.matches(&p) {
-                Some(p)
-            } else {
-                None
-            }
+            if left.matches(&p) { Some(p) } else { None }
         }
         Combinator::Descendant => {
             let mut p = cursor.parent;
@@ -1569,11 +1565,11 @@ fn parse_simple(s: &str) -> Option<SimpleSelector> {
                 // `:first-line` may appear with a single colon. Treat
                 // them as pseudo-elements (round 11) so the rule never
                 // matches a real element.
-                if arg.is_none() {
-                    if let Some(pe) = PseudoElement::from_str(name) {
-                        sel.pseudo_element = Some(pe);
-                        continue;
-                    }
+                if arg.is_none()
+                    && let Some(pe) = PseudoElement::from_str(name)
+                {
+                    sel.pseudo_element = Some(pe);
+                    continue;
                 }
                 if let Some(p) = parse_pseudo(name, arg) {
                     sel.pseudos.push(p);
@@ -2209,11 +2205,11 @@ fn parse_supports_condition(s: &str) -> Option<SupportsCondition> {
         } else {
             break;
         };
-        if let Some(prev) = combinator {
-            if prev != combo {
-                // Mixing — bail and use what we have.
-                break;
-            }
+        if let Some(prev) = combinator
+            && prev != combo
+        {
+            // Mixing — bail and use what we have.
+            break;
         }
         combinator = Some(combo);
         let (next, t) = parse_supports_in_parens(cur)?;
@@ -2260,15 +2256,14 @@ fn parse_supports_in_parens(s: &str) -> Option<(SupportsCondition, &str)> {
     // Inner is either a nested `<supports-condition>` (recognised by
     // `not` or another `(`) or a `<supports-feature>` leaf.
     let inner_trim = inner.trim();
-    if inner_trim.starts_with('(')
+    if (inner_trim.starts_with('(')
         || inner_trim
             .strip_prefix_ci("not")
             .map(|r| r.trim_start().starts_with('('))
-            .unwrap_or(false)
+            .unwrap_or(false))
+        && let Some(c) = parse_supports_condition(inner_trim)
     {
-        if let Some(c) = parse_supports_condition(inner_trim) {
-            return Some((c, tail));
-        }
+        return Some((c, tail));
     }
     if let Some(c) = parse_supports_feature(inner_trim) {
         return Some((c, tail));

@@ -21,10 +21,10 @@ use std::io::{Read, Write};
 
 use crate::decoder::parse_document_xml;
 use crate::error::{Result, SvgError};
-use crate::length::{parse_length, Length, LengthUnit};
+use crate::length::{Length, LengthUnit, parse_length};
 use crate::model::{SvgDocument, ViewBox};
 use crate::options::{DecodeOptions, EncodeOptions};
-use crate::parser::{attr, is_gzip, parse_root_start_tag, tag_local, Node as XmlNode};
+use crate::parser::{Node as XmlNode, attr, is_gzip, parse_root_start_tag, tag_local};
 use crate::picture::{ImageInfo, RgbImage, RgbaImage, SvgImage};
 
 use crate::decoder::parse;
@@ -118,13 +118,13 @@ pub fn info(bytes: &[u8]) -> Result<ImageInfo> {
 /// inflated `.svgz` size; the other limits do not apply to a
 /// header-only read).
 pub fn info_with(bytes: &[u8], opts: &DecodeOptions) -> Result<ImageInfo> {
-    if let Some(max) = opts.max_bytes {
-        if bytes.len() as u64 > max {
-            return Err(SvgError::limit(format!(
-                "SVG: input of {} bytes exceeds max_bytes {max}",
-                bytes.len()
-            )));
-        }
+    if let Some(max) = opts.max_bytes
+        && bytes.len() as u64 > max
+    {
+        return Err(SvgError::limit(format!(
+            "SVG: input of {} bytes exceeds max_bytes {max}",
+            bytes.len()
+        )));
     }
     let compressed = is_gzip(bytes);
     let inflated;

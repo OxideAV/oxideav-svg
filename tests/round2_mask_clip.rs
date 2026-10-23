@@ -2,8 +2,8 @@
 //! to `Node::SoftMask`; `<clipPath>` should populate the wrapping
 //! group's `clip` field.
 
-use oxideav_svg::{parse, write};
 use oxideav_svg::{MaskKind, Node};
+use oxideav_svg::{parse, write};
 
 #[test]
 fn mask_maps_to_soft_mask_with_luminance_default() {

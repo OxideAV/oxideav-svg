@@ -85,7 +85,13 @@ use std::collections::HashMap;
 /// where the matrix coefficients act.
 pub fn color_matrix(src: &FilterImage, matrix: &[f32; 20]) -> FilterImage {
     let mut out = FilterImage::new(src.width, src.height);
-    for (dst, s) in out.data.chunks_exact_mut(4).zip(src.data.chunks_exact(4)) {
+    for (dst, s) in out
+        .data
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(src.data.as_chunks::<4>().0)
+    {
         // Un-premultiply to recover the non-premultiplied operand §9.6
         // requires; a transparent pixel has no defined colour, so feed
         // the matrix straight zeros there.
@@ -214,7 +220,7 @@ impl FilterImage {
         }
         let linear = working_space_is_linear(space);
         let mut data = Vec::with_capacity(rgba.len());
-        for px in rgba.chunks_exact(4) {
+        for px in rgba.as_chunks::<4>().0 {
             let a = px[3] as f32 / 255.0;
             for &c in &px[..3] {
                 let mut v = c as f32 / 255.0;
@@ -239,7 +245,7 @@ impl FilterImage {
     pub fn to_rgba8(&self, space: ColorInterpolationFilters) -> Vec<u8> {
         let linear = working_space_is_linear(space);
         let mut out = Vec::with_capacity(self.data.len());
-        for px in self.data.chunks_exact(4) {
+        for px in self.data.as_chunks::<4>().0 {
             let a = px[3];
             for &c in &px[..3] {
                 let mut v = if a > 0.0 { c / a } else { 0.0 };
@@ -480,11 +486,7 @@ pub fn flood(
     let linear = working_space_is_linear(space);
     let decode = |c: u8| {
         let v = c as f32 / 255.0;
-        if linear {
-            srgb_to_linear(v)
-        } else {
-            v
-        }
+        if linear { srgb_to_linear(v) } else { v }
     };
     // Premultiplied: colour channel = decoded-colour × alpha.
     let px = [
@@ -494,7 +496,7 @@ pub fn flood(
         a,
     ];
     let mut out = FilterImage::new(width, height);
-    for chunk in out.data.chunks_exact_mut(4) {
+    for chunk in out.data.as_chunks_mut::<4>().0 {
         chunk.copy_from_slice(&px);
     }
     out
@@ -843,7 +845,13 @@ pub fn drop_shadow(
     // Step 1 — the alpha channel of the input: transparent-black colour
     // channels, input alpha (already identical in premultiplied form).
     let mut alpha = FilterImage::new(src.width, src.height);
-    for (dst, s) in alpha.data.chunks_exact_mut(4).zip(src.data.chunks_exact(4)) {
+    for (dst, s) in alpha
+        .data
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(src.data.as_chunks::<4>().0)
+    {
         dst[3] = s[3];
     }
     // Step 2 — §9.14 Gaussian blur.
@@ -859,11 +867,7 @@ pub fn drop_shadow(
     let linear = working_space_is_linear(space);
     let decode = |c: u8| {
         let v = c as f32 / 255.0;
-        if linear {
-            srgb_to_linear(v)
-        } else {
-            v
-        }
+        if linear { srgb_to_linear(v) } else { v }
     };
     let flood = [
         decode(flood_color.r),
@@ -877,9 +881,11 @@ pub fn drop_shadow(
     let mut out = FilterImage::new(src.width, src.height);
     for ((dst, top), shadow_in) in out
         .data
-        .chunks_exact_mut(4)
-        .zip(src.data.chunks_exact(4))
-        .zip(moved.data.chunks_exact(4))
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(src.data.as_chunks::<4>().0)
+        .zip(moved.data.as_chunks::<4>().0)
     {
         let shadow_a = shadow_in[3] * fa;
         let inv_top_a = 1.0 - top[3];
@@ -1122,7 +1128,13 @@ pub fn component_transfer(
     alpha: &TransferFunction,
 ) -> FilterImage {
     let mut out = FilterImage::new(src.width, src.height);
-    for (dst, s) in out.data.chunks_exact_mut(4).zip(src.data.chunks_exact(4)) {
+    for (dst, s) in out
+        .data
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(src.data.as_chunks::<4>().0)
+    {
         // Un-premultiply to recover the non-premultiplied operand §9.7
         // requires; a transparent pixel has no defined colour, so feed
         // zeros through the colour functions there.
@@ -1371,11 +1383,7 @@ pub fn convolve_matrix(
     // kernel, or 1 when that sum is zero.
     let divisor = if divisor == 0.0 {
         let sum: f32 = kernel.iter().sum();
-        if sum == 0.0 {
-            1.0
-        } else {
-            sum
-        }
+        if sum == 0.0 { 1.0 } else { sum }
     } else {
         divisor
     };
@@ -2034,7 +2042,7 @@ pub fn turbulence_image(
     tile_w: f64,
     tile_h: f64,
 ) -> FilterImage {
-    let gen = Turbulence::init(seed as i64);
+    let r#gen = Turbulence::init(seed as i64);
     let stitch = if stitch_tiles {
         Some([tile_x, tile_y, tile_w, tile_h])
     } else {
@@ -2046,7 +2054,7 @@ pub fn turbulence_image(
             let point = [tile_x + x as f64, tile_y + y as f64];
             let mut chan = [0.0f32; 4];
             for (c, slot) in chan.iter_mut().enumerate() {
-                let r = gen.turbulence(
+                let r = r#gen.turbulence(
                     c,
                     point,
                     base_freq_x as f64,
@@ -2363,10 +2371,10 @@ fn light_geometry(light: &LightSource, x: f32, y: f32, z: f32) -> ([f32; 3], f32
                 return (l, 0.0);
             }
             // §18: -L·S < cos(limitingConeAngle) ⇒ outside the cone ⇒ no light.
-            if let Some(cone) = limiting_cone_angle {
-                if neg_ls < cone.to_radians().cos() {
-                    return (l, 0.0);
-                }
+            if let Some(cone) = limiting_cone_angle
+                && neg_ls < cone.to_radians().cos()
+            {
+                return (l, 0.0);
             }
             (l, neg_ls.powf(specular_exponent))
         }
@@ -2381,11 +2389,7 @@ fn lighting_color_rgb(color: FloodColor, space: ColorInterpolationFilters) -> [f
     let linear = working_space_is_linear(space);
     let conv = |c: u8| {
         let v = c as f32 / 255.0;
-        if linear {
-            srgb_to_linear(v)
-        } else {
-            v
-        }
+        if linear { srgb_to_linear(v) } else { v }
     };
     [conv(color.r), conv(color.g), conv(color.b)]
 }
@@ -2583,7 +2587,12 @@ pub fn evaluate_specular_lighting_node(
 /// 8-bit non-premultiplied RGBA layout used throughout the evaluators.
 fn source_alpha(source_graphic: &[u8]) -> Vec<u8> {
     let mut out = vec![0u8; source_graphic.len()];
-    for (dst, src) in out.chunks_exact_mut(4).zip(source_graphic.chunks_exact(4)) {
+    for (dst, src) in out
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(source_graphic.as_chunks::<4>().0)
+    {
         // R = G = B = 0; A preserved.
         dst[3] = src[3];
     }
@@ -3912,8 +3921,8 @@ mod tests {
         assert_eq!(img.height(), 3);
         let out = img.to_rgba8(ColorInterpolationFilters::Srgb);
         assert_eq!(out.len(), 2 * 3 * 4);
-        for px in out.chunks_exact(4) {
-            assert_eq!(px, [255, 255, 255, 255]);
+        for px in out.as_chunks::<4>().0 {
+            assert_eq!(*px, [255, 255, 255, 255]);
         }
     }
 
@@ -4004,8 +4013,8 @@ mod tests {
         };
         let out = evaluate_flood_node(&node, 2, 2).unwrap();
         assert_eq!(out.len(), 2 * 2 * 4);
-        for px in out.chunks_exact(4) {
-            assert_eq!(px, [0, 0, 0, 255]);
+        for px in out.as_chunks::<4>().0 {
+            assert_eq!(*px, [0, 0, 0, 255]);
         }
     }
 
@@ -4994,7 +5003,7 @@ mod tests {
         let src = [0x12, 0x34, 0x56, 0xFF];
         let out = evaluate_tile_node(&n, &src, 1, 1, 0, 0, 1, 1, 3, 2).unwrap();
         assert_eq!(out.len(), 3 * 2 * 4);
-        for px in out.chunks_exact(4) {
+        for px in out.as_chunks::<4>().0 {
             assert_eq!(px, &[0x12, 0x34, 0x56, 0xFF]);
         }
     }
@@ -5119,7 +5128,7 @@ mod tests {
         let out = evaluate_turbulence_node(&n, 16, 16, 0.0, 0.0, 16.0, 16.0).unwrap();
         let first = &out[0..4];
         assert!(
-            out.chunks_exact(4).any(|px| px != first),
+            out.as_chunks::<4>().0.iter().any(|px| px != first),
             "turbulence field should vary across pixels"
         );
     }
@@ -5229,7 +5238,7 @@ mod tests {
             ColorInterpolationFilters::Srgb,
         )
         .to_rgba8(ColorInterpolationFilters::Srgb);
-        for px in out.chunks_exact(4) {
+        for px in out.as_chunks::<4>().0 {
             assert_eq!(px, &[255, 255, 255, 255]);
         }
     }
@@ -5260,7 +5269,7 @@ mod tests {
             ColorInterpolationFilters::Srgb,
         )
         .to_rgba8(ColorInterpolationFilters::Srgb);
-        for px in out.chunks_exact(4) {
+        for px in out.as_chunks::<4>().0 {
             assert_eq!(px[3], 255, "diffuse alpha must be opaque");
             assert_eq!(
                 &px[..3],
@@ -5405,7 +5414,7 @@ mod tests {
         });
         let src = height_rgba8(&[255; 4]);
         let out = evaluate_diffuse_lighting_node(&n, &src, 2, 2).unwrap();
-        for px in out.chunks_exact(4) {
+        for px in out.as_chunks::<4>().0 {
             assert_eq!(px, &[255, 255, 255, 255]);
         }
     }
@@ -5448,7 +5457,7 @@ mod tests {
             ColorInterpolationFilters::Srgb,
         )
         .to_rgba8(ColorInterpolationFilters::Srgb);
-        for px in out.chunks_exact(4) {
+        for px in out.as_chunks::<4>().0 {
             assert_eq!(px, &[255, 255, 255, 255]);
         }
     }
@@ -5572,7 +5581,7 @@ mod tests {
         });
         let src = height_rgba8(&[255; 4]);
         let out = evaluate_specular_lighting_node(&n, &src, 2, 2).unwrap();
-        for px in out.chunks_exact(4) {
+        for px in out.as_chunks::<4>().0 {
             assert_eq!(px, &[255, 255, 255, 255]);
         }
     }

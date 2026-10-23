@@ -8,7 +8,7 @@
 //! re-emitted as `fill=""` at the top level, which the parser then
 //! rejected with "SVG paint: empty".
 
-use oxideav_svg::{parse, parse_with_extras, write_with_extras, Node, Paint, Rgba};
+use oxideav_svg::{Node, Paint, Rgba, parse, parse_with_extras, write_with_extras};
 
 fn first_path(node: &Node) -> Option<&oxideav_svg::PathNode> {
     match node {

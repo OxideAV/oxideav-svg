@@ -26,7 +26,7 @@
 //! `PreservedExtras::color_interpolations`.
 
 use oxideav_svg::element::{ColorInterpolation, PaintState};
-use oxideav_svg::parser::{parse_xml, Element, Node as XmlNode};
+use oxideav_svg::parser::{Element, Node as XmlNode, parse_xml};
 use oxideav_svg::{parse, parse_with_extras, write_with_extras};
 
 /// Default `color-interpolation` is `sRGB` (per §13.9 Initial table —

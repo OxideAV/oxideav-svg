@@ -6,7 +6,7 @@
 //! [`oxideav_svg::parser::MAX_SVGZ_INFLATED`] and refuses to materialise
 //! anything larger.
 
-use oxideav_svg::parser::{deflate_gzip, inflate_gzip, is_gzip, MAX_SVGZ_INFLATED};
+use oxideav_svg::parser::{MAX_SVGZ_INFLATED, deflate_gzip, inflate_gzip, is_gzip};
 
 #[test]
 fn oversized_inflation_is_rejected() {

@@ -22,7 +22,7 @@ use crate::options::EncodeOptions;
 #[allow(deprecated)]
 pub use crate::registry::{make_encoder, write_svg, write_svg_with_extras};
 
-use crate::parser::{escape_attr, Element, Node as XmlNode};
+use crate::parser::{Element, Node as XmlNode, escape_attr};
 use crate::preserved::{
     AnimationFragment, DescriptiveBinding, DescriptiveText, LinkBinding, PreservedExtras,
 };
@@ -679,11 +679,11 @@ pub fn write_with_extras(frame: &SvgDocument, extras: &PreservedExtras) -> Vec<u
             // Re-emit it verbatim (original id / units / shapes) and the
             // `clip-path=` reference attribute already substitutes the
             // same original id via `ClipPathCollector::lookup`.
-            if let Some(orig) = clips.id_override.get(id) {
-                if let Some(raw) = clip_raw_by_id.get(orig.as_str()) {
-                    write_raw_element(&mut out, raw, 2);
-                    continue;
-                }
+            if let Some(orig) = clips.id_override.get(id)
+                && let Some(raw) = clip_raw_by_id.get(orig.as_str())
+            {
+                write_raw_element(&mut out, raw, 2);
+                continue;
             }
             let rule = clip_rule_by_fp
                 .get(path_fingerprint(path).as_str())
@@ -691,11 +691,11 @@ pub fn write_with_extras(frame: &SvgDocument, extras: &PreservedExtras) -> Vec<u
             write_clip_path(&mut out, id, path, rule);
         }
         for (id, kind, content) in &masks.entries {
-            if let Some(orig) = masks.id_override.get(id) {
-                if let Some(raw) = mask_raw_by_id.get(orig.as_str()) {
-                    write_raw_element(&mut out, raw, 2);
-                    continue;
-                }
+            if let Some(orig) = masks.id_override.get(id)
+                && let Some(raw) = mask_raw_by_id.get(orig.as_str())
+            {
+                write_raw_element(&mut out, raw, 2);
+                continue;
             }
             write_mask(&mut out, id, *kind, content, &gradients);
         }
@@ -1355,10 +1355,10 @@ fn write_node(
             if (g.opacity - 1.0).abs() > f32::EPSILON {
                 out.push_str(&format!(" opacity=\"{}\"", trim_float(g.opacity)));
             }
-            if let Some(clip) = &g.clip {
-                if let Some(id) = clips.lookup(clip) {
-                    out.push_str(&format!(" clip-path=\"url(#{})\"", escape_attr(id)));
-                }
+            if let Some(clip) = &g.clip
+                && let Some(id) = clips.lookup(clip)
+            {
+                out.push_str(&format!(" clip-path=\"url(#{})\"", escape_attr(id)));
             }
             // Round 372 — SVG 1.1 §15 `filter="url(#id)"`. The decoder
             // wraps a filtered element in a pass-through `<g>`; this
@@ -1555,11 +1555,7 @@ fn write_node(
             let dash_unscale = match path_length_here {
                 Some(pl) if pl > 0.0 => {
                     let geo = crate::path_length::compute_path_length(&p.path);
-                    if geo > 0.0 {
-                        pl / geo
-                    } else {
-                        1.0
-                    }
+                    if geo > 0.0 { pl / geo } else { 1.0 }
                 }
                 _ => 1.0,
             };

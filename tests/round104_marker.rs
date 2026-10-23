@@ -26,8 +26,8 @@
 //!    via `marker-end`.
 
 use oxideav_svg::defs::{MarkerOrient, MarkerUnits};
-use oxideav_svg::element::{parse_marker_def, ParseContext};
-use oxideav_svg::parser::{parse_xml, tag_local, Node as XmlNode};
+use oxideav_svg::element::{ParseContext, parse_marker_def};
+use oxideav_svg::parser::{Node as XmlNode, parse_xml, tag_local};
 use oxideav_svg::{parse, parse_with_extras, write_with_extras};
 
 /// Pull the first `<marker>` child of the document `<defs>` (or the

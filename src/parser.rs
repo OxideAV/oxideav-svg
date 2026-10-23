@@ -325,12 +325,12 @@ impl<'a> XmlParser<'a> {
             return Err(Error::limit("XML: element nesting too deep"));
         }
         self.elements += 1;
-        if let Some(max) = self.limits.max_elements {
-            if self.elements > max {
-                return Err(Error::limit(format!(
-                    "XML: more than {max} elements (max_elements)"
-                )));
-            }
+        if let Some(max) = self.limits.max_elements
+            && self.elements > max
+        {
+            return Err(Error::limit(format!(
+                "XML: more than {max} elements (max_elements)"
+            )));
         }
         debug_assert_eq!(self.src[self.pos], b'<');
         self.pos += 1;
@@ -487,18 +487,18 @@ impl<'a> XmlParser<'a> {
                 {
                     q += 1;
                 }
-                if let Ok(close_name) = std::str::from_utf8(&self.src[after_slash..q]) {
-                    if tag_local(close_name) == local_lc {
-                        let body_end = self.pos;
-                        let raw = std::str::from_utf8(&self.src[start..body_end])
-                            .map_err(|_| Error::invalid("XML: bad UTF-8 in raw-text body"))?;
-                        // Advance past `</name ... >`.
-                        let close_end = find_seq(self.src, q, b">")
-                            .map(|e| e + 1)
-                            .unwrap_or(self.src.len());
-                        self.pos = close_end;
-                        return Ok(strip_cdata_wrapper(raw));
-                    }
+                if let Ok(close_name) = std::str::from_utf8(&self.src[after_slash..q])
+                    && tag_local(close_name) == local_lc
+                {
+                    let body_end = self.pos;
+                    let raw = std::str::from_utf8(&self.src[start..body_end])
+                        .map_err(|_| Error::invalid("XML: bad UTF-8 in raw-text body"))?;
+                    // Advance past `</name ... >`.
+                    let close_end = find_seq(self.src, q, b">")
+                        .map(|e| e + 1)
+                        .unwrap_or(self.src.len());
+                    self.pos = close_end;
+                    return Ok(strip_cdata_wrapper(raw));
                 }
             }
             self.pos += 1;
@@ -701,10 +701,10 @@ pub fn decode_entities(s: &str) -> String {
 /// (case-insensitive on the local part).
 pub fn find_element<'a>(nodes: &'a [Node], name: &str) -> Option<&'a Element> {
     for n in nodes {
-        if let Node::Element(e) = n {
-            if tag_local(&e.name).eq_ignore_ascii_case(name) {
-                return Some(e);
-            }
+        if let Node::Element(e) = n
+            && tag_local(&e.name).eq_ignore_ascii_case(name)
+        {
+            return Some(e);
         }
     }
     None

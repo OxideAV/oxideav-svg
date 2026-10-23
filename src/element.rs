@@ -17,14 +17,14 @@ use crate::model::{
     Transform2D,
 };
 
-use crate::color::{parse_opacity, parse_paint, PaintValue};
-use crate::css::{declarations_for, MatchContext, Stylesheet};
+use crate::color::{PaintValue, parse_opacity, parse_paint};
+use crate::css::{MatchContext, Stylesheet, declarations_for};
 use crate::defs::{
-    parse_url_ref, resolve_gradient_chain, ClipPathDef, DefsTables, FilterDef, GradientDef,
-    GradientKind, GradientUnits, MaskDef, ResolvedGradient, ResolvedGradientKind, SymbolDef,
+    ClipPathDef, DefsTables, FilterDef, GradientDef, GradientKind, GradientUnits, MaskDef,
+    ResolvedGradient, ResolvedGradientKind, SymbolDef, parse_url_ref, resolve_gradient_chain,
 };
-use crate::length::{parse_length, LengthAxis, ResolveContext};
-use crate::parser::{attr, tag_local, Element, Node as XmlNode};
+use crate::length::{LengthAxis, ResolveContext, parse_length};
+use crate::parser::{Element, Node as XmlNode, attr, tag_local};
 use crate::path_data::parse_path_data;
 use crate::preserved::IdScenePath;
 use crate::transform::parse_transform;
@@ -3220,31 +3220,31 @@ fn parse_spread_method(v: Option<&str>) -> Result<SpreadMethod> {
 fn collect_stops(parent: &Element) -> Result<Vec<GradientStop>> {
     let mut stops = Vec::new();
     for child in &parent.children {
-        if let XmlNode::Element(el) = child {
-            if tag_local(&el.name) == "stop" {
-                let offset = attr(el, "offset")
-                    .map(|v| {
-                        let trimmed = v.trim().trim_end_matches('%');
-                        let raw = trimmed
-                            .parse::<f32>()
-                            .map_err(|_| Error::invalid("SVG gradient stop: malformed offset"))?;
-                        Ok::<f32, Error>(if v.contains('%') { raw / 100.0 } else { raw })
-                    })
-                    .transpose()?
-                    .unwrap_or(0.0);
-                let color = match attr(el, "stop-color") {
-                    Some(v) => match parse_paint(v)? {
-                        PaintValue::Color(c) => c,
-                        _ => Rgba::opaque(0, 0, 0),
-                    },
-                    None => Rgba::opaque(0, 0, 0),
-                };
-                let opacity = attr(el, "stop-opacity")
-                    .map(parse_opacity)
-                    .transpose()?
-                    .unwrap_or(1.0);
-                stops.push(GradientStop::new(offset, apply_alpha(color, opacity)));
-            }
+        if let XmlNode::Element(el) = child
+            && tag_local(&el.name) == "stop"
+        {
+            let offset = attr(el, "offset")
+                .map(|v| {
+                    let trimmed = v.trim().trim_end_matches('%');
+                    let raw = trimmed
+                        .parse::<f32>()
+                        .map_err(|_| Error::invalid("SVG gradient stop: malformed offset"))?;
+                    Ok::<f32, Error>(if v.contains('%') { raw / 100.0 } else { raw })
+                })
+                .transpose()?
+                .unwrap_or(0.0);
+            let color = match attr(el, "stop-color") {
+                Some(v) => match parse_paint(v)? {
+                    PaintValue::Color(c) => c,
+                    _ => Rgba::opaque(0, 0, 0),
+                },
+                None => Rgba::opaque(0, 0, 0),
+            };
+            let opacity = attr(el, "stop-opacity")
+                .map(parse_opacity)
+                .transpose()?
+                .unwrap_or(1.0);
+            stops.push(GradientStop::new(offset, apply_alpha(color, opacity)));
         }
     }
     Ok(stops)
@@ -3430,7 +3430,9 @@ fn parse_points(s: &str) -> Result<Vec<Point>> {
         return Err(Error::invalid("SVG: odd number count in points"));
     }
     Ok(nums
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| Point::new(c[0], c[1]))
         .collect())
 }
@@ -3710,18 +3712,18 @@ fn is_unrendered_capture_tag(local: &str) -> bool {
 /// Deliberately ignores the CSS cascade — see
 /// [`crate::preserved::PreservedExtras::unrendered`].
 pub(crate) fn element_has_inline_display_none(el: &Element) -> bool {
-    if let Some(v) = attr(el, "display") {
-        if v.trim().eq_ignore_ascii_case("none") {
-            return true;
-        }
+    if let Some(v) = attr(el, "display")
+        && v.trim().eq_ignore_ascii_case("none")
+    {
+        return true;
     }
     if let Some(style) = attr(el, "style") {
         for decl in style.split(';') {
-            if let Some((k, v)) = decl.split_once(':') {
-                if k.trim().eq_ignore_ascii_case("display") && v.trim().eq_ignore_ascii_case("none")
-                {
-                    return true;
-                }
+            if let Some((k, v)) = decl.split_once(':')
+                && k.trim().eq_ignore_ascii_case("display")
+                && v.trim().eq_ignore_ascii_case("none")
+            {
+                return true;
             }
         }
     }
@@ -4555,10 +4557,10 @@ fn parse_element_to_node_ctx_inner(
     // unresolved / cyclic / external reference returned `None` above
     // and short-circuited before reaching here, so no binding is
     // recorded for those — they round-trip via the absence of a node).
-    if tag_local(&el.name) == "use" {
-        if let Some(b) = parse_use_binding(el) {
-            ctx.record_use(b);
-        }
+    if tag_local(&el.name) == "use"
+        && let Some(b) = parse_use_binding(el)
+    {
+        ctx.record_use(b);
     }
     // Round 372 — SVG 2 §5.7: record the verbatim `<switch>` at the
     // current scene-graph path so the encoder can collapse the selected
@@ -4605,12 +4607,11 @@ fn parse_element_to_node_ctx_inner(
     // node in a pass-through group precisely then, so the binding has a
     // matching `<g>` emit site. An unresolved ref produced no wrapper,
     // so recording one would mis-tag an unrelated node.
-    if let Some(filter_text) = attr(el, "filter") {
-        if let Some(id) = parse_url_ref(filter_text) {
-            if ctx.defs.filters.contains_key(id) {
-                ctx.record_filter_ref(filter_text.to_string());
-            }
-        }
+    if let Some(filter_text) = attr(el, "filter")
+        && let Some(id) = parse_url_ref(filter_text)
+        && ctx.defs.filters.contains_key(id)
+    {
+        ctx.record_filter_ref(filter_text.to_string());
     }
     // Round 372 — SVG 2 §13.7.4: record any `marker-start` / `marker-mid`
     // / `marker-end` (or `marker` shorthand) references at the current
@@ -4628,15 +4629,15 @@ fn parse_element_to_node_ctx_inner(
     // `<g transform=...>` / `<g clip-path=...>` / `<g filter=...>` /
     // `Node::SoftMask`. `find_inner_path_subpath` walks the final
     // wrapped node and returns the child-index sub-path to the leaf.
-    if let Some(pl) = ctx.pending_path_length.take() {
-        if let Some(sub) = find_inner_path_subpath(&wrapped) {
-            let save = ctx.current_path.len();
-            for idx in &sub {
-                ctx.current_path.push(*idx);
-            }
-            ctx.record_path_length(pl);
-            ctx.current_path.truncate(save);
+    if let Some(pl) = ctx.pending_path_length.take()
+        && let Some(sub) = find_inner_path_subpath(&wrapped)
+    {
+        let save = ctx.current_path.len();
+        for idx in &sub {
+            ctx.current_path.push(*idx);
         }
+        ctx.record_path_length(pl);
+        ctx.current_path.truncate(save);
     }
     // Round 449 — SVG 2 §9.2–§9.7 native shape identity. The shape
     // branch flattens every basic shape into path commands, so the
@@ -4662,20 +4663,20 @@ fn parse_element_to_node_ctx_inner(
             "polyline" | "polygon" => Some(&["points"]),
             _ => None,
         };
-        if let Some(names) = geom_names {
-            if let Some(sub) = find_sole_path_subpath(&wrapped) {
-                let attrs: Vec<(String, String)> = names
-                    .iter()
-                    .filter_map(|n| attr(el, n).map(|v| (n.to_string(), v.to_string())))
-                    .collect();
-                let mut path = ctx.current_path.clone();
-                path.extend(sub);
-                ctx.shapes.push(crate::preserved::ShapeBinding {
-                    path,
-                    tag: local.to_string(),
-                    attrs,
-                });
-            }
+        if let Some(names) = geom_names
+            && let Some(sub) = find_sole_path_subpath(&wrapped)
+        {
+            let attrs: Vec<(String, String)> = names
+                .iter()
+                .filter_map(|n| attr(el, n).map(|v| (n.to_string(), v.to_string())))
+                .collect();
+            let mut path = ctx.current_path.clone();
+            path.extend(sub);
+            ctx.shapes.push(crate::preserved::ShapeBinding {
+                path,
+                tag: local.to_string(),
+                attrs,
+            });
         }
     }
     // Round 205 — drain the shape branch's pending `paint-order` (if
@@ -5214,35 +5215,35 @@ fn find_inner_path_subpath(node: &Node) -> Option<Vec<usize>> {
 /// from `el` to `node`, looking the ids up in `defs`. Missing refs are
 /// silently dropped (the rest of the document still renders).
 fn apply_referenced_defs(el: &Element, mut node: Node, defs: &DefsTables) -> Node {
-    if let Some(id) = attr(el, "clip-path").and_then(parse_url_ref) {
-        if let Some(cp) = defs.clip_paths.get(id) {
-            node = wrap_with_clip(node, cp.path.clone());
-        }
+    if let Some(id) = attr(el, "clip-path").and_then(parse_url_ref)
+        && let Some(cp) = defs.clip_paths.get(id)
+    {
+        node = wrap_with_clip(node, cp.path.clone());
     }
-    if let Some(id) = attr(el, "mask").and_then(parse_url_ref) {
-        if let Some(m) = defs.masks.get(id) {
-            node = Node::SoftMask {
-                mask: Box::new(Node::Group(m.content.clone())),
-                mask_kind: m.mask_kind,
-                content: Box::new(node),
-            };
-        }
+    if let Some(id) = attr(el, "mask").and_then(parse_url_ref)
+        && let Some(m) = defs.masks.get(id)
+    {
+        node = Node::SoftMask {
+            mask: Box::new(Node::Group(m.content.clone())),
+            mask_kind: m.mask_kind,
+            content: Box::new(node),
+        };
     }
     // Filter is graceful pass-through in round 2 — wrap content in a
     // single-child Group so the structural intent ("these children are
     // filtered") survives the round-trip even though the actual
     // rasterisation is deferred to oxideav-raster.
-    if let Some(id) = attr(el, "filter").and_then(parse_url_ref) {
-        if defs.filters.contains_key(id) {
-            // TODO(round-3 / oxideav-raster #368): rasterise the
-            // referenced filter graph (Gaussian blur, color matrix,
-            // …). Round 2 just preserves the children so a
-            // parse → encode round-trip succeeds.
-            node = Node::Group(Group {
-                children: vec![node],
-                ..Group::default()
-            });
-        }
+    if let Some(id) = attr(el, "filter").and_then(parse_url_ref)
+        && defs.filters.contains_key(id)
+    {
+        // TODO(round-3 / oxideav-raster #368): rasterise the
+        // referenced filter graph (Gaussian blur, color matrix,
+        // …). Round 2 just preserves the children so a
+        // parse → encode round-trip succeeds.
+        node = Node::Group(Group {
+            children: vec![node],
+            ..Group::default()
+        });
     }
     node
 }
@@ -5302,10 +5303,10 @@ pub fn parse_mask_def(el: &Element, ctx: &mut ParseContext) -> Result<Option<(St
     let parent_state = PaintState::default();
     let mut group = Group::default();
     for child in &el.children {
-        if let XmlNode::Element(c) = child {
-            if let Some(node) = parse_element_to_node(c, &parent_state, ctx)? {
-                group.children.push(node);
-            }
+        if let XmlNode::Element(c) = child
+            && let Some(node) = parse_element_to_node(c, &parent_state, ctx)?
+        {
+            group.children.push(node);
         }
     }
     Ok(Some((
@@ -5431,10 +5432,10 @@ pub fn parse_symbol_def(
     let parent_state = PaintState::default();
     let mut group = Group::default();
     for child in &el.children {
-        if let XmlNode::Element(c) = child {
-            if let Some(node) = parse_element_to_node(c, &parent_state, ctx)? {
-                group.children.push(node);
-            }
+        if let XmlNode::Element(c) = child
+            && let Some(node) = parse_element_to_node(c, &parent_state, ctx)?
+        {
+            group.children.push(node);
         }
     }
     let view_box = match attr(el, "viewBox") {
@@ -5531,10 +5532,10 @@ pub fn parse_pattern_def(
     let parent_state = PaintState::default();
     let mut content = Group::default();
     for child in &el.children {
-        if let XmlNode::Element(c) = child {
-            if let Some(node) = parse_element_to_node(c, &parent_state, ctx)? {
-                content.children.push(node);
-            }
+        if let XmlNode::Element(c) = child
+            && let Some(node) = parse_element_to_node(c, &parent_state, ctx)?
+        {
+            content.children.push(node);
         }
     }
     Ok(Some((
@@ -5604,10 +5605,10 @@ pub fn parse_marker_def(
     let parent_state = PaintState::default();
     let mut content = Group::default();
     for child in &el.children {
-        if let XmlNode::Element(c) = child {
-            if let Some(node) = parse_element_to_node(c, &parent_state, ctx)? {
-                content.children.push(node);
-            }
+        if let XmlNode::Element(c) = child
+            && let Some(node) = parse_element_to_node(c, &parent_state, ctx)?
+        {
+            content.children.push(node);
         }
     }
 
@@ -5940,43 +5941,46 @@ pub fn parse_use_element(
         // symbol's intrinsic width / height when the use omits them.
         let dst_w = use_width.or(sym_w);
         let dst_h = use_height.or(sym_h);
-        if let (Some(vb), Some(w), Some(h)) = (sym_view_box, dst_w, dst_h) {
-            if vb.width > 0.0 && vb.height > 0.0 && w > 0.0 && h > 0.0 {
-                // Spec algorithm 8.2 — viewport rect (0..w × 0..h)
-                // mapping to viewBox rect.
-                let mut vp = symbol_viewport_transform(w, h, vb, sym_par);
-                // SVG 2 §5.5 — `refX` / `refY` align the symbol's
-                // reference point (given in the symbol's own coordinate
-                // system) with the use's `x` / `y`. Mirroring the
-                // `<marker>` rule, the reference point is mapped through
-                // the viewport transform and the result is subtracted so
-                // that point lands at the viewport origin (which the
-                // outer group's `translate(x, y)` then positions).
-                if sym_ref_x.is_some() || sym_ref_y.is_some() {
-                    let rx = sym_ref_x.unwrap_or(0.0);
-                    let ry = sym_ref_y.unwrap_or(0.0);
-                    let mapped = apply_xform(&vp, rx, ry);
-                    vp = Transform2D::translate(-mapped.x, -mapped.y).compose(&vp);
-                }
-                // SVG 2 §5.5 — the symbol's own `x` / `y` geometry
-                // properties position its viewport inside the use's
-                // coordinate system ("the same effect as on an `svg`
-                // element"). Applied outside the viewport transform; the
-                // use's own `x` / `y` translate is layered on top by the
-                // outer group below.
-                if sym_x.is_some() || sym_y.is_some() {
-                    let sx = sym_x.unwrap_or(0.0);
-                    let sy = sym_y.unwrap_or(0.0);
-                    vp = Transform2D::translate(sx, sy).compose(&vp);
-                }
-                viewport_transform = Some(vp);
+        if let (Some(vb), Some(w), Some(h)) = (sym_view_box, dst_w, dst_h)
+            && vb.width > 0.0
+            && vb.height > 0.0
+            && w > 0.0
+            && h > 0.0
+        {
+            // Spec algorithm 8.2 — viewport rect (0..w × 0..h)
+            // mapping to viewBox rect.
+            let mut vp = symbol_viewport_transform(w, h, vb, sym_par);
+            // SVG 2 §5.5 — `refX` / `refY` align the symbol's
+            // reference point (given in the symbol's own coordinate
+            // system) with the use's `x` / `y`. Mirroring the
+            // `<marker>` rule, the reference point is mapped through
+            // the viewport transform and the result is subtracted so
+            // that point lands at the viewport origin (which the
+            // outer group's `translate(x, y)` then positions).
+            if sym_ref_x.is_some() || sym_ref_y.is_some() {
+                let rx = sym_ref_x.unwrap_or(0.0);
+                let ry = sym_ref_y.unwrap_or(0.0);
+                let mapped = apply_xform(&vp, rx, ry);
+                vp = Transform2D::translate(-mapped.x, -mapped.y).compose(&vp);
             }
+            // SVG 2 §5.5 — the symbol's own `x` / `y` geometry
+            // properties position its viewport inside the use's
+            // coordinate system ("the same effect as on an `svg`
+            // element"). Applied outside the viewport transform; the
+            // use's own `x` / `y` translate is layered on top by the
+            // outer group below.
+            if sym_x.is_some() || sym_y.is_some() {
+                let sx = sym_x.unwrap_or(0.0);
+                let sy = sym_y.unwrap_or(0.0);
+                vp = Transform2D::translate(sx, sy).compose(&vp);
+            }
+            viewport_transform = Some(vp);
         }
         for child in &source.children {
-            if let XmlNode::Element(c) = child {
-                if let Some(node) = parse_element_to_node(c, &state, ctx)? {
-                    children.push(node);
-                }
+            if let XmlNode::Element(c) = child
+                && let Some(node) = parse_element_to_node(c, &state, ctx)?
+            {
+                children.push(node);
             }
         }
     } else {
@@ -6482,10 +6486,11 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert!(r
-            .commands
-            .iter()
-            .any(|c| matches!(c, PathCommand::ArcTo { .. })));
+        assert!(
+            r.commands
+                .iter()
+                .any(|c| matches!(c, PathCommand::ArcTo { .. }))
+        );
     }
 
     #[test]

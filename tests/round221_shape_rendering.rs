@@ -19,7 +19,7 @@
 //! via `PreservedExtras::shape_renderings`.
 
 use oxideav_svg::element::{PaintState, ShapeRendering};
-use oxideav_svg::parser::{parse_xml, Element, Node as XmlNode};
+use oxideav_svg::parser::{Element, Node as XmlNode, parse_xml};
 use oxideav_svg::{parse, parse_with_extras, write_with_extras};
 
 /// Default `shape-rendering` is `auto` (per §13.10.2 Initial table).

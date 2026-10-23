@@ -10,9 +10,9 @@
 use std::io::{Read, SeekFrom, Write};
 
 use oxideav_core::{
-    CodecId, CodecParameters, CodecResolver, ContainerRegistry, Demuxer, Error, MediaType, Muxer,
-    Packet, ProbeData, ProbeScore, ReadSeek, Result, StreamInfo, TimeBase, WriteSeek,
-    MAX_PROBE_SCORE, PROBE_SCORE_EXTENSION,
+    CodecId, CodecParameters, CodecResolver, ContainerRegistry, Demuxer, Error, MAX_PROBE_SCORE,
+    MediaType, Muxer, PROBE_SCORE_EXTENSION, Packet, ProbeData, ProbeScore, ReadSeek, Result,
+    StreamInfo, TimeBase, WriteSeek,
 };
 
 use crate::decoder::CODEC_ID_STR;
@@ -166,11 +166,7 @@ struct SvgMuxer {
 
 impl Muxer for SvgMuxer {
     fn format_name(&self) -> &str {
-        if self.gzip {
-            "svgz"
-        } else {
-            "svg"
-        }
+        if self.gzip { "svgz" } else { "svg" }
     }
     fn write_header(&mut self) -> Result<()> {
         Ok(())

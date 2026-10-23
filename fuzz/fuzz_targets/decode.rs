@@ -7,8 +7,8 @@
 
 use libfuzzer_sys::fuzz_target;
 use oxideav_svg::{
-    decode, decode_rgb8, decode_rgba8, decode_with, info, parse, parse_at, parse_with,
-    parse_with_extras, probe, DecodeOptions,
+    DecodeOptions, decode, decode_rgb8, decode_rgba8, decode_with, info, parse, parse_at,
+    parse_with, parse_with_extras, probe,
 };
 
 fuzz_target!(|data: &[u8]| {

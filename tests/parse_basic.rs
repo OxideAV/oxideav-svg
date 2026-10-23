@@ -1,8 +1,8 @@
 //! Round-trip a minimal SVG (rect + circle) and assert the parsed
 //! [`SvgDocument`] preserves shape count and dimensions.
 
-use oxideav_svg::parse;
 use oxideav_svg::Node;
+use oxideav_svg::parse;
 
 #[test]
 fn parses_rect_and_circle_and_preserves_count() {

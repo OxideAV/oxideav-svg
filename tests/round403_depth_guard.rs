@@ -11,7 +11,7 @@
 //! depth: an over-limit document is rejected before the model-builder
 //! ever recurses on it.
 
-use oxideav_svg::parser::{parse_xml, MAX_XML_DEPTH};
+use oxideav_svg::parser::{MAX_XML_DEPTH, parse_xml};
 
 /// Build `<svg>` with `depth` nested `<g>` elements around an inner
 /// `<rect>`.

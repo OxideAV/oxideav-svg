@@ -5,8 +5,8 @@
 //! elements in order, and renders the first child for which all of
 //! these attributes test true; all others are bypassed.
 
-use oxideav_svg::{parse, parse_at_with_languages};
 use oxideav_svg::{Paint, PathNode, Rgba};
+use oxideav_svg::{parse, parse_at_with_languages};
 
 /// Find every `Node::Path` in the scene graph, in pre-order.
 fn all_paths(frame: &oxideav_svg::SvgDocument) -> Vec<&PathNode> {

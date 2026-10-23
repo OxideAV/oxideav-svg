@@ -12,7 +12,7 @@
 //! engine and SVGs round-tripped through this crate are intended for
 //! static rendering).
 
-use oxideav_svg::parser::{parse_xml, Node as XmlNode};
+use oxideav_svg::parser::{Node as XmlNode, parse_xml};
 use oxideav_svg::{parse, parse_with_extras, write_with_extras};
 
 #[test]

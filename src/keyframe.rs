@@ -61,7 +61,7 @@
 //!   `crate::animation::lerp_string`).
 //! - everything else — discrete (snap to the `from` keyframe).
 
-use crate::css::{declarations_for, KeyframesRule, MatchContext, Stylesheet};
+use crate::css::{KeyframesRule, MatchContext, Stylesheet, declarations_for};
 
 /// CSS Easing function — `animation-timing-function` per CSS Easing
 /// Functions L1 / L2.
@@ -213,13 +213,13 @@ impl TimingFunction {
                 return Some(TimingFunction::Steps {
                     count: 1,
                     position: StepPosition::Start,
-                })
+                });
             }
             "step-end" => {
                 return Some(TimingFunction::Steps {
                     count: 1,
                     position: StepPosition::End,
-                })
+                });
             }
             _ => {}
         }
@@ -989,11 +989,7 @@ fn unit_suffix(s: &str) -> Option<&str> {
         i += 1;
     }
     let unit = &s[i..];
-    if unit.is_empty() {
-        None
-    } else {
-        Some(unit)
-    }
+    if unit.is_empty() { None } else { Some(unit) }
 }
 
 fn find_decl<'a>(decls: &'a [(String, String)], name: &str) -> Option<&'a str> {

@@ -25,10 +25,10 @@
 //!   encoder re-emits each captured image as a `<image>` element with
 //!   its data URI / external URL intact.
 
-use base64::engine::general_purpose::STANDARD as B64_STANDARD;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as B64_STANDARD;
 
-use crate::parser::{attr, escape_attr, Element};
+use crate::parser::{Element, attr, escape_attr};
 use crate::transform::parse_transform;
 
 /// One captured `<image>` element from the source SVG.
@@ -302,10 +302,10 @@ impl SvgImage {
         } else if let Some(h) = self.height {
             out.push_str(&format!(" height=\"{}\"", trim_float(h)));
         }
-        if let Some(t) = &self.transform {
-            if !t.is_identity() {
-                out.push_str(&format!(" transform=\"{}\"", format_transform(t)));
-            }
+        if let Some(t) = &self.transform
+            && !t.is_identity()
+        {
+            out.push_str(&format!(" transform=\"{}\"", format_transform(t)));
         }
         if let Some(par) = &self.preserve_aspect_ratio {
             out.push_str(&format!(" preserveAspectRatio=\"{}\"", escape_attr(par)));
@@ -412,11 +412,7 @@ fn trim_float(v: f32) -> String {
     // Keep three decimals max, drop trailing zeros + dot.
     let s = format!("{:.3}", v);
     let s = s.trim_end_matches('0').trim_end_matches('.').to_string();
-    if s.is_empty() {
-        "0".to_string()
-    } else {
-        s
-    }
+    if s.is_empty() { "0".to_string() } else { s }
 }
 
 fn format_transform(t: &crate::model::Transform2D) -> String {

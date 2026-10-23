@@ -11,7 +11,7 @@
 
 use oxideav_svg::filter::{ColorInterpolationFilters, FilterPrimitiveNode};
 use oxideav_svg::filter_eval::{
-    drop_shadow, evaluate_drop_shadow_node, DropShadowParams, FilterImage,
+    DropShadowParams, FilterImage, drop_shadow, evaluate_drop_shadow_node,
 };
 use oxideav_svg::parse_with_extras;
 

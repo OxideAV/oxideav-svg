@@ -20,7 +20,7 @@
 //! it is *not* evaluated here — only `requiredExtensions` and
 //! `systemLanguage` are tests.
 
-use crate::parser::{attr, Element};
+use crate::parser::{Element, attr};
 
 /// SVG 2 §5.7.4 — evaluate the `requiredExtensions` attribute.
 ///
@@ -139,8 +139,8 @@ pub fn passes_conditional(el: &Element, user_langs: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::parse_xml;
     use crate::parser::Node as XmlNode;
+    use crate::parser::parse_xml;
 
     fn first_el(src: &str) -> Element {
         let nodes = parse_xml(src).unwrap();

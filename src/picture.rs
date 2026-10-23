@@ -399,7 +399,7 @@ impl SvgImage {
             match self.format {
                 PixelFormat::Rgba => out.extend_from_slice(&row[..w * 4]),
                 PixelFormat::Rgb24 => {
-                    for px in row[..w * 3].chunks_exact(3) {
+                    for px in row[..w * 3].as_chunks::<3>().0 {
                         out.extend_from_slice(&[px[0], px[1], px[2], 255]);
                     }
                 }
@@ -419,7 +419,7 @@ impl SvgImage {
             let row = &data[y * stride..];
             match self.format {
                 PixelFormat::Rgba => {
-                    for px in row[..w * 4].chunks_exact(4) {
+                    for px in row[..w * 4].as_chunks::<4>().0 {
                         out.extend_from_slice(&px[..3]);
                     }
                 }

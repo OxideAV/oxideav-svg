@@ -19,7 +19,7 @@
 //! `PreservedExtras::dominant_baselines`.
 
 use oxideav_svg::element::{DominantBaseline, PaintState};
-use oxideav_svg::parser::{parse_xml, Element, Node as XmlNode};
+use oxideav_svg::parser::{Element, Node as XmlNode, parse_xml};
 use oxideav_svg::{parse, parse_with_extras, write_with_extras};
 
 /// Default `dominant-baseline` is `auto` per the §10.9.2 attribute

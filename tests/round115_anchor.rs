@@ -9,8 +9,8 @@
 //! `parse_with_extras → write_with_extras` round-trip re-wraps
 //! the group in its `<a href="…">…</a>` element.
 
-use oxideav_svg::{parse, parse_with_extras, write_with_extras};
 use oxideav_svg::{Node, Paint, PathNode, Rgba};
+use oxideav_svg::{parse, parse_with_extras, write_with_extras};
 
 /// Find every `Node::Path` in the scene graph, in pre-order.
 fn all_paths(frame: &oxideav_svg::SvgDocument) -> Vec<&PathNode> {

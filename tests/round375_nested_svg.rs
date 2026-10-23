@@ -24,10 +24,10 @@ fn first_group_with_path(g: &oxideav_svg::Group, acc: Transform2D) -> Option<Tra
         return Some(here);
     }
     for c in &g.children {
-        if let Node::Group(sg) = c {
-            if let Some(t) = first_group_with_path(sg, here) {
-                return Some(t);
-            }
+        if let Node::Group(sg) = c
+            && let Some(t) = first_group_with_path(sg, here)
+        {
+            return Some(t);
         }
     }
     None

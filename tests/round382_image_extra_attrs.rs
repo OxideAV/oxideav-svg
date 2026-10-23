@@ -112,10 +112,12 @@ fn invalid_crossorigin_survives_verbatim() {
     </svg>"#;
     let (frame, extras) = parse_with_extras(src).unwrap();
     assert!(extras.images[0].crossorigin.is_none());
-    assert!(extras.images[0]
-        .extra_attrs
-        .iter()
-        .any(|(k, v)| k == "crossorigin" && v == "bogus"));
+    assert!(
+        extras.images[0]
+            .extra_attrs
+            .iter()
+            .any(|(k, v)| k == "crossorigin" && v == "bogus")
+    );
     let out = String::from_utf8(write_with_extras(&frame, &extras)).unwrap();
     assert!(out.contains(r#"crossorigin="bogus""#), "{out}");
 }
@@ -164,10 +166,12 @@ fn extra_attrs_survive_two_cycles() {
     let (frame, extras) = parse_with_extras(src).unwrap();
     let out1 = write_with_extras(&frame, &extras);
     let (frame2, extras2) = parse_with_extras(&out1).unwrap();
-    assert!(extras2.images[0]
-        .extra_attrs
-        .iter()
-        .any(|(k, v)| k == "class" && v == "a"));
+    assert!(
+        extras2.images[0]
+            .extra_attrs
+            .iter()
+            .any(|(k, v)| k == "class" && v == "a")
+    );
     let out2 = String::from_utf8(write_with_extras(&frame2, &extras2)).unwrap();
     assert!(out2.contains(r#"class="a""#));
     assert!(out2.contains(r#"style="opacity:.3""#));

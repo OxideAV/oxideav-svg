@@ -17,16 +17,16 @@ pub use crate::registry::{
 
 use crate::css::MatchContext;
 use crate::element::{
-    derive_child_ctx, flatten_gradient_to_paint, parse_clip_path_def, parse_clip_rule_attr,
-    parse_element_to_node_ctx, parse_filter_def, parse_linear_gradient_def, parse_marker_def,
-    parse_mask_def, parse_number, parse_pattern_def, parse_radial_gradient_def, parse_symbol_def,
-    parse_view_def, PaintState, ParseContext,
+    PaintState, ParseContext, derive_child_ctx, flatten_gradient_to_paint, parse_clip_path_def,
+    parse_clip_rule_attr, parse_element_to_node_ctx, parse_filter_def, parse_linear_gradient_def,
+    parse_marker_def, parse_mask_def, parse_number, parse_pattern_def, parse_radial_gradient_def,
+    parse_symbol_def, parse_view_def,
 };
 use crate::filter::{MeetOrSlice, PreserveAspectRatio, PreserveAspectRatioAlign};
 use crate::length::ResolveContext;
 use crate::parser::{
-    attr, decode_utf8_lossy_stripping_bom, inflate_gzip_capped, is_gzip, parse_xml_with_limits,
-    tag_local, Element, Node as XmlNode,
+    Element, Node as XmlNode, attr, decode_utf8_lossy_stripping_bom, inflate_gzip_capped, is_gzip,
+    parse_xml_with_limits, tag_local,
 };
 use crate::preserved::{
     AnimTargetBinding, AnimationFragment, ClipRuleBinding, ColorInterpolationBinding,
@@ -116,13 +116,13 @@ pub fn parse_at_with_languages_opts(
 /// on the input, inflate an `.svgz` under the same cap, decode UTF-8
 /// and run the XML parser with the element-count / depth limits.
 pub(crate) fn parse_document_xml(bytes: &[u8], opts: &DecodeOptions) -> Result<Vec<XmlNode>> {
-    if let Some(max) = opts.max_bytes {
-        if bytes.len() as u64 > max {
-            return Err(Error::limit(format!(
-                "SVG: input of {} bytes exceeds max_bytes {max}",
-                bytes.len()
-            )));
-        }
+    if let Some(max) = opts.max_bytes
+        && bytes.len() as u64 > max
+    {
+        return Err(Error::limit(format!(
+            "SVG: input of {} bytes exceeds max_bytes {max}",
+            bytes.len()
+        )));
     }
     let inflated;
     let raw: &[u8] = if is_gzip(bytes) {
@@ -263,10 +263,10 @@ fn collect_typed_views(
     el: &Element,
     out: &mut std::collections::HashMap<String, crate::defs::ViewDef>,
 ) {
-    if tag_local(&el.name) == "view" {
-        if let Some((id, def)) = crate::element::parse_view_def(el) {
-            out.insert(id, def);
-        }
+    if tag_local(&el.name) == "view"
+        && let Some((id, def)) = crate::element::parse_view_def(el)
+    {
+        out.insert(id, def);
     }
     for child in &el.children {
         if let XmlNode::Element(c) = child {
@@ -601,36 +601,35 @@ fn collect_clip_mask_ref_bindings_inner(
     clip_seen: &mut std::collections::HashSet<String>,
     mask_seen: &mut std::collections::HashSet<String>,
 ) {
-    if let Some(id) = attr(el, "clip-path").and_then(crate::defs::parse_url_ref) {
-        if clip_seen.insert(id.to_string()) {
-            // Re-parse the referenced `<clipPath>` into the merged Path
-            // the encoder fingerprints. A fresh ParseContext keeps this
-            // side pass from mutating the main walk's defs. The def is
-            // resolved against the whole document `root` (it lives in a
-            // `<defs>` elsewhere, not in `el`'s subtree).
-            if let Some(clip_el) = find_def_element(root, "clippath", id) {
-                let mut ctx = ParseContext::new();
-                if let Ok(Some((_, def))) = parse_clip_path_def(clip_el, &mut ctx) {
-                    extras.clip_refs.push(RefBinding {
-                        fingerprint: crate::encoder::path_fingerprint(&def.path),
-                        ref_id: id.to_string(),
-                    });
-                }
+    if let Some(id) = attr(el, "clip-path").and_then(crate::defs::parse_url_ref)
+        && clip_seen.insert(id.to_string())
+    {
+        // Re-parse the referenced `<clipPath>` into the merged Path
+        // the encoder fingerprints. A fresh ParseContext keeps this
+        // side pass from mutating the main walk's defs. The def is
+        // resolved against the whole document `root` (it lives in a
+        // `<defs>` elsewhere, not in `el`'s subtree).
+        if let Some(clip_el) = find_def_element(root, "clippath", id) {
+            let mut ctx = ParseContext::new();
+            if let Ok(Some((_, def))) = parse_clip_path_def(clip_el, &mut ctx) {
+                extras.clip_refs.push(RefBinding {
+                    fingerprint: crate::encoder::path_fingerprint(&def.path),
+                    ref_id: id.to_string(),
+                });
             }
         }
     }
-    if let Some(id) = attr(el, "mask").and_then(crate::defs::parse_url_ref) {
-        if mask_seen.insert(id.to_string()) {
-            if let Some(mask_el) = find_def_element(root, "mask", id) {
-                let mut ctx = ParseContext::new();
-                if let Ok(Some((_, def))) = parse_mask_def(mask_el, &mut ctx) {
-                    let node = crate::model::Node::Group(def.content.clone());
-                    extras.mask_refs.push(RefBinding {
-                        fingerprint: crate::encoder::mask_fingerprint(def.mask_kind, &node),
-                        ref_id: id.to_string(),
-                    });
-                }
-            }
+    if let Some(id) = attr(el, "mask").and_then(crate::defs::parse_url_ref)
+        && mask_seen.insert(id.to_string())
+        && let Some(mask_el) = find_def_element(root, "mask", id)
+    {
+        let mut ctx = ParseContext::new();
+        if let Ok(Some((_, def))) = parse_mask_def(mask_el, &mut ctx) {
+            let node = crate::model::Node::Group(def.content.clone());
+            extras.mask_refs.push(RefBinding {
+                fingerprint: crate::encoder::mask_fingerprint(def.mask_kind, &node),
+                ref_id: id.to_string(),
+            });
         }
     }
     for child in &el.children {
@@ -648,10 +647,10 @@ fn find_def_element<'a>(root: &'a Element, local: &str, id: &str) -> Option<&'a 
         return Some(root);
     }
     for child in &root.children {
-        if let XmlNode::Element(c) = child {
-            if let Some(found) = find_def_element(c, local, id) {
-                return Some(found);
-            }
+        if let XmlNode::Element(c) = child
+            && let Some(found) = find_def_element(c, local, id)
+        {
+            return Some(found);
         }
     }
     None
@@ -659,10 +658,10 @@ fn find_def_element<'a>(root: &'a Element, local: &str, id: &str) -> Option<&'a 
 
 fn find_svg_root(nodes: &[XmlNode]) -> Option<&Element> {
     for n in nodes {
-        if let XmlNode::Element(e) = n {
-            if tag_local(&e.name) == "svg" {
-                return Some(e);
-            }
+        if let XmlNode::Element(e) = n
+            && tag_local(&e.name) == "svg"
+        {
+            return Some(e);
         }
     }
     None
@@ -796,13 +795,11 @@ fn parse_svg_root(
         // paint's structural fingerprint so the encoder can substitute
         // the source id for its synthesised `grad{N}` twin on write
         // (see `PreservedExtras::gradient_refs`).
-        if track_id_paths {
-            if let Some(fp) = crate::encoder::paint_fingerprint(&paint) {
-                gradient_refs.push(RefBinding {
-                    fingerprint: fp,
-                    ref_id: id.clone(),
-                });
-            }
+        if track_id_paths && let Some(fp) = crate::encoder::paint_fingerprint(&paint) {
+            gradient_refs.push(RefBinding {
+                fingerprint: fp,
+                ref_id: id.clone(),
+            });
         }
         gradient_paints.insert(id.clone(), paint);
     }
@@ -860,15 +857,18 @@ fn parse_svg_root(
     // implements the `none` (stretch) variant; we pre-multiply
     // `root.transform` by a correction so the composed result is the
     // spec-mandated translate+scale.
-    if let Some(vb) = view_box {
-        if vb.width > 0.0 && vb.height > 0.0 && width > 0.0 && height > 0.0 {
-            let par = match attr(svg, "preserveAspectRatio") {
-                Some(s) => PreserveAspectRatio::from_str(s),
-                None => PreserveAspectRatio::default(),
-            };
-            if let Some(correction) = viewport_correction_transform(width, height, vb, par) {
-                root.transform = correction.compose(&root.transform);
-            }
+    if let Some(vb) = view_box
+        && vb.width > 0.0
+        && vb.height > 0.0
+        && width > 0.0
+        && height > 0.0
+    {
+        let par = match attr(svg, "preserveAspectRatio") {
+            Some(s) => PreserveAspectRatio::from_str(s),
+            None => PreserveAspectRatio::default(),
+        };
+        if let Some(correction) = viewport_correction_transform(width, height, vb, par) {
+            root.transform = correction.compose(&root.transform);
         }
     }
 

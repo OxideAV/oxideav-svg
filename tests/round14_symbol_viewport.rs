@@ -15,8 +15,8 @@
 //! transform before the outer Group applies the use's `transform=` /
 //! `x` / `y` / `opacity`.
 
-use oxideav_svg::parse;
 use oxideav_svg::Node;
+use oxideav_svg::parse;
 
 #[test]
 fn use_of_symbol_with_viewbox_and_width_height_scales_by_half() {

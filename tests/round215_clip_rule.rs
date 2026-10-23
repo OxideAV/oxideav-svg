@@ -356,8 +356,8 @@ fn first_child_rule_wins_for_merged_path() {
 #[test]
 fn typed_def_exposes_resolved_rule_evenodd() {
     use oxideav_svg::defs::ClipPathDef;
-    use oxideav_svg::element::{parse_clip_path_def, ParseContext};
-    use oxideav_svg::parser::{parse_xml, Node as XmlNode};
+    use oxideav_svg::element::{ParseContext, parse_clip_path_def};
+    use oxideav_svg::parser::{Node as XmlNode, parse_xml};
 
     let src = r##"<clipPath id="c1" clip-rule="evenodd">
       <path d="M 0 0 L 100 0 L 100 100 L 0 100 Z"/>
@@ -382,8 +382,8 @@ fn typed_def_exposes_resolved_rule_evenodd() {
 #[test]
 fn typed_def_default_rule_is_nonzero() {
     use oxideav_svg::defs::ClipPathDef;
-    use oxideav_svg::element::{parse_clip_path_def, ParseContext};
-    use oxideav_svg::parser::{parse_xml, Node as XmlNode};
+    use oxideav_svg::element::{ParseContext, parse_clip_path_def};
+    use oxideav_svg::parser::{Node as XmlNode, parse_xml};
 
     let src = r##"<clipPath id="c1">
       <path d="M 0 0 L 100 0 L 100 100 L 0 100 Z"/>

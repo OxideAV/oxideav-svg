@@ -19,7 +19,7 @@
 //! round-trips the source attribute via `PreservedExtras::text_renderings`.
 
 use oxideav_svg::element::{PaintState, TextRendering};
-use oxideav_svg::parser::{parse_xml, Element, Node as XmlNode};
+use oxideav_svg::parser::{Element, Node as XmlNode, parse_xml};
 use oxideav_svg::{parse, parse_with_extras, write_with_extras};
 
 /// Default `text-rendering` is `auto` (per §13.10.3 Initial table).

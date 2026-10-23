@@ -26,11 +26,11 @@
 //!    `parse_with_extras → write_with_extras` cycle on
 //!    [`oxideav_svg::preserved::PreservedExtras::gradients`].
 
+use oxideav_svg::{Paint, PathNode};
 use oxideav_svg::{
     defs::{GradientUnits, ResolvedGradientKind},
     parse, parse_with_extras, write_with_extras,
 };
-use oxideav_svg::{Paint, PathNode};
 
 fn first_path(frame: &oxideav_svg::SvgDocument) -> &PathNode {
     fn find(n: &oxideav_svg::Node) -> Option<&PathNode> {
@@ -238,7 +238,7 @@ fn typed_def_records_units_transform_and_href() {
     // Reaches into the typed `ResolvedGradient` path so we know the
     // verbatim metadata is preserved end-to-end for a downstream
     // rasteriser that wants the full SVG-2 surface.
-    use oxideav_svg::defs::{resolve_gradient_chain, DefsTables, GradientDef};
+    use oxideav_svg::defs::{DefsTables, GradientDef, resolve_gradient_chain};
     let src = br##"<?xml version="1.0"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">
   <defs>

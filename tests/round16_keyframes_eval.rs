@@ -30,10 +30,10 @@ fn inner_transform(frame: &oxideav_svg::SvgDocument) -> oxideav_svg::Transform2D
     }
     // Try a few depths until we find a non-identity transform.
     for d in 0..6 {
-        if let Some(t) = walk(&oxideav_svg::Node::Group(frame.root.clone()), 0, d) {
-            if !t.is_identity() {
-                return t;
-            }
+        if let Some(t) = walk(&oxideav_svg::Node::Group(frame.root.clone()), 0, d)
+            && !t.is_identity()
+        {
+            return t;
         }
     }
     frame.root.transform

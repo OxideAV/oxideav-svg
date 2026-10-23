@@ -9,8 +9,8 @@
 //! These tests cover both shapes and the round-trip through
 //! `parse_with_extras` + `write_with_extras`.
 
-use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as B64;
 
 use oxideav_svg::image::{ImageHref, SvgImage};
 use oxideav_svg::{parse_with_extras, write_with_extras};

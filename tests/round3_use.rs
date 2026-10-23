@@ -4,8 +4,8 @@
 //! during the pre-walk. `<symbol>` references inline the symbol's
 //! children; cycles are detected and dropped.
 
-use oxideav_svg::parse;
 use oxideav_svg::Node;
+use oxideav_svg::parse;
 
 fn count_paths(g: &oxideav_svg::Group) -> usize {
     let mut n = 0;

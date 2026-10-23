@@ -87,7 +87,7 @@ use crate::error::Result;
 use crate::model::{Group, Node, Path, Transform2D};
 
 use crate::element::{PaintState, ParseContext, TextAnchor, TextLengthAdjust};
-use crate::parser::{attr, tag_local, Element, Node as XmlNode};
+use crate::parser::{Element, Node as XmlNode, attr, tag_local};
 use crate::path_length::{compute_path_length, sample_path_at_distance};
 
 /// Caller hook so applications can supply a font-resolution callback
@@ -674,10 +674,10 @@ fn parse_number_list_attr(s: Option<&str>) -> Vec<f32> {
         // `parse_number` handles the longest-numeric-prefix policy and
         // unit-suffix stripping (`12px`, `3.5em`, `50%`); we use NaN
         // as the sentinel and drop tokens whose prefix doesn't parse.
-        if let Ok(v) = crate::element::parse_number(Some(t), f32::NAN) {
-            if v.is_finite() {
-                out.push(v);
-            }
+        if let Ok(v) = crate::element::parse_number(Some(t), f32::NAN)
+            && v.is_finite()
+        {
+            out.push(v);
         }
     }
     out
@@ -842,16 +842,15 @@ fn collect_text_run_into(el: &Element, out: &mut String) {
 /// referenced source has no usable `d` attribute (in which case the
 /// `<textPath>` renders no glyphs, matching browsers' behaviour).
 fn resolve_text_path(el: &Element, ctx: &ParseContext) -> Option<Path> {
-    if let Some(d) = attr(el, "path") {
-        if let Ok(cmds) = crate::path_data::parse_path_data(d) {
-            if !cmds.is_empty() {
-                let mut p = Path::new();
-                for cmd in cmds {
-                    p.commands.push(cmd);
-                }
-                return Some(p);
-            }
+    if let Some(d) = attr(el, "path")
+        && let Ok(cmds) = crate::path_data::parse_path_data(d)
+        && !cmds.is_empty()
+    {
+        let mut p = Path::new();
+        for cmd in cmds {
+            p.commands.push(cmd);
         }
+        return Some(p);
     }
     let href = attr(el, "href").or_else(|| attr(el, "xlink:href"))?;
     let id = href.trim().strip_prefix('#')?;

@@ -19,7 +19,7 @@
 //! `SvgImage::image_rendering`.
 
 use oxideav_svg::element::{ImageRendering, PaintState};
-use oxideav_svg::parser::{parse_xml, Element, Node as XmlNode};
+use oxideav_svg::parser::{Element, Node as XmlNode, parse_xml};
 use oxideav_svg::{parse, parse_with_extras, write_with_extras};
 
 /// Default `image-rendering` is `auto` (per §13.10.4 Initial table).

@@ -514,7 +514,7 @@ pub fn from_core_pixel_format(pf: PixelFormat) -> oxideav_core::Result<SvgPixelF
         other => {
             return Err(oxideav_core::Error::unsupported(format!(
                 "SVG: pixel format {other:?} not supported"
-            )))
+            )));
         }
     })
 }
@@ -718,7 +718,7 @@ impl Encoder for SvgEncoder {
             _ => {
                 return Err(oxideav_core::Error::invalid(
                     "SVG encoder: expected vector frame",
-                ))
+                ));
             }
         };
         self.pending = Some(crate::encoder::write(&document_from_frame(vf)));

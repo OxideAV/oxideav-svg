@@ -42,7 +42,7 @@
 //! and produces a serialised `transform="..."` attribute string that the
 //! existing `transform.rs` parser already accepts.
 
-use crate::parser::{attr, tag_local, Element, Node as XmlNode};
+use crate::parser::{Element, Node as XmlNode, attr, tag_local};
 
 /// One animation child snapshot at the requested `t`.
 ///
@@ -754,14 +754,14 @@ fn motion_path_from_element<'a>(
     // 1. <mpath xlink:href="#path1"> → look up the referenced <path>
     //    element's `d` attribute.
     for child in &el.children {
-        if let XmlNode::Element(c) = child {
-            if tag_local(&c.name) == "mpath" {
-                let href = attr(c, "href").or_else(|| attr(c, "xlink:href"))?;
-                let id = href.trim().strip_prefix('#')?;
-                let target = id_lookup(id)?;
-                let d = attr(target, "d")?;
-                return path_from_d(d);
-            }
+        if let XmlNode::Element(c) = child
+            && tag_local(&c.name) == "mpath"
+        {
+            let href = attr(c, "href").or_else(|| attr(c, "xlink:href"))?;
+            let id = href.trim().strip_prefix('#')?;
+            let target = id_lookup(id)?;
+            let d = attr(target, "d")?;
+            return path_from_d(d);
         }
     }
     // 2. path="..."
@@ -870,10 +870,10 @@ fn key_points_mapping(el: &Element, t01: f32, mode: CalcMode) -> Option<f32> {
     if t01 <= key_times[0] {
         return Some(key_points[0]);
     }
-    if let Some(&last) = key_times.last() {
-        if t01 >= last {
-            return Some(*key_points.last().unwrap());
-        }
+    if let Some(&last) = key_times.last()
+        && t01 >= last
+    {
+        return Some(*key_points.last().unwrap());
     }
     let mut idx = 0;
     for (i, kt) in key_times.iter().enumerate() {

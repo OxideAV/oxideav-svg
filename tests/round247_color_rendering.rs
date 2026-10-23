@@ -23,7 +23,7 @@
 //! via `PreservedExtras::color_renderings`.
 
 use oxideav_svg::element::{ColorRendering, PaintState};
-use oxideav_svg::parser::{parse_xml, Element, Node as XmlNode};
+use oxideav_svg::parser::{Element, Node as XmlNode, parse_xml};
 use oxideav_svg::{parse, parse_with_extras, write_with_extras};
 
 /// Default `color-rendering` is `auto` (per §13.10.1 Initial table).

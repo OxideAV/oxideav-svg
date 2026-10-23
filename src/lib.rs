@@ -605,8 +605,8 @@ pub mod transform;
 
 // ---- Image-crate contract (IMAGE_CRATE_API) ----
 pub use api::{
-    decode, decode_from, decode_rgb8, decode_rgba8, decode_with, encode, encode_rgb8, encode_rgba8,
-    encode_to, info, info_with, parse_from, probe, write_to, PROBE_WINDOW,
+    PROBE_WINDOW, decode, decode_from, decode_rgb8, decode_rgba8, decode_with, encode, encode_rgb8,
+    encode_rgba8, encode_to, info, info_with, parse_from, probe, write_to,
 };
 pub use error::{Error, Result, SvgError};
 pub use options::{DecodeOptions, EncodeOptions};
@@ -617,8 +617,8 @@ pub use picture::{
 
 // ---- The vector document API (depth) ----
 pub use decoder::{
-    parse, parse_at, parse_at_with_languages, parse_at_with_languages_opts, parse_with,
-    parse_with_extras, parse_with_extras_opts, CODEC_ID_STR,
+    CODEC_ID_STR, parse, parse_at, parse_at_with_languages, parse_at_with_languages_opts,
+    parse_with, parse_with_extras, parse_with_extras_opts,
 };
 pub use encoder::{write, write_svgz, write_with, write_with_extras, write_with_extras_opts};
 pub use model::{
@@ -630,7 +630,7 @@ pub use preserved::{DescriptiveBinding, DescriptiveText, LinkBinding, PreservedE
 
 // Fragment-identifier routing (SVG 2 §16.3.2 / §16.3.3).
 mod fragment;
-pub use fragment::{resolve_fragment, ResolvedView};
+pub use fragment::{ResolvedView, resolve_fragment};
 
 // ---- Framework integration (`registry` feature) ----
 #[cfg(feature = "registry")]

@@ -18,7 +18,7 @@
 //! `PreservedExtras::overflows`.
 
 use oxideav_svg::element::{Overflow, PaintState};
-use oxideav_svg::parser::{parse_xml, Element, Node as XmlNode};
+use oxideav_svg::parser::{Element, Node as XmlNode, parse_xml};
 use oxideav_svg::{parse, parse_with_extras, write_with_extras};
 
 /// Default `overflow` is `visible` per the §3.11 summary table.

@@ -17,10 +17,10 @@ fn transform_to_first_path(g: &oxideav_svg::Group, acc: Transform2D) -> Option<T
         return Some(here);
     }
     for c in &g.children {
-        if let Node::Group(sg) = c {
-            if let Some(t) = transform_to_first_path(sg, here) {
-                return Some(t);
-            }
+        if let Node::Group(sg) = c
+            && let Some(t) = transform_to_first_path(sg, here)
+        {
+            return Some(t);
         }
     }
     None
