@@ -32,9 +32,9 @@ use crate::preserved::{
     AnimTargetBinding, AnimationFragment, ClipRuleBinding, ColorInterpolationBinding,
     ColorRenderingBinding, CursorBinding, DescriptiveBinding, DominantBaselineBinding,
     FilterRefBinding, IdScenePath, LinkBinding, MarkerRefBinding, OverflowBinding,
-    PaintOrderBinding, PathLengthBinding, PointerEventsBinding, PreservedExtras, RefBinding,
-    ShapeBinding, ShapeRenderingBinding, SwitchBinding, TextBinding, TextRenderingBinding,
-    UnrenderedBinding, UseBinding, VectorEffectBinding,
+    PaintOrderBinding, PaintRefBinding, PathLengthBinding, PointerEventsBinding, PreservedExtras,
+    RefBinding, ShapeBinding, ShapeRenderingBinding, SwitchBinding, TextBinding,
+    TextRenderingBinding, UnrenderedBinding, UseBinding, VectorEffectBinding,
 };
 
 /// Codec id string for SVG vector frames.
@@ -226,6 +226,7 @@ pub fn parse_with_extras_opts(
         anim_targets,
         shapes,
         gradient_refs,
+        paint_refs,
         unrendered,
     ) = parse_svg_root(svg, 0.0, true, &[])?;
     extras.id_paths = id_paths;
@@ -251,6 +252,7 @@ pub fn parse_with_extras_opts(
     extras.anim_targets = anim_targets;
     extras.shapes = shapes;
     extras.gradient_refs = gradient_refs;
+    extras.paint_refs = paint_refs;
     extras.unrendered = unrendered;
     Ok((frame, extras))
 }
@@ -692,6 +694,7 @@ type SvgRootParse = (
     Vec<AnimTargetBinding>,
     Vec<ShapeBinding>,
     Vec<RefBinding>,
+    Vec<PaintRefBinding>,
     Vec<UnrenderedBinding>,
 );
 
@@ -910,6 +913,7 @@ fn parse_svg_root(
             refs.append(&mut ctx.gradient_refs);
             refs
         },
+        ctx.paint_refs,
         ctx.unrendered,
     ))
 }

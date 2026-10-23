@@ -204,6 +204,12 @@ could allocate — it is header-only — and `decode_with` turns that into
   gradient whose rings turn elliptical (non-square box, non-uniform
   `gradientTransform`) paints through a soft mask of the shape with the
   circular gradient under the box matrix (`defs::GradientPaint`).
+  `<pattern>` (SVG 2 §14.3) — `patternUnits` / `patternContentUnits` /
+  `viewBox` + `preserveAspectRatio` / `patternTransform` / `href`
+  template chains — is tiled over each referencing shape through a
+  soft mask (`element::expand_pattern`, bounded tile count), so a
+  path-only rasteriser paints it; the writer collapses the expansion
+  back to the `fill="url(#id)"` reference on an extras round-trip.
   A `parse_with_extras → write_with_extras` round-trip
   preserves the **reference identity**: the author's verbatim gradient
   def (original id, `gradientUnits`, `gradientTransform`, `href`

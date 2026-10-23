@@ -730,55 +730,240 @@ pub struct SymbolDef {
     pub ref_y: Option<f32>,
 }
 
-/// Round 20 — captured `<pattern id="...">` paint server. SVG 2 §14.3.
+/// `<pattern id="...">` paint server, as authored (SVG 2 §14.3).
 ///
-/// `crate::model::Paint` lacks a `Pattern` variant — the IR was last
-/// frozen with only `Solid` / `LinearGradient` / `RadialGradient`. Round
-/// 20 captures every `<pattern>` we see (typed view + verbatim XML on
-/// the side-channel) so the encoder round-trips the definition AND a
-/// downstream rasterizer that picks up the typed view can tile the
-/// content correctly without re-parsing.
+/// Every attribute is `Option<_>` so the §14.1.1 / §14.3.1 template
+/// chain (`href` / `xlink:href`) can tell "not specified — inherit from
+/// the template" from an explicit value; [`resolve_pattern_chain`]
+/// collapses the chain into a [`ResolvedPattern`]. The tile rectangle
+/// is kept as typed [`Length`]s because `patternUnits` decides what a
+/// bare number or a `%` means (§8.11), and the units may themselves be
+/// inherited.
 ///
-/// The fill / stroke resolver falls back to the SVG 2 §13.2 paint-list
-/// fallback colour (`fill="url(#pat) red"`) for a non-pattern-aware
-/// scene-graph renderer; once `Paint::Pattern` lands in oxideav-core
-/// this typed view becomes the input to the [`Paint`] constructor and
-/// the fallback path becomes a real edge case (invalid id, recursive
-/// reference, etc.) per the spec.
+/// `content` is the tile content parsed as a [`Group`]; empty when the
+/// `<pattern>` had no renderable children, in which case §14.1.1 clones
+/// the template's content.
+///
+/// The scene graph has no `Paint::Pattern`: a shape that references a
+/// pattern is expanded by the shape builder into the tiles that cover
+/// it, painted through a soft mask of the shape (see
+/// [`crate::element::expand_pattern`]), so a renderer that only knows
+/// paths paints the pattern; the writer collapses the expansion back
+/// to the `fill="url(#id)"` reference on `write_with_extras`.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct PatternDef {
-    /// Tile reference rectangle. Stored in the units indicated by
-    /// `pattern_units` (default `ObjectBoundingBox` per §14.3.1, in
-    /// which case `0..=1` spans the referencing element's bounding
-    /// box).
+    /// Tile reference rectangle (`x` / `y` / `width` / `height`) in the
+    /// units named by `pattern_units`.
+    pub x: Option<Length>,
+    pub y: Option<Length>,
+    pub width: Option<Length>,
+    pub height: Option<Length>,
+    /// Coordinate system for the tile rectangle. Initial value
+    /// `ObjectBoundingBox` (§14.3.1).
+    pub pattern_units: Option<PatternUnits>,
+    /// Coordinate system for the tile content. Initial value
+    /// `UserSpaceOnUse`; ignored when `view_box` is set (§14.3.1).
+    pub pattern_content_units: Option<PatternUnits>,
+    /// `patternTransform` — pattern space → target space (§14.3.1).
+    pub pattern_transform: Option<Transform2D>,
+    /// `viewBox` fitted into the tile (§14.3.2 supplemental transform).
+    pub view_box: Option<ViewBox>,
+    /// `preserveAspectRatio` for the `viewBox` fit (default `xMidYMid meet`).
+    pub preserve_aspect_ratio: Option<PreserveAspectRatio>,
+    /// Template reference — `href` (or legacy `xlink:href`) per
+    /// §14.3.1, stored as the bare id (`#`-stripped); empty when absent.
+    pub href: String,
+    /// Parsed tile content; empty when the element had no renderable
+    /// children (inherit from the template).
+    pub content: Group,
+}
+
+impl PatternDef {
+    /// A pattern with nothing specified.
+    pub fn new() -> Self {
+        Self {
+            x: None,
+            y: None,
+            width: None,
+            height: None,
+            pattern_units: None,
+            pattern_content_units: None,
+            pattern_transform: None,
+            view_box: None,
+            preserve_aspect_ratio: None,
+            href: String::new(),
+            content: Group::default(),
+        }
+    }
+
+    /// Set the tile rectangle.
+    pub fn with_tile(mut self, x: Length, y: Length, width: Length, height: Length) -> Self {
+        self.x = Some(x);
+        self.y = Some(y);
+        self.width = Some(width);
+        self.height = Some(height);
+        self
+    }
+
+    /// Set `patternUnits`.
+    pub fn with_pattern_units(mut self, units: PatternUnits) -> Self {
+        self.pattern_units = Some(units);
+        self
+    }
+
+    /// Set `patternContentUnits`.
+    pub fn with_pattern_content_units(mut self, units: PatternUnits) -> Self {
+        self.pattern_content_units = Some(units);
+        self
+    }
+
+    /// Set `patternTransform`.
+    pub fn with_pattern_transform(mut self, t: Transform2D) -> Self {
+        self.pattern_transform = Some(t);
+        self
+    }
+
+    /// Set `viewBox` (and optionally `preserveAspectRatio`).
+    pub fn with_view_box(mut self, vb: ViewBox, par: Option<PreserveAspectRatio>) -> Self {
+        self.view_box = Some(vb);
+        self.preserve_aspect_ratio = par;
+        self
+    }
+
+    /// Set the template reference (bare id, no `#`).
+    pub fn with_href(mut self, href: impl Into<String>) -> Self {
+        self.href = href.into();
+        self
+    }
+
+    /// Replace the tile content.
+    pub fn with_content(mut self, content: Group) -> Self {
+        self.content = content;
+        self
+    }
+}
+
+impl Default for PatternDef {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A `<pattern>` with its §14.1.1 template chain collapsed: every
+/// attribute pinned, content populated. Produced by
+/// [`resolve_pattern_chain`] / [`resolve_pattern_chain_with`].
+///
+/// `x` / `y` / `width` / `height` are in the space `pattern_units`
+/// names — bounding-box fractions (percentages ÷ 100) under
+/// `ObjectBoundingBox`, user units (percentages against the viewport)
+/// under `UserSpaceOnUse`.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct ResolvedPattern {
     pub x: f32,
     pub y: f32,
     pub width: f32,
     pub height: f32,
-    /// Coordinate system for `x` / `y` / `width` / `height`. Default
-    /// `ObjectBoundingBox`.
     pub pattern_units: PatternUnits,
-    /// Coordinate system for the pattern's tile content. Default
-    /// `UserSpaceOnUse`. Per §14.3.1, ignored when `view_box` is set.
     pub pattern_content_units: PatternUnits,
-    /// Per-tile transform from the `patternTransform` attribute.
     pub pattern_transform: Transform2D,
-    /// `viewBox` mapping inside the tile (§14.3.2 supplemental
-    /// transform).
     pub view_box: Option<ViewBox>,
-    /// `preserveAspectRatio` inside the tile (default `xMidYMid meet`).
     pub preserve_aspect_ratio: PreserveAspectRatio,
-    /// Template reference — `href` (or legacy `xlink:href`) per
-    /// §14.3.1. Stored as the bare id (`#`-stripped); empty `String`
-    /// when absent. Pattern chaining (template inheritance of `x` /
-    /// `y` / `width` / `height` / `viewBox` / `preserveAspectRatio` /
-    /// `patternTransform` / `patternUnits` / `patternContentUnits`
-    /// from the referenced template) is the rasterizer's job — round
-    /// 20 captures the reference faithfully.
-    pub href: String,
-    /// Parsed tile content as a `Group`. Empty group when the source
-    /// `<pattern>` had no renderable children.
     pub content: Group,
+}
+
+/// Per §14.1.1 the template chain "can be indirect to an arbitrary
+/// level"; mirror the gradient cap.
+pub const PATTERN_HREF_DEPTH_CAP: usize = GRADIENT_HREF_DEPTH_CAP;
+
+/// [`resolve_pattern_chain_with`] with a default [`ResolveContext`] (a
+/// `%` under `userSpaceOnUse` resolves to 0).
+pub fn resolve_pattern_chain(start: &PatternDef, defs: &DefsTables) -> ResolvedPattern {
+    resolve_pattern_chain_with(start, defs, &ResolveContext::default())
+}
+
+/// SVG 2 §14.1.1 / §14.3.1 template-inheritance walker for `<pattern>`:
+/// `x` / `y` / `width` / `height` / `viewBox` / `preserveAspectRatio` /
+/// `patternTransform` / `patternUnits` / `patternContentUnits` are
+/// copied from the nearest template that specifies them, and the
+/// content is cloned from the nearest template that has any when the
+/// element has none. Self-references and cycles terminate at
+/// [`PATTERN_HREF_DEPTH_CAP`] hops.
+pub fn resolve_pattern_chain_with(
+    start: &PatternDef,
+    defs: &DefsTables,
+    ctx: &ResolveContext,
+) -> ResolvedPattern {
+    use std::collections::HashSet;
+    let mut chain: Vec<&PatternDef> = vec![start];
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut href = start.href.clone();
+    let mut hops = 0usize;
+    while !href.is_empty() && hops < PATTERN_HREF_DEPTH_CAP {
+        if !visited.insert(href.clone()) {
+            break;
+        }
+        match defs.patterns.get(&href) {
+            Some(parent) => {
+                chain.push(parent);
+                href = parent.href.clone();
+                hops += 1;
+            }
+            None => break,
+        }
+    }
+
+    let mut x: Option<Length> = None;
+    let mut y: Option<Length> = None;
+    let mut w: Option<Length> = None;
+    let mut h: Option<Length> = None;
+    let mut units: Option<PatternUnits> = None;
+    let mut content_units: Option<PatternUnits> = None;
+    let mut transform: Option<Transform2D> = None;
+    let mut view_box: Option<ViewBox> = None;
+    let mut par: Option<PreserveAspectRatio> = None;
+    let mut content: Option<&Group> = None;
+    for def in &chain {
+        x = x.or(def.x);
+        y = y.or(def.y);
+        w = w.or(def.width);
+        h = h.or(def.height);
+        units = units.or(def.pattern_units);
+        content_units = content_units.or(def.pattern_content_units);
+        transform = transform.or(def.pattern_transform);
+        view_box = view_box.or(def.view_box);
+        par = par.or(def.preserve_aspect_ratio);
+        if content.is_none() && !def.content.children.is_empty() {
+            content = Some(&def.content);
+        }
+    }
+
+    let units = units.unwrap_or(PatternUnits::ObjectBoundingBox);
+    let resolve = |len: Option<Length>, axis: LengthAxis| -> f32 {
+        let len = len.unwrap_or(Length::user_units(0.0));
+        match units {
+            PatternUnits::ObjectBoundingBox => match len.unit {
+                LengthUnit::Percent => len.value / 100.0,
+                _ => len.value,
+            },
+            PatternUnits::UserSpaceOnUse => {
+                len.resolve(ctx.with_percentage_basis(ctx.percentage_basis_for(axis)))
+            }
+        }
+    };
+    ResolvedPattern {
+        x: resolve(x, LengthAxis::X),
+        y: resolve(y, LengthAxis::Y),
+        width: resolve(w, LengthAxis::X),
+        height: resolve(h, LengthAxis::Y),
+        pattern_units: units,
+        pattern_content_units: content_units.unwrap_or(PatternUnits::UserSpaceOnUse),
+        pattern_transform: transform.unwrap_or_else(Transform2D::identity),
+        view_box,
+        preserve_aspect_ratio: par.unwrap_or_default(),
+        content: content.cloned().unwrap_or_default(),
+    }
 }
 
 /// Round 104 — `markerUnits` keyword per SVG 2 §13.7.1. Defines the

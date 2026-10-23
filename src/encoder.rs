@@ -97,6 +97,7 @@ struct EmitIndex<'a> {
     unrendered_by_parent: HashMap<Vec<usize>, Vec<&'a Element>>,
     path_to_filter_ref: HashMap<Vec<usize>, &'a str>,
     path_to_marker: HashMap<Vec<usize>, &'a crate::preserved::MarkerRefBinding>,
+    path_to_paint_ref: HashMap<Vec<usize>, &'a crate::preserved::PaintRefBinding>,
     parent_to_titles: HashMap<Vec<usize>, &'a DescriptiveBinding>,
     parent_to_descs: HashMap<Vec<usize>, &'a DescriptiveBinding>,
     anim_by_parent: HashMap<String, Vec<&'a AnimationFragment>>,
@@ -280,6 +281,15 @@ pub fn write_with_extras(frame: &SvgDocument, extras: &PreservedExtras) -> Vec<u
     for entry in &extras.marker_refs {
         path_to_marker.insert(entry.path.clone(), entry);
     }
+    // Round 480 — index the layer-group paint-server bindings by the
+    // layer group's tree-path so the `Node::Group` arm collapses the
+    // pattern / masked-gradient expansion back to one element carrying
+    // `fill="url(#…)"` / `stroke="url(#…)"`.
+    let mut path_to_paint_ref: HashMap<Vec<usize>, &crate::preserved::PaintRefBinding> =
+        HashMap::new();
+    for entry in &extras.paint_refs {
+        path_to_paint_ref.insert(entry.path.clone(), entry);
+    }
     // Round 122 — index `<title>` / `<desc>` bindings (SVG 2 §5.8) by
     // their *parent* container's scene-graph tree-path so `write_node`
     // can re-emit them as the first children of the matching `<g>` on
@@ -422,6 +432,7 @@ pub fn write_with_extras(frame: &SvgDocument, extras: &PreservedExtras) -> Vec<u
         unrendered_by_parent,
         path_to_filter_ref,
         path_to_marker,
+        path_to_paint_ref,
         parent_to_titles,
         parent_to_descs,
         anim_by_parent,
@@ -458,7 +469,23 @@ pub fn write_with_extras(frame: &SvgDocument, extras: &PreservedExtras) -> Vec<u
     let mut gradients: GradientCollector = GradientCollector::default();
     let mut clips: ClipPathCollector = ClipPathCollector::default();
     let mut masks: MaskCollector = MaskCollector::default();
-    walk_collect_defs(&frame.root, &mut gradients, &mut clips, &mut masks);
+    // Round 480 — a layer group the writer collapses back to a
+    // `fill="url(#…)"` reference emits none of its expansion, so its
+    // masks / clips / gradients must not be registered as defs.
+    let collapsed: std::collections::HashSet<&[usize]> = extras
+        .paint_refs
+        .iter()
+        .map(|b| b.path.as_slice())
+        .collect();
+    let mut collect_stack: Vec<usize> = Vec::new();
+    walk_collect_defs(
+        &frame.root,
+        &mut gradients,
+        &mut clips,
+        &mut masks,
+        &collapsed,
+        &mut collect_stack,
+    );
 
     // Round 372 — SVG 1.1 §14.3.1 / §14.4: map each synthesised
     // `clip{N}` / `mask{N}` id to the original `clip-path` / `mask`
@@ -1102,6 +1129,7 @@ fn write_node(
         unrendered_by_parent,
         path_to_filter_ref,
         path_to_marker,
+        path_to_paint_ref,
         parent_to_titles,
         parent_to_descs,
         anim_by_parent,
@@ -1239,6 +1267,107 @@ fn write_node(
         return;
     }
     match node {
+        Node::Group(g) if path_to_paint_ref.contains_key(path_stack.as_slice()) => {
+            // Round 480 — a shape the builder expanded into a layer
+            // group (a `<pattern>` fill / stroke tiled through a soft
+            // mask, or an elliptical radial gradient painted through
+            // one) collapses back to the single source element: the
+            // geometry comes from the first layer (the mask path for a
+            // masked layer), the stroke style from whichever layer
+            // carries the stroke, and the masked sides take their
+            // recorded `url(#…)` reference while a plain side writes
+            // its own paint. The verbatim `<pattern>` / gradient def
+            // rides the preserved-extras side-channel, so the reference
+            // resolves — and re-parsing rebuilds the identical
+            // expansion.
+            let pr = path_to_paint_ref[path_stack.as_slice()];
+            fn layer_path(n: &Node) -> Option<&PathNode> {
+                match n {
+                    Node::Path(p) => Some(p),
+                    Node::SoftMask { mask, .. } => match &**mask {
+                        Node::Path(p) => Some(p),
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            }
+            let layers: Vec<&PathNode> = g.children.iter().filter_map(layer_path).collect();
+            let Some(geom) = layers.first() else {
+                return;
+            };
+            let fill_layer = layers.iter().find(|p| p.fill.is_some());
+            let stroke_layer = layers.iter().find(|p| p.stroke.is_some());
+            let synthetic = PathNode {
+                path: geom.path.clone(),
+                fill: fill_layer.and_then(|p| p.fill.clone()),
+                stroke: stroke_layer.and_then(|p| p.stroke.clone()),
+                fill_rule: geom.fill_rule,
+            };
+            let stroke_first = layers.len() == 2 && layers[0].stroke.is_some();
+            let shape_here: Option<&crate::preserved::ShapeBinding> =
+                path_to_shape.get(path_stack.as_slice()).copied();
+            let tag: &str = shape_here.map(|s| s.tag.as_str()).unwrap_or("path");
+            out.push_str(&indent);
+            out.push('<');
+            out.push_str(tag);
+            if let Some(id) = id_here {
+                out.push_str(&format!(" id=\"{}\"", escape_attr(id)));
+            }
+            if let Some(s) = shape_here {
+                for (k, v) in &s.attrs {
+                    out.push_str(&format!(" {}=\"{}\"", k, escape_attr(v)));
+                }
+            } else {
+                out.push_str(" d=\"");
+                write_path_d(out, &synthetic.path.commands);
+                out.push('"');
+            }
+            write_paint_attrs_with(
+                out,
+                &synthetic,
+                gradients,
+                1.0,
+                pr.fill.as_deref(),
+                pr.stroke.as_deref(),
+            );
+            if let Some(m) = marker_here {
+                write_marker_attrs(out, m);
+            }
+            match paint_order_here {
+                Some(po) => out.push_str(&format!(" paint-order=\"{}\"", escape_attr(po))),
+                None if stroke_first => out.push_str(" paint-order=\"stroke\""),
+                None => {}
+            }
+            write_hint_attrs(
+                out,
+                &[
+                    ("vector-effect", vector_effect_here),
+                    ("shape-rendering", shape_rendering_here),
+                    ("text-rendering", text_rendering_here),
+                    ("color-rendering", color_rendering_here),
+                    ("color-interpolation", color_interpolation_here),
+                    ("overflow", overflow_here),
+                    ("pointer-events", pointer_events_here),
+                    ("cursor", cursor_here),
+                    ("dominant-baseline", dominant_baseline_here),
+                ],
+            );
+            if inline_anims.is_empty() && path_anims.is_empty() {
+                out.push_str("/>\n");
+            } else {
+                out.push_str(">\n");
+                for anim in inline_anims {
+                    write_raw_element(out, &anim.element, depth + 1);
+                }
+                for anim in path_anims {
+                    write_raw_element(out, anim, depth + 1);
+                }
+                out.push_str(&indent);
+                out.push_str("</");
+                out.push_str(tag);
+                out.push_str(">\n");
+            }
+        }
         Node::Group(g) => {
             // Round 372 — SVG 2 §5.7: if this group is the selected
             // branch of a `<switch>`, re-emit the verbatim `<switch>`
@@ -1805,15 +1934,33 @@ fn write_paint_attrs(
     gradients: &GradientCollector,
     dash_scale: f32,
 ) {
-    match &node.fill {
-        Some(p) => out.push_str(&format!(" fill=\"{}\"", paint_to_attr(p, gradients))),
-        None => out.push_str(" fill=\"none\""),
+    write_paint_attrs_with(out, node, gradients, dash_scale, None, None);
+}
+
+/// [`write_paint_attrs`] with the `fill` / `stroke` attribute values
+/// optionally replaced by verbatim paint-server references (round 480
+/// layer-group collapse).
+fn write_paint_attrs_with(
+    out: &mut String,
+    node: &PathNode,
+    gradients: &GradientCollector,
+    dash_scale: f32,
+    fill_override: Option<&str>,
+    stroke_override: Option<&str>,
+) {
+    match (fill_override, &node.fill) {
+        (Some(v), _) => out.push_str(&format!(" fill=\"{}\"", escape_attr(v))),
+        (None, Some(p)) => out.push_str(&format!(" fill=\"{}\"", paint_to_attr(p, gradients))),
+        (None, None) => out.push_str(" fill=\"none\""),
     }
     if let Some(stroke) = &node.stroke {
-        out.push_str(&format!(
-            " stroke=\"{}\"",
-            paint_to_attr(&stroke.paint, gradients)
-        ));
+        match stroke_override {
+            Some(v) => out.push_str(&format!(" stroke=\"{}\"", escape_attr(v))),
+            None => out.push_str(&format!(
+                " stroke=\"{}\"",
+                paint_to_attr(&stroke.paint, gradients)
+            )),
+        }
         if (stroke.width - 1.0).abs() > f32::EPSILON {
             out.push_str(&format!(" stroke-width=\"{}\"", trim_float(stroke.width)));
         }
@@ -1846,6 +1993,17 @@ fn write_paint_attrs(
     }
     if node.fill_rule == FillRule::EvenOdd {
         out.push_str(" fill-rule=\"evenodd\"");
+    }
+}
+
+/// Emit the round-trip hint carriers (`vector-effect`, the §13.10
+/// rendering hints, `overflow`, `pointer-events`, `cursor`,
+/// `dominant-baseline`) that are present.
+fn write_hint_attrs(out: &mut String, attrs: &[(&str, Option<&str>)]) {
+    for (name, value) in attrs {
+        if let Some(v) = value {
+            out.push_str(&format!(" {}=\"{}\"", name, escape_attr(v)));
+        }
     }
 }
 
@@ -2126,17 +2284,26 @@ fn radial_fingerprint(g: &RadialGradient) -> String {
     s
 }
 
+/// Walk the scene graph registering every gradient / clip / mask def.
+/// `path_stack` mirrors `write_node`'s tree-path convention (a child
+/// index per group level, nothing for a `SoftMask`); a group whose
+/// path is in `skip` (a round-480 collapsed layer group) contributes
+/// nothing.
 fn walk_collect_defs(
     group: &Group,
     gradients: &mut GradientCollector,
     clips: &mut ClipPathCollector,
     masks: &mut MaskCollector,
+    skip: &std::collections::HashSet<&[usize]>,
+    path_stack: &mut Vec<usize>,
 ) {
     if let Some(clip) = &group.clip {
         clips.ensure(clip);
     }
-    for child in &group.children {
-        walk_collect_defs_node(child, gradients, clips, masks);
+    for (i, child) in group.children.iter().enumerate() {
+        path_stack.push(i);
+        walk_collect_defs_node(child, gradients, clips, masks, skip, path_stack);
+        path_stack.pop();
     }
 }
 
@@ -2145,6 +2312,8 @@ fn walk_collect_defs_node(
     gradients: &mut GradientCollector,
     clips: &mut ClipPathCollector,
     masks: &mut MaskCollector,
+    skip: &std::collections::HashSet<&[usize]>,
+    path_stack: &mut Vec<usize>,
 ) {
     match node {
         Node::Path(p) => {
@@ -2155,7 +2324,24 @@ fn walk_collect_defs_node(
                 gradients.ensure(&s.paint);
             }
         }
-        Node::Group(g) => walk_collect_defs(g, gradients, clips, masks),
+        Node::Group(g) => {
+            if skip.contains(path_stack.as_slice()) {
+                // Collapsed to a reference: only a plain layer's own
+                // gradient paint can appear in the output.
+                for c in &g.children {
+                    if let Node::Path(p) = c {
+                        if let Some(paint) = &p.fill {
+                            gradients.ensure(paint);
+                        }
+                        if let Some(s) = &p.stroke {
+                            gradients.ensure(&s.paint);
+                        }
+                    }
+                }
+                return;
+            }
+            walk_collect_defs(g, gradients, clips, masks, skip, path_stack)
+        }
         Node::SoftMask {
             mask,
             mask_kind,
@@ -2164,8 +2350,8 @@ fn walk_collect_defs_node(
             let mask_node = (**mask).clone();
             // Recurse into the mask + content subtrees so any nested
             // gradients / clips / masks also get registered.
-            walk_collect_defs_node(mask, gradients, clips, masks);
-            walk_collect_defs_node(content, gradients, clips, masks);
+            walk_collect_defs_node(mask, gradients, clips, masks, skip, path_stack);
+            walk_collect_defs_node(content, gradients, clips, masks, skip, path_stack);
             masks.ensure(*mask_kind, mask_node);
         }
     }

@@ -539,6 +539,15 @@ pub struct PreservedExtras {
     /// synthesised twin def is skipped. Populated only by
     /// [`crate::decoder::parse_with_extras`].
     pub gradient_refs: Vec<RefBinding>,
+    /// Round 480 — paint-server reference bindings for shapes the
+    /// builder emitted as a layer group (a `<pattern>` fill / stroke, or
+    /// an elliptical radial gradient painted through a soft mask —
+    /// neither has a `Paint` the scene graph can carry). Keyed by the
+    /// layer group's tree-path; the writer collapses the group back to
+    /// one element carrying `fill="url(#…)"` / `stroke="url(#…)"` so
+    /// the verbatim `<pattern>` / gradient def stays referenced.
+    /// Populated only by [`crate::decoder::parse_with_extras`].
+    pub paint_refs: Vec<PaintRefBinding>,
     /// Round 449 — verbatim renderable elements suppressed by an
     /// *inline* `display:none` (a `display="none"` presentation
     /// attribute or a `display: none` declaration in the element's own
@@ -609,6 +618,21 @@ pub struct FilterRefBinding {
     /// filter-list (SVG 2 chained references) round-trips unchanged even
     /// though the decoder only wraps a single pass-through group.
     pub filter: String,
+}
+
+/// Round 480 — one layer-group shape's paint-server references. See
+/// [`PreservedExtras::paint_refs`].
+#[derive(Clone, Debug)]
+pub struct PaintRefBinding {
+    /// Tree-path of the layer group (same layout as
+    /// [`IdScenePath::path`]).
+    pub path: Vec<usize>,
+    /// The `fill` paint-list text (`url(#id)` plus any fallback) when
+    /// the fill was the masked / tiled side; `None` when the fill was a
+    /// plain paint (written from the plain fill layer) or absent.
+    pub fill: Option<String>,
+    /// Same for `stroke`.
+    pub stroke: Option<String>,
 }
 
 /// Round 449 — one verbatim `display:none`-suppressed renderable
@@ -824,6 +848,7 @@ impl PreservedExtras {
             && self.anim_targets.is_empty()
             && self.shapes.is_empty()
             && self.gradient_refs.is_empty()
+            && self.paint_refs.is_empty()
             && self.unrendered.is_empty()
     }
 }

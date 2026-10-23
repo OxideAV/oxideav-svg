@@ -22,13 +22,14 @@ use crate::color::{PaintValue, parse_opacity, parse_paint};
 use crate::css::{MatchContext, Stylesheet, declarations_for};
 use crate::defs::{
     ClipPathDef, DefsTables, FilterDef, GradientDef, GradientKind, GradientPaint, GradientUnits,
-    MaskDef, ResolvedGradient, ResolvedGradientKind, SymbolDef, bind_gradient, parse_url_ref,
-    resolve_gradient_chain, resolve_gradient_chain_with,
+    MaskDef, PatternUnits, ResolvedGradient, ResolvedGradientKind, ResolvedPattern, SymbolDef,
+    bind_gradient, parse_url_ref, resolve_gradient_chain, resolve_gradient_chain_with,
+    resolve_pattern_chain_with,
 };
 use crate::length::{Length, LengthAxis, ResolveContext, parse_length};
 use crate::parser::{Element, Node as XmlNode, attr, tag_local};
 use crate::path_data::parse_path_data;
-use crate::preserved::{IdScenePath, RefBinding};
+use crate::preserved::{IdScenePath, PaintRefBinding, RefBinding};
 use crate::transform::parse_transform;
 
 /// Round 118 — SVG 1.1 §11.5 `visibility` property
@@ -1993,6 +1994,9 @@ enum ShapePaint {
         transform: Transform2D,
         paint: Paint,
     },
+    /// A `<pattern>` paint server (SVG 2 §14.3); the shape builder tiles
+    /// it over the shape through a soft mask ([`expand_pattern`]).
+    Pattern(Box<ResolvedPattern>),
 }
 
 /// Resolve a parsed [`PaintValue`] for one shape (SVG 2 §13.2 paint
@@ -2048,11 +2052,22 @@ fn resolve_shape_paint(
             if let Some(p) = ctx.gradients.get(id) {
                 return ShapePaint::Paint(scale_paint_alpha(p.clone(), opacity));
             }
-            if ctx.defs.patterns.contains_key(id) {
-                return match resolve_paint_fallback(fallback, opacity) {
-                    Some(p) => ShapePaint::Paint(p),
-                    None => ShapePaint::None,
-                };
+            if let Some(def) = ctx.defs.patterns.get(id) {
+                // §14.3.1: a zero width / height "disables rendering of
+                // the element (i.e., no paint is applied)"; a negative
+                // value is an error — treated the same way. Neither is
+                // an unresolved reference, so the paint-list fallback
+                // does not apply. `fill-opacity` is applied by the
+                // expansion (`pattern_layer_node`) as a group opacity.
+                let pat = resolve_pattern_chain_with(def, &ctx.defs, &ctx.resolve_ctx);
+                if pat.width.is_nan()
+                    || pat.height.is_nan()
+                    || pat.width <= 0.0
+                    || pat.height <= 0.0
+                {
+                    return ShapePaint::None;
+                }
+                return ShapePaint::Pattern(Box::new(pat));
             }
             match resolve_paint_fallback(fallback, opacity) {
                 Some(p) => ShapePaint::Paint(p),
@@ -2082,6 +2097,214 @@ fn scale_paint_alpha(paint: Paint, opacity: f32) -> Paint {
             Paint::RadialGradient(g)
         }
     }
+}
+
+/// Upper bound on the tiles one pattern paint instantiates: a tiny
+/// tile on a large shape would otherwise expand to millions of nodes.
+/// Beyond the cap the tiling stops (the far tiles are left unpainted).
+pub const MAX_PATTERN_TILES: usize = 4096;
+
+/// Upper bound on the tiles instantiated for a whole document (nested
+/// patterns multiply: a pattern whose content is pattern-filled
+/// expands once per outer tile).
+pub const MAX_PATTERN_TILES_PER_DOCUMENT: usize = 65_536;
+
+/// SVG 2 §14.3 pattern tiling, expanded into scene-graph nodes.
+///
+/// `bbox` is the referencing shape's object bounding box (needed under
+/// `objectBoundingBox` units — `None` or a zero-extent box paints
+/// nothing, §8.11), `extent` the user-space region the tiles must
+/// cover (the shape's box, grown by the stroke reach for a stroke).
+/// `budget` is decremented per tile and stops the expansion at zero.
+///
+/// The tile reference rectangle `(x, y, width, height)` lives in
+/// pattern space — bounding-box units mapped through the §8.11 matrix,
+/// or user units — and `patternTransform` maps pattern space onto user
+/// space. Tile `(m, n)` is a group carrying `patternTransform ∘
+/// translate(x + m·width, y + n·height)`, clipped to the tile rectangle
+/// (the user-agent stylesheet's `overflow: hidden`, §14.3.2), holding
+/// the content under the §14.3.2 content transform: the `viewBox` fit
+/// (`preserveAspectRatio`) when a `viewBox` is given, otherwise the
+/// bounding-box scale under `patternContentUnits="objectBoundingBox"`,
+/// otherwise identity (content origin at the tile's top-left). Every
+/// tile's content group shares one cache key so a rasteriser can draw
+/// the tile once.
+///
+/// Returns `None` when nothing would be painted (empty content, no box,
+/// singular `patternTransform`, exhausted budget).
+pub fn expand_pattern(
+    pat: &ResolvedPattern,
+    bbox: Option<BBox>,
+    extent: BBox,
+    budget: &mut usize,
+) -> Option<Group> {
+    if pat.content.children.is_empty() || *budget == 0 {
+        return None;
+    }
+    // Tile rectangle in pattern space.
+    let (tx, ty, tw, th) = match pat.pattern_units {
+        PatternUnits::ObjectBoundingBox => {
+            let b = bbox?;
+            if b.is_degenerate() {
+                return None;
+            }
+            (
+                b.x + pat.x * b.width,
+                b.y + pat.y * b.height,
+                pat.width * b.width,
+                pat.height * b.height,
+            )
+        }
+        PatternUnits::UserSpaceOnUse => (pat.x, pat.y, pat.width, pat.height),
+    };
+    if !(tw > 0.0 && th > 0.0 && tw.is_finite() && th.is_finite()) {
+        return None;
+    }
+    let p = pat.pattern_transform;
+    let inv = p.invert()?;
+    // Content transform inside a tile (tile origin at (0, 0)).
+    let content_tf = if let Some(vb) = pat.view_box {
+        if vb.width <= 0.0 || vb.height <= 0.0 {
+            return None;
+        }
+        symbol_viewport_transform(tw, th, vb, pat.preserve_aspect_ratio)
+    } else {
+        match (pat.pattern_content_units, bbox) {
+            (PatternUnits::ObjectBoundingBox, Some(b)) => Transform2D::scale(b.width, b.height),
+            (PatternUnits::ObjectBoundingBox, None) => return None,
+            (PatternUnits::UserSpaceOnUse, _) => Transform2D::identity(),
+        }
+    };
+    // Which tiles touch the extent: map the extent into pattern space
+    // and take its axis-aligned bounds there.
+    let local = extent.transformed(&inv);
+    let m0 = ((local.x - tx) / tw).floor();
+    let m1 = ((local.max_x() - tx) / tw).ceil();
+    let n0 = ((local.y - ty) / th).floor();
+    let n1 = ((local.max_y() - ty) / th).ceil();
+    if !(m0.is_finite() && m1.is_finite() && n0.is_finite() && n1.is_finite()) {
+        return None;
+    }
+    let (m0, n0) = (m0 as i64, n0 as i64);
+    let cols = ((m1 as i64) - m0).max(1) as usize;
+    let rows = ((n1 as i64) - n0).max(1) as usize;
+    // Cap the count (per paint and per document): keep the top-left
+    // block of tiles, as square as the cap allows.
+    let cap = MAX_PATTERN_TILES.min(*budget);
+    let side = ((cap as f64).sqrt().floor() as usize).max(1);
+    let cols = cols.min(side.max(cap / rows.max(1))).max(1);
+    let rows = rows.min((cap / cols).max(1));
+    // §14.3.2 overflow: hidden — clip each tile to its rectangle. When
+    // the content provably stays inside the tile the clip is a no-op
+    // and is left out: adjacent clipped tiles would otherwise meet
+    // along anti-aliased seams in a rasteriser, where a native pattern
+    // surface has none.
+    let clip = {
+        let inside = node_extent(&Node::Group(pat.content.clone()), &content_tf).is_some_and(|e| {
+            let eps = 1e-3 * tw.max(th);
+            e.x >= -eps && e.y >= -eps && e.max_x() <= tw + eps && e.max_y() <= th + eps
+        });
+        if inside {
+            None
+        } else {
+            let mut clip = Path::new();
+            clip.move_to(Point::new(0.0, 0.0));
+            clip.line_to(Point::new(tw, 0.0));
+            clip.line_to(Point::new(tw, th));
+            clip.line_to(Point::new(0.0, th));
+            clip.close();
+            Some(clip)
+        }
+    };
+    // One cache key for every tile's content group.
+    let cache_key = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        format!("{:?}{:?}", content_tf, pat.content).hash(&mut h);
+        h.finish()
+    };
+    let mut tiles = Group::default();
+    for n in 0..rows {
+        for m in 0..cols {
+            if *budget == 0 {
+                break;
+            }
+            *budget -= 1;
+            let origin = Transform2D::translate(
+                tx + (m0 + m as i64) as f32 * tw,
+                ty + (n0 + n as i64) as f32 * th,
+            );
+            let inner = Group {
+                transform: content_tf,
+                opacity: 1.0,
+                clip: None,
+                children: pat.content.children.clone(),
+                cache_key: Some(cache_key),
+            };
+            tiles.children.push(Node::Group(Group {
+                transform: p.compose(&origin),
+                opacity: 1.0,
+                clip: clip.clone(),
+                children: vec![Node::Group(inner)],
+                cache_key: None,
+            }));
+        }
+    }
+    if tiles.children.is_empty() {
+        return None;
+    }
+    Some(tiles)
+}
+
+/// Conservative painted extent of a subtree under `t`: geometry boxes
+/// grown by the stroke reach, groups unioned through their transforms
+/// (clips ignored — they only shrink), a soft mask bounded by its mask.
+/// `None` when the subtree paints nothing.
+fn node_extent(node: &Node, t: &Transform2D) -> Option<BBox> {
+    match node {
+        Node::Path(p) => {
+            if p.fill.is_none() && p.stroke.is_none() {
+                return None;
+            }
+            let b = BBox::of_path(&p.path)?;
+            let reach = p
+                .stroke
+                .as_ref()
+                .map(|s| s.width.abs() * s.miter_limit.max(1.0))
+                .unwrap_or(0.0);
+            Some(b.expand(reach).transformed(t))
+        }
+        Node::Group(g) => {
+            let inner = t.compose(&g.transform);
+            g.children
+                .iter()
+                .filter_map(|c| node_extent(c, &inner))
+                .reduce(|a, b| a.union(&b))
+        }
+        Node::SoftMask { mask, .. } => node_extent(mask, t),
+    }
+}
+
+/// Paint a `<pattern>` through the coverage of `mask` (the shape
+/// painted opaque white; the stroked outline for a stroke): a
+/// [`Node::SoftMask`] whose content is the tile expansion
+/// ([`expand_pattern`]) at `opacity` (`fill-opacity` /
+/// `stroke-opacity`). `None` when nothing is painted.
+fn pattern_layer_node(
+    mask: PathNode,
+    pat: &ResolvedPattern,
+    bbox: Option<BBox>,
+    extent: BBox,
+    opacity: f32,
+    budget: &mut usize,
+) -> Option<Node> {
+    let mut tiles = expand_pattern(pat, bbox, extent, budget)?;
+    tiles.opacity = opacity.clamp(0.0, 1.0);
+    Some(Node::SoftMask {
+        mask: Box::new(Node::Path(mask)),
+        mask_kind: MaskKind::Luminance,
+        content: Box::new(Node::Group(tiles)),
+    })
 }
 
 /// Paint `paint` (expressed in its own coordinate system, mapped onto
@@ -2459,6 +2682,20 @@ pub struct ParseContext {
     /// [`crate::decoder::parse_with_extras`]; merged into
     /// [`crate::preserved::PreservedExtras::gradient_refs`].
     pub gradient_refs: Vec<RefBinding>,
+    /// Round 480 — collected paint-server reference bindings for shapes
+    /// the builder emitted as a *layer group* (a pattern fill / stroke,
+    /// or an elliptical radial gradient painted through a soft mask).
+    /// The writer collapses the group back to one element carrying the
+    /// recorded `fill=` / `stroke=` references. Populated only when the
+    /// caller opted in via [`crate::decoder::parse_with_extras`].
+    pub paint_refs: Vec<PaintRefBinding>,
+    /// Round 480 — scratch slot: the shape branch hands the reference
+    /// strings of a layer-group shape to the wrapper-aware recorder that
+    /// runs after `apply_referenced_defs`. Cleared per element.
+    pub pending_paint_ref: Option<(Option<String>, Option<String>)>,
+    /// Round 480 — remaining `<pattern>` tiles this decode may
+    /// instantiate ([`MAX_PATTERN_TILES_PER_DOCUMENT`] at the start).
+    pub pattern_tile_budget: usize,
 }
 
 impl Default for ParseContext {
@@ -2517,7 +2754,25 @@ impl ParseContext {
             filter_refs: Vec::new(),
             marker_refs: Vec::new(),
             gradient_refs: Vec::new(),
+            paint_refs: Vec::new(),
+            pending_paint_ref: None,
+            pattern_tile_budget: MAX_PATTERN_TILES_PER_DOCUMENT,
         }
+    }
+
+    /// Round 480 — record a layer-group shape's paint-server references
+    /// at the given scene-graph path (same [`Self::track_id_paths`]
+    /// gate as the other recorders).
+    pub fn record_paint_ref(
+        &mut self,
+        path: Vec<usize>,
+        fill: Option<String>,
+        stroke: Option<String>,
+    ) {
+        if !self.track_id_paths {
+            return;
+        }
+        self.paint_refs.push(PaintRefBinding { path, fill, stroke });
     }
 
     /// Round 480 — record the (per-shape paint fingerprint → source
@@ -4496,12 +4751,14 @@ fn parse_element_to_node_ctx_inner(
             let fill: Option<Paint> = match &fill_sp {
                 ShapePaint::None => None,
                 ShapePaint::Paint(p) => Some(p.clone()),
-                ShapePaint::Transformed { .. } => Some(white.clone()),
+                ShapePaint::Transformed { .. } | ShapePaint::Pattern(_) => Some(white.clone()),
             };
             let mut stroke: Option<Stroke> = match &stroke_sp {
                 ShapePaint::None => None,
                 ShapePaint::Paint(p) => Some(state.stroke_with_paint(p.clone())),
-                ShapePaint::Transformed { .. } => Some(state.stroke_with_paint(white)),
+                ShapePaint::Transformed { .. } | ShapePaint::Pattern(_) => {
+                    Some(state.stroke_with_paint(white))
+                }
             };
             // Round 21 — SVG 2 §9.6.1: the `pathLength` attribute
             // re-scales `stroke-dasharray` / `stroke-dashoffset` so a
@@ -4618,9 +4875,24 @@ fn parse_element_to_node_ctx_inner(
             // purpose of node emission (the markers slot is otherwise
             // a no-op today, as documented at the
             // [`crate::defs::MarkerDef`] capture site).
-            let fill_masked = matches!(fill_sp, ShapePaint::Transformed { .. });
-            let stroke_masked = matches!(stroke_sp, ShapePaint::Transformed { .. });
+            let fill_masked = matches!(
+                fill_sp,
+                ShapePaint::Transformed { .. } | ShapePaint::Pattern(_)
+            );
+            let stroke_masked = matches!(
+                stroke_sp,
+                ShapePaint::Transformed { .. } | ShapePaint::Pattern(_)
+            );
             let inner_node = if fill_masked || stroke_masked {
+                // The writer collapses this layer group back to one
+                // element referencing the source paint servers
+                // (`PaintRefBinding`); hand it the reference strings.
+                ctx.pending_paint_ref = Some((
+                    fill_masked.then(|| paint_ref_text(&state.fill)).flatten(),
+                    stroke_masked
+                        .then(|| paint_ref_text(&state.stroke))
+                        .flatten(),
+                ));
                 // Round 480 — at least one side paints through a soft
                 // mask (see `masked_paint_node`). Each side becomes its
                 // own layer — a single-purpose PathNode for a plain
@@ -4635,7 +4907,7 @@ fn parse_element_to_node_ctx_inner(
                     .map(|s| s.width.abs() * s.miter_limit.max(1.0))
                     .unwrap_or(0.0);
                 let stroke_extent = fill_extent.expand(stroke_reach);
-                let fill_layer = fill.map(|f| {
+                let fill_layer = fill.and_then(|f| {
                     let node = PathNode {
                         path: path.clone(),
                         fill: Some(f),
@@ -4644,12 +4916,20 @@ fn parse_element_to_node_ctx_inner(
                     };
                     match fill_sp {
                         ShapePaint::Transformed { transform, paint } => {
-                            masked_paint_node(node, transform, paint, fill_extent)
+                            Some(masked_paint_node(node, transform, paint, fill_extent))
                         }
-                        _ => Node::Path(node),
+                        ShapePaint::Pattern(pat) => pattern_layer_node(
+                            node,
+                            &pat,
+                            bbox,
+                            fill_extent,
+                            state.fill_opacity,
+                            &mut ctx.pattern_tile_budget,
+                        ),
+                        _ => Some(Node::Path(node)),
                     }
                 });
-                let stroke_layer = stroke.map(|s| {
+                let stroke_layer = stroke.and_then(|s| {
                     let node = PathNode {
                         path: path.clone(),
                         fill: None,
@@ -4658,9 +4938,17 @@ fn parse_element_to_node_ctx_inner(
                     };
                     match stroke_sp {
                         ShapePaint::Transformed { transform, paint } => {
-                            masked_paint_node(node, transform, paint, stroke_extent)
+                            Some(masked_paint_node(node, transform, paint, stroke_extent))
                         }
-                        _ => Node::Path(node),
+                        ShapePaint::Pattern(pat) => pattern_layer_node(
+                            node,
+                            &pat,
+                            bbox,
+                            stroke_extent,
+                            state.stroke_opacity,
+                            &mut ctx.pattern_tile_budget,
+                        ),
+                        _ => Some(Node::Path(node)),
                     }
                 });
                 let children: Vec<Node> = if state.paint_order.stroke_before_fill() {
@@ -4889,7 +5177,8 @@ fn parse_element_to_node_ctx_inner(
             _ => None,
         };
         if let Some(names) = geom_names
-            && let Some(sub) = find_sole_path_subpath(&wrapped)
+            && let Some(sub) =
+                find_sole_path_subpath(&wrapped).or_else(|| find_layer_group_subpath(&wrapped))
         {
             let attrs: Vec<(String, String)> = names
                 .iter()
@@ -4903,6 +5192,18 @@ fn parse_element_to_node_ctx_inner(
                 attrs,
             });
         }
+    }
+    // Round 480 — drain the shape branch's pending paint-server
+    // references (a layer-group shape: pattern / elliptical radial) and
+    // record them at the layer group's slot so the writer can collapse
+    // the expansion back to `<shape fill="url(#…)">`.
+    if let Some((fill_ref, stroke_ref)) = ctx.pending_paint_ref.take()
+        && ctx.track_id_paths
+        && let Some(sub) = find_layer_group_subpath(&wrapped)
+    {
+        let mut path = ctx.current_path.clone();
+        path.extend(sub);
+        ctx.record_paint_ref(path, fill_ref, stroke_ref);
     }
     // Round 205 — drain the shape branch's pending `paint-order` (if
     // any) and record it. We target the **outer-most wrapping** the
@@ -5367,6 +5668,84 @@ fn capture_dominant_baseline_attr(el: &Element) -> Option<String> {
 /// content (the encoder pushes no extra index for it), so it is
 /// descended without extending the sub-path — the native shape then
 /// emits inside the wrapper's `<g mask="url(#…)">`.
+/// Round 480 — the shape builder's *layer group*: an identity group of
+/// one or two layers, each a single-purpose `Node::Path` or a
+/// `Node::SoftMask` whose mask is the shape painted opaque white (a
+/// pattern or transformed-gradient layer), at least one of them masked.
+pub(crate) fn is_paint_layer_group(g: &Group) -> bool {
+    if g.children.is_empty() || g.children.len() > 2 || !g.transform.is_identity() {
+        return false;
+    }
+    let white = Rgba::opaque(255, 255, 255);
+    let is_white = |p: &Paint| matches!(p, Paint::Solid(c) if *c == white);
+    let mut masked = 0;
+    for c in &g.children {
+        match c {
+            Node::Path(_) => {}
+            Node::SoftMask { mask, .. } => match &**mask {
+                Node::Path(p)
+                    if p.fill.as_ref().is_some_and(is_white)
+                        || p.stroke.as_ref().is_some_and(|s| is_white(&s.paint)) =>
+                {
+                    masked += 1;
+                }
+                _ => return false,
+            },
+            _ => return false,
+        }
+    }
+    masked > 0
+}
+
+/// Round 480 — child-index sub-path from `node` down to the shape
+/// builder's layer group (see [`is_paint_layer_group`]), descending
+/// single-child wrappers and `SoftMask` content like
+/// [`find_sole_path_subpath`].
+fn find_layer_group_subpath(node: &Node) -> Option<Vec<usize>> {
+    match node {
+        Node::Group(g) if is_paint_layer_group(g) => Some(Vec::new()),
+        Node::Group(g) if g.children.len() == 1 => {
+            let inner = find_layer_group_subpath(&g.children[0])?;
+            let mut out = Vec::with_capacity(inner.len() + 1);
+            out.push(0);
+            out.extend(inner);
+            Some(out)
+        }
+        Node::SoftMask { content, .. } => find_layer_group_subpath(content),
+        _ => None,
+    }
+}
+
+/// The `url(#id) [none | <color>]` text of a paint-server reference,
+/// re-serialised from the parsed value (`None` for a non-reference).
+fn paint_ref_text(v: &PaintValue) -> Option<String> {
+    match v {
+        PaintValue::Reference { id, fallback } => {
+            let mut s = format!("url(#{id})");
+            match fallback {
+                Some(Some(c)) => {
+                    s.push(' ');
+                    if c.a == 255 {
+                        s.push_str(&format!("#{:02x}{:02x}{:02x}", c.r, c.g, c.b));
+                    } else {
+                        s.push_str(&format!(
+                            "rgba({},{},{},{})",
+                            c.r,
+                            c.g,
+                            c.b,
+                            c.a as f32 / 255.0
+                        ));
+                    }
+                }
+                Some(None) => s.push_str(" none"),
+                None => {}
+            }
+            Some(s)
+        }
+        _ => None,
+    }
+}
+
 fn find_sole_path_subpath(node: &Node) -> Option<Vec<usize>> {
     match node {
         Node::Path(_) => Some(Vec::new()),
@@ -5713,37 +6092,26 @@ pub fn parse_pattern_def(
     el: &Element,
     ctx: &mut ParseContext,
 ) -> Result<Option<(String, crate::defs::PatternDef)>> {
-    use crate::defs::{PatternDef, PatternUnits};
+    use crate::defs::PatternDef;
     let id = match attr(el, "id") {
         Some(v) => v.to_string(),
         None => return Ok(None),
     };
-    // x / y default to 0; width / height default to 0. Per §14.3.1
-    // negative widths/heights are errors and zero suppresses paint —
-    // mirror that by capturing the parsed values as-is and letting a
-    // downstream rasterizer decide.
-    let x = parse_number(attr(el, "x"), 0.0)?;
-    let y = parse_number(attr(el, "y"), 0.0)?;
-    let width = parse_number(attr(el, "width"), 0.0)?;
-    let height = parse_number(attr(el, "height"), 0.0)?;
-    let pattern_units =
-        parse_pattern_units(attr(el, "patternUnits"), PatternUnits::ObjectBoundingBox);
-    let pattern_content_units = parse_pattern_units(
-        attr(el, "patternContentUnits"),
-        PatternUnits::UserSpaceOnUse,
-    );
-    let pattern_transform = match attr(el, "patternTransform") {
-        Some(s) => transform_or_initial(s),
-        None => Transform2D::identity(),
+    // Tile rectangle as typed lengths — `patternUnits` (possibly
+    // inherited through the template chain) decides what a bare number
+    // or a `%` means, so the unit is kept (SVG 2 §8.11). A malformed
+    // value takes the initial value (§4.2).
+    let len = |name: &str| -> Option<Length> {
+        attr(el, name)
+            .and_then(|v| parse_length(v.trim()).ok())
+            .filter(|l| l.value.is_finite())
     };
-    let view_box = match attr(el, "viewBox") {
-        Some(s) => parse_symbol_view_box(s),
-        None => None,
-    };
-    let preserve_aspect_ratio = match attr(el, "preserveAspectRatio") {
-        Some(s) => crate::filter::PreserveAspectRatio::from_str(s),
-        None => crate::filter::PreserveAspectRatio::default(),
-    };
+    let pattern_units = attr(el, "patternUnits").and_then(parse_pattern_units_opt);
+    let pattern_content_units = attr(el, "patternContentUnits").and_then(parse_pattern_units_opt);
+    let pattern_transform = attr(el, "patternTransform").map(transform_or_initial);
+    let view_box = attr(el, "viewBox").and_then(parse_symbol_view_box);
+    let preserve_aspect_ratio =
+        attr(el, "preserveAspectRatio").map(crate::filter::PreserveAspectRatio::from_str);
     let href = attr(el, "href")
         .or_else(|| attr(el, "xlink:href"))
         .map(|s| s.trim().trim_start_matches('#').to_string())
@@ -5751,9 +6119,8 @@ pub fn parse_pattern_def(
 
     // Parse the tile content using the standard pipeline. Pattern
     // children may include shapes / groups / use / nested gradients;
-    // round 20 reuses the existing element parser so we get all of
-    // them for free (the round-2 def-walker already registered any
-    // nested defs into ctx during the pre-walk).
+    // the existing element parser handles all of them (the def-walker
+    // already registered any nested defs into ctx during the pre-walk).
     let parent_state = PaintState::default();
     let mut content = Group::default();
     for child in &el.children {
@@ -5763,22 +6130,17 @@ pub fn parse_pattern_def(
             content.children.push(node);
         }
     }
-    Ok(Some((
-        id,
-        PatternDef {
-            x,
-            y,
-            width,
-            height,
-            pattern_units,
-            pattern_content_units,
-            pattern_transform,
-            view_box,
-            preserve_aspect_ratio,
-            href,
-            content,
-        },
-    )))
+    let mut def = PatternDef::new().with_href(href).with_content(content);
+    def.x = len("x");
+    def.y = len("y");
+    def.width = len("width");
+    def.height = len("height");
+    def.pattern_units = pattern_units;
+    def.pattern_content_units = pattern_content_units;
+    def.pattern_transform = pattern_transform;
+    def.view_box = view_box;
+    def.preserve_aspect_ratio = preserve_aspect_ratio;
+    Ok(Some((id, def)))
 }
 
 /// Round 104 — parse `<marker id="...">` into a typed
@@ -5916,15 +6278,13 @@ pub fn parse_view_def(el: &Element) -> Option<(String, crate::defs::ViewDef)> {
 /// per SVG 2 §14.3.1. Unknown / malformed values fall back to the
 /// caller-supplied default to mirror the spec's "ignore unknown" lenient
 /// processing rule.
-fn parse_pattern_units(
-    v: Option<&str>,
-    default: crate::defs::PatternUnits,
-) -> crate::defs::PatternUnits {
-    use crate::defs::PatternUnits;
-    match v.map(str::trim) {
-        Some("userSpaceOnUse") => PatternUnits::UserSpaceOnUse,
-        Some("objectBoundingBox") => PatternUnits::ObjectBoundingBox,
-        _ => default,
+/// `patternUnits` / `patternContentUnits` keyword; an unknown keyword
+/// is "not specified" (inherit from the template / initial value).
+fn parse_pattern_units_opt(v: &str) -> Option<PatternUnits> {
+    match v.trim() {
+        "userSpaceOnUse" => Some(PatternUnits::UserSpaceOnUse),
+        "objectBoundingBox" => Some(PatternUnits::ObjectBoundingBox),
+        _ => None,
     }
 }
 
