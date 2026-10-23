@@ -195,7 +195,15 @@ could allocate — it is header-only — and `decode_with` turns that into
   next to a re-emitted `pathLength=` are divided back to author units
   so the §9.6.1 rescale is applied exactly once per parse.
 * **Paint servers** — `<linearGradient>` / `<radialGradient>` with
-  `<stop>` children and `spreadMethod`, resolved via `fill="url(#id)"`.
+  `<stop>` children, `spreadMethod`, `gradientTransform` and
+  `gradientUnits` (SVG 2 §8.11: the default `objectBoundingBox` binds
+  the geometry — bare numbers and percentages — to each referencing
+  shape's object bounding box; `userSpaceOnUse` percentages resolve
+  against the viewport), resolved per shape via `fill="url(#id)"` /
+  `stroke="url(#id)"` into the shape's own user space. A radial
+  gradient whose rings turn elliptical (non-square box, non-uniform
+  `gradientTransform`) paints through a soft mask of the shape with the
+  circular gradient under the box matrix (`defs::GradientPaint`).
   A `parse_with_extras → write_with_extras` round-trip
   preserves the **reference identity**: the author's verbatim gradient
   def (original id, `gradientUnits`, `gradientTransform`, `href`

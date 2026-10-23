@@ -575,6 +575,7 @@
 
 pub mod animation;
 mod api;
+pub mod bbox;
 pub mod color;
 pub mod conditional;
 #[cfg(feature = "registry")]

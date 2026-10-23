@@ -902,7 +902,14 @@ fn parse_svg_root(
         ctx.texts,
         ctx.anim_targets,
         ctx.shapes,
-        gradient_refs,
+        {
+            // Round 480 — per-shape bindings recorded while the tree
+            // was built (SVG 2 §8.11 binds objectBoundingBox gradients
+            // per shape) join the per-def flattened ones.
+            let mut refs = gradient_refs;
+            refs.append(&mut ctx.gradient_refs);
+            refs
+        },
         ctx.unrendered,
     ))
 }

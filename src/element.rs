@@ -17,16 +17,18 @@ use crate::model::{
     Transform2D,
 };
 
+use crate::bbox::BBox;
 use crate::color::{PaintValue, parse_opacity, parse_paint};
 use crate::css::{MatchContext, Stylesheet, declarations_for};
 use crate::defs::{
-    ClipPathDef, DefsTables, FilterDef, GradientDef, GradientKind, GradientUnits, MaskDef,
-    ResolvedGradient, ResolvedGradientKind, SymbolDef, parse_url_ref, resolve_gradient_chain,
+    ClipPathDef, DefsTables, FilterDef, GradientDef, GradientKind, GradientPaint, GradientUnits,
+    MaskDef, ResolvedGradient, ResolvedGradientKind, SymbolDef, bind_gradient, parse_url_ref,
+    resolve_gradient_chain, resolve_gradient_chain_with,
 };
-use crate::length::{LengthAxis, ResolveContext, parse_length};
+use crate::length::{Length, LengthAxis, ResolveContext, parse_length};
 use crate::parser::{Element, Node as XmlNode, attr, tag_local};
 use crate::path_data::parse_path_data;
-use crate::preserved::IdScenePath;
+use crate::preserved::{IdScenePath, RefBinding};
 use crate::transform::parse_transform;
 
 /// Round 118 — SVG 1.1 §11.5 `visibility` property
@@ -1946,13 +1948,10 @@ impl PaintState {
         Ok(())
     }
 
-    fn solid_fill(&self, gradients: &GradientTable, defs: &DefsTables) -> Option<Paint> {
-        resolve_paint(&self.fill, self.fill_opacity, gradients, defs)
-    }
-
-    fn solid_stroke(&self, gradients: &GradientTable, defs: &DefsTables) -> Option<Stroke> {
-        let paint = resolve_paint(&self.stroke, self.stroke_opacity, gradients, defs)?;
-        Some(Stroke {
+    /// The cascaded stroke style (`stroke-width` / caps / joins / miter
+    /// limit / dash) around the given paint.
+    fn stroke_with_paint(&self, paint: Paint) -> Stroke {
+        Stroke {
             width: self.stroke_width,
             paint,
             cap: self.stroke_linecap,
@@ -1962,63 +1961,180 @@ impl PaintState {
                 array: arr.clone(),
                 offset: self.stroke_dashoffset,
             }),
-        })
+        }
+    }
+
+    /// Resolve `fill` for one shape — SVG 2 §8.11 binds an
+    /// `objectBoundingBox` paint server to the shape's own box, so the
+    /// result is per shape, not per gradient id.
+    fn fill_for_shape(&self, bbox: Option<BBox>, ctx: &mut ParseContext) -> ShapePaint {
+        resolve_shape_paint(&self.fill, self.fill_opacity, bbox, ctx)
+    }
+
+    /// Resolve `stroke` for one shape; see [`Self::fill_for_shape`].
+    /// The stroke's object bounding box is the same fill geometry box —
+    /// §8.11: "stroke width is ignored for bounding box calculations".
+    fn stroke_for_shape(&self, bbox: Option<BBox>, ctx: &mut ParseContext) -> ShapePaint {
+        resolve_shape_paint(&self.stroke, self.stroke_opacity, bbox, ctx)
+    }
+}
+
+/// Outcome of resolving one `fill` / `stroke` value for one shape.
+#[derive(Clone, Debug)]
+enum ShapePaint {
+    /// Nothing painted.
+    None,
+    /// A paint in the shape's user space.
+    Paint(Paint),
+    /// A paint that only exists in its own coordinate system (see
+    /// [`GradientPaint::Transformed`]); the shape builder paints it
+    /// through a soft mask of the shape.
+    Transformed {
+        transform: Transform2D,
+        paint: Paint,
+    },
+}
+
+/// Resolve a parsed [`PaintValue`] for one shape (SVG 2 §13.2 paint
+/// list + §14.2 gradients bound per §8.11). Precedence:
+///   1. Typed gradient table — the §14.1.1 template chain is resolved
+///      with the document viewport (for `%` under `userSpaceOnUse`)
+///      and bound to `bbox` ([`bind_gradient`]).
+///   2. Legacy flattened gradient table (ids registered through the
+///      direct `parse_linear_gradient` / `parse_radial_gradient`
+///      entry points by external callers).
+///   3. Pattern table — no `Paint::Pattern` exists in the scene graph
+///      yet, so the paint-list fallback applies (see
+///      [`crate::defs::PatternDef`]).
+///   4. Fallback (`url(#id) <color>` / `none`).
+///
+/// `fill-opacity` / `stroke-opacity` scale the paint's alpha —
+/// including every stop of a gradient (§13.3 "the opacity … is applied
+/// to the fill paint" regardless of paint type).
+fn resolve_shape_paint(
+    value: &PaintValue,
+    opacity: f32,
+    bbox: Option<BBox>,
+    ctx: &mut ParseContext,
+) -> ShapePaint {
+    match value {
+        PaintValue::None => ShapePaint::None,
+        PaintValue::Color(c) => ShapePaint::Paint(Paint::Solid(apply_alpha(*c, opacity))),
+        PaintValue::Reference { id, fallback } => {
+            if let Some(def) = ctx.defs.gradients.get(id) {
+                let resolved = resolve_gradient_chain_with(def, &ctx.defs, &ctx.resolve_ctx);
+                return match bind_gradient(&resolved, bbox) {
+                    GradientPaint::None => ShapePaint::None,
+                    GradientPaint::Paint(p) => {
+                        let p = scale_paint_alpha(p, opacity);
+                        // Round 449 reference identity: bind the
+                        // per-shape paint back to the source id so the
+                        // writer re-points `fill=` at the verbatim def
+                        // instead of a synthesised twin. Only when the
+                        // paint is exactly what that def produces — an
+                        // opacity-scaled paint carries alpha the source
+                        // stops lack.
+                        if opacity >= 1.0 {
+                            ctx.record_gradient_ref(&p, id);
+                        }
+                        ShapePaint::Paint(p)
+                    }
+                    GradientPaint::Transformed { transform, paint } => ShapePaint::Transformed {
+                        transform,
+                        paint: scale_paint_alpha(paint, opacity),
+                    },
+                };
+            }
+            if let Some(p) = ctx.gradients.get(id) {
+                return ShapePaint::Paint(scale_paint_alpha(p.clone(), opacity));
+            }
+            if ctx.defs.patterns.contains_key(id) {
+                return match resolve_paint_fallback(fallback, opacity) {
+                    Some(p) => ShapePaint::Paint(p),
+                    None => ShapePaint::None,
+                };
+            }
+            match resolve_paint_fallback(fallback, opacity) {
+                Some(p) => ShapePaint::Paint(p),
+                None => ShapePaint::None,
+            }
+        }
+    }
+}
+
+/// Multiply a paint's alpha (every stop of a gradient) by `opacity`.
+fn scale_paint_alpha(paint: Paint, opacity: f32) -> Paint {
+    if opacity >= 1.0 {
+        return paint;
+    }
+    match paint {
+        Paint::Solid(c) => Paint::Solid(apply_alpha(c, opacity)),
+        Paint::LinearGradient(mut g) => {
+            for s in &mut g.stops {
+                s.color = apply_alpha(s.color, opacity);
+            }
+            Paint::LinearGradient(g)
+        }
+        Paint::RadialGradient(mut g) => {
+            for s in &mut g.stops {
+                s.color = apply_alpha(s.color, opacity);
+            }
+            Paint::RadialGradient(g)
+        }
+    }
+}
+
+/// Paint `paint` (expressed in its own coordinate system, mapped onto
+/// user space by `transform`) through the coverage of `mask` — a
+/// [`Node::SoftMask`] whose mask is the shape painted opaque white and
+/// whose content is a rectangle covering `extent` (user space), filled
+/// with `paint` inside a group carrying `transform`. This is how an
+/// elliptical radial gradient (SVG 2 §14.2.3.1 — a radial gradient on a
+/// non-square `objectBoundingBox`, or under a non-uniform
+/// `gradientTransform`) is represented with the circular
+/// [`RadialGradient`] the scene graph carries.
+fn masked_paint_node(mask: PathNode, transform: Transform2D, paint: Paint, extent: BBox) -> Node {
+    let inv = match transform.invert() {
+        Some(i) => i,
+        None => {
+            return Node::Path(PathNode {
+                fill: None,
+                stroke: None,
+                ..mask
+            });
+        }
+    };
+    // Cover the mask's user-space extent (plus a small margin for the
+    // anti-aliased edge) with a rectangle in the paint's own space.
+    let margin = 0.01 * extent.width.max(extent.height).max(1.0);
+    let local = extent.expand(margin).transformed(&inv);
+    let mut rect = Path::new();
+    rect.move_to(Point::new(local.x, local.y));
+    rect.line_to(Point::new(local.max_x(), local.y));
+    rect.line_to(Point::new(local.max_x(), local.max_y()));
+    rect.line_to(Point::new(local.x, local.max_y()));
+    rect.close();
+    Node::SoftMask {
+        mask: Box::new(Node::Path(mask)),
+        mask_kind: MaskKind::Luminance,
+        content: Box::new(Node::Group(Group {
+            transform,
+            opacity: 1.0,
+            clip: None,
+            children: vec![Node::Path(PathNode {
+                path: rect,
+                fill: Some(paint),
+                stroke: None,
+                fill_rule: FillRule::NonZero,
+            })],
+            cache_key: None,
+        })),
     }
 }
 
 fn apply_alpha(color: Rgba, alpha: f32) -> Rgba {
     let a = ((color.a as f32 / 255.0) * alpha.clamp(0.0, 1.0)) * 255.0;
     Rgba::new(color.r, color.g, color.b, a.round() as u8)
-}
-
-/// Resolve a parsed [`PaintValue`] against the gradient + pattern
-/// tables. Returns `None` for `none` (no paint), an explicit `none`
-/// fallback (round 20), or an unresolvable reference with no fallback.
-///
-/// Round 20 — the SVG 2 §13.2 paint-list (`url(#id) [none | <color>]`)
-/// resolves through the following precedence:
-///   1. Gradient table (round 1+ — typed [`Paint`] cloned into place).
-///   2. Pattern table (round 20 — typed [`crate::defs::PatternDef`]).
-///      The renderer doesn't yet have a `Paint::Pattern` constructor
-///      so we treat a successful pattern lookup as "no fill" UNTIL
-///      the fallback colour applies. In other words, a pattern with
-///      a fallback colour renders as the fallback today; without a
-///      fallback, no paint is applied. Once `crate::model::Paint`
-///      gains a `Pattern` variant, the pattern branch will return the
-///      tiled paint directly and the fallback path becomes a true
-///      error case again.
-///   3. Fallback (when present in the source paint-list).
-fn resolve_paint(
-    value: &PaintValue,
-    opacity: f32,
-    gradients: &GradientTable,
-    defs: &DefsTables,
-) -> Option<Paint> {
-    match value {
-        PaintValue::None => None,
-        PaintValue::Color(c) => Some(Paint::Solid(apply_alpha(*c, opacity))),
-        PaintValue::Reference { id, fallback } => {
-            if let Some(p) = gradients.get(id) {
-                return Some(p.clone());
-            }
-            if defs.patterns.contains_key(id) {
-                // Pattern paint server known but `crate::model::Paint`
-                // has no `Pattern` variant — fall through to the
-                // fallback so the visual isn't silently dropped. Per
-                // SVG 2 §13.2: the fallback applies "if the paint
-                // server reference cannot be resolved." Strict
-                // interpretation treats a successful resolution as
-                // "render the pattern," but for a scene graph that
-                // can't carry one, the fallback is the spec-friendly
-                // proxy.
-                return resolve_paint_fallback(fallback, opacity);
-            }
-            // Unknown id — apply fallback if any, otherwise no paint
-            // (matches the pre-round-20 behaviour for a bare
-            // `url(#missing)`).
-            resolve_paint_fallback(fallback, opacity)
-        }
-    }
 }
 
 /// Apply the optional `[none | <color>]` fallback half of an SVG 2
@@ -2335,6 +2451,14 @@ pub struct ParseContext {
     /// `marker-mid` / `marker-end` on the matching shape on round-trip
     /// so the preserved `<marker>` def stays referenced.
     pub marker_refs: Vec<crate::preserved::MarkerRefBinding>,
+    /// Round 480 — collected (per-shape gradient paint fingerprint →
+    /// source gradient id) bindings, recorded by
+    /// [`Self::record_gradient_ref`] as each shape binds its
+    /// `fill="url(#id)"` / `stroke="url(#id)"` to its own bounding box
+    /// (SVG 2 §8.11). Populated only when the caller opted in via
+    /// [`crate::decoder::parse_with_extras`]; merged into
+    /// [`crate::preserved::PreservedExtras::gradient_refs`].
+    pub gradient_refs: Vec<RefBinding>,
 }
 
 impl Default for ParseContext {
@@ -2392,6 +2516,26 @@ impl ParseContext {
             unrendered: Vec::new(),
             filter_refs: Vec::new(),
             marker_refs: Vec::new(),
+            gradient_refs: Vec::new(),
+        }
+    }
+
+    /// Round 480 — record the (per-shape paint fingerprint → source
+    /// gradient id) binding the writer uses to re-point a `fill=` /
+    /// `stroke=` reference at the author's verbatim gradient def (same
+    /// [`Self::track_id_paths`] gate as the other recorders). SVG 2
+    /// §8.11 makes an `objectBoundingBox` gradient's user-space geometry
+    /// a property of the referencing shape, so the binding is recorded
+    /// where the shape resolves it rather than once per def.
+    pub fn record_gradient_ref(&mut self, paint: &Paint, id: &str) {
+        if !self.track_id_paths {
+            return;
+        }
+        if let Some(fp) = crate::encoder::paint_fingerprint(paint) {
+            self.gradient_refs.push(RefBinding {
+                fingerprint: fp,
+                ref_id: id.to_string(),
+            });
         }
     }
 
@@ -3156,7 +3300,13 @@ fn apply_xform(t: &Transform2D, x: f32, y: f32) -> Point {
     Point::new(t.a * x + t.c * y + t.e, t.b * x + t.d * y + t.f)
 }
 
-fn parse_opt_coord(v: Option<&str>) -> Result<Option<f32>> {
+/// Parse a gradient geometry attribute (`x1` … `fr`) as a typed
+/// [`Length`] so its unit survives until `gradientUnits` is known
+/// (SVG 2 §8.11: `50%` is `0.5` in bounding-box space but half the
+/// viewport axis in user space). Absent / empty → `None` (inherit from
+/// the template chain); a malformed value takes the initial value per
+/// SVG 2 §4.2 (also `None`).
+fn parse_opt_coord(v: Option<&str>) -> Result<Option<Length>> {
     match v {
         None => Ok(None),
         Some(s) => {
@@ -3164,11 +3314,7 @@ fn parse_opt_coord(v: Option<&str>) -> Result<Option<f32>> {
             if trimmed.is_empty() {
                 return Ok(None);
             }
-            // Strip `%` (matches the legacy `parse_coord` lenience).
-            let bare = trimmed.trim_end_matches('%');
-            bare.parse::<f32>()
-                .map(Some)
-                .map_err(|_| Error::invalid("SVG gradient: malformed coordinate"))
+            Ok(parse_length(trimmed).ok().filter(|l| l.value.is_finite()))
         }
     }
 }
@@ -4324,15 +4470,38 @@ fn parse_element_to_node_ctx_inner(
             // ancestor reaches here via `state.visibility`; a descendant
             // that set `visibility="visible"` overrides it back on.
             let hidden = state.visibility == Visibility::Hidden;
-            let fill = if hidden {
-                None
+            // Round 480 — SVG 2 §8.11: an `objectBoundingBox` paint
+            // server is bound to THIS shape's object bounding box (the
+            // geometry's tight box in the element's own user space —
+            // the same space `path` is expressed in, before the
+            // element's `transform`), so `fill` / `stroke` resolve per
+            // shape rather than per gradient id.
+            let bbox = BBox::of_path(&path);
+            let fill_sp = if hidden {
+                ShapePaint::None
             } else {
-                state.solid_fill(&ctx.gradients, &ctx.defs)
+                state.fill_for_shape(bbox, ctx)
             };
-            let mut stroke = if hidden {
-                None
+            let stroke_sp = if hidden {
+                ShapePaint::None
             } else {
-                state.solid_stroke(&ctx.gradients, &ctx.defs)
+                state.stroke_for_shape(bbox, ctx)
+            };
+            // A paint that only exists in its own coordinate system
+            // (`ShapePaint::Transformed`) is painted through a soft mask
+            // of the shape; the mask is the shape itself painted opaque
+            // white, which is what the legacy fill / stroke slots carry
+            // for it below.
+            let white = Paint::Solid(Rgba::opaque(255, 255, 255));
+            let fill: Option<Paint> = match &fill_sp {
+                ShapePaint::None => None,
+                ShapePaint::Paint(p) => Some(p.clone()),
+                ShapePaint::Transformed { .. } => Some(white.clone()),
+            };
+            let mut stroke: Option<Stroke> = match &stroke_sp {
+                ShapePaint::None => None,
+                ShapePaint::Paint(p) => Some(state.stroke_with_paint(p.clone())),
+                ShapePaint::Transformed { .. } => Some(state.stroke_with_paint(white)),
             };
             // Round 21 — SVG 2 §9.6.1: the `pathLength` attribute
             // re-scales `stroke-dasharray` / `stroke-dashoffset` so a
@@ -4449,41 +4618,97 @@ fn parse_element_to_node_ctx_inner(
             // purpose of node emission (the markers slot is otherwise
             // a no-op today, as documented at the
             // [`crate::defs::MarkerDef`] capture site).
-            let inner_node =
-                if state.paint_order.stroke_before_fill() && fill.is_some() && stroke.is_some() {
-                    // Split: stroke-only PathNode painted first, fill-only
-                    // PathNode painted second. Both reference the same
-                    // geometric path; the stroke-only's `fill` is None so
-                    // the rasteriser does not double-paint the interior,
-                    // and the fill-only's `stroke` is None so the stroke
-                    // does not also re-paint on top.
-                    let stroke_node = PathNode {
+            let fill_masked = matches!(fill_sp, ShapePaint::Transformed { .. });
+            let stroke_masked = matches!(stroke_sp, ShapePaint::Transformed { .. });
+            let inner_node = if fill_masked || stroke_masked {
+                // Round 480 — at least one side paints through a soft
+                // mask (see `masked_paint_node`). Each side becomes its
+                // own layer — a single-purpose PathNode for a plain
+                // paint, a SoftMask for a transformed one — composited
+                // in §13.8 paint order inside an identity group.
+                let fill_extent = bbox.unwrap_or(BBox::new(0.0, 0.0, 0.0, 0.0));
+                // The stroke reaches past the geometry box by half the
+                // width, more at a mitred corner — cover generously, the
+                // mask bounds what is actually painted.
+                let stroke_reach = stroke
+                    .as_ref()
+                    .map(|s| s.width.abs() * s.miter_limit.max(1.0))
+                    .unwrap_or(0.0);
+                let stroke_extent = fill_extent.expand(stroke_reach);
+                let fill_layer = fill.map(|f| {
+                    let node = PathNode {
                         path: path.clone(),
-                        fill: None,
-                        stroke: stroke.clone(),
-                        fill_rule: state.fill_rule,
-                    };
-                    let fill_node = PathNode {
-                        path,
-                        fill,
+                        fill: Some(f),
                         stroke: None,
                         fill_rule: state.fill_rule,
                     };
-                    Node::Group(Group {
-                        transform: Transform2D::identity(),
-                        opacity: 1.0,
-                        clip: None,
-                        children: vec![Node::Path(stroke_node), Node::Path(fill_node)],
-                        cache_key: None,
-                    })
-                } else {
-                    Node::Path(PathNode {
-                        path,
-                        fill,
-                        stroke,
+                    match fill_sp {
+                        ShapePaint::Transformed { transform, paint } => {
+                            masked_paint_node(node, transform, paint, fill_extent)
+                        }
+                        _ => Node::Path(node),
+                    }
+                });
+                let stroke_layer = stroke.map(|s| {
+                    let node = PathNode {
+                        path: path.clone(),
+                        fill: None,
+                        stroke: Some(s),
                         fill_rule: state.fill_rule,
-                    })
+                    };
+                    match stroke_sp {
+                        ShapePaint::Transformed { transform, paint } => {
+                            masked_paint_node(node, transform, paint, stroke_extent)
+                        }
+                        _ => Node::Path(node),
+                    }
+                });
+                let children: Vec<Node> = if state.paint_order.stroke_before_fill() {
+                    stroke_layer.into_iter().chain(fill_layer).collect()
+                } else {
+                    fill_layer.into_iter().chain(stroke_layer).collect()
                 };
+                Node::Group(Group {
+                    transform: Transform2D::identity(),
+                    opacity: 1.0,
+                    clip: None,
+                    children,
+                    cache_key: None,
+                })
+            } else if state.paint_order.stroke_before_fill() && fill.is_some() && stroke.is_some() {
+                // Split: stroke-only PathNode painted first, fill-only
+                // PathNode painted second. Both reference the same
+                // geometric path; the stroke-only's `fill` is None so
+                // the rasteriser does not double-paint the interior,
+                // and the fill-only's `stroke` is None so the stroke
+                // does not also re-paint on top.
+                let stroke_node = PathNode {
+                    path: path.clone(),
+                    fill: None,
+                    stroke: stroke.clone(),
+                    fill_rule: state.fill_rule,
+                };
+                let fill_node = PathNode {
+                    path,
+                    fill,
+                    stroke: None,
+                    fill_rule: state.fill_rule,
+                };
+                Node::Group(Group {
+                    transform: Transform2D::identity(),
+                    opacity: 1.0,
+                    clip: None,
+                    children: vec![Node::Path(stroke_node), Node::Path(fill_node)],
+                    cache_key: None,
+                })
+            } else {
+                Node::Path(PathNode {
+                    path,
+                    fill,
+                    stroke,
+                    fill_rule: state.fill_rule,
+                })
+            };
             // If element-level transform or opacity differs from
             // parent's, wrap in a tiny one-child group so the
             // round-trip preserves them.

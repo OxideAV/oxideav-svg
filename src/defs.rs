@@ -24,7 +24,12 @@
 
 use std::collections::HashMap;
 
-use crate::model::{FillRule, GradientStop, Group, Path, SpreadMethod, Transform2D, ViewBox};
+use crate::bbox::BBox;
+use crate::length::{Length, LengthAxis, LengthUnit, ResolveContext};
+use crate::model::{
+    FillRule, GradientStop, Group, LinearGradient, Paint, Path, Point, RadialGradient,
+    SpreadMethod, Transform2D, ViewBox,
+};
 
 use crate::filter::{FilterGraph, PreserveAspectRatio};
 use crate::parser::Element;
@@ -38,62 +43,99 @@ pub enum PatternUnits {
     ObjectBoundingBox,
 }
 
-/// Round 81 — `gradientUnits` keyword per SVG 2 §14.2.2.1 /
-/// §14.2.3.1. Mirrors [`PatternUnits`] but stays a distinct enum so a
-/// downstream consumer can tell at a glance which paint server it's
-/// looking at. Default per spec is `ObjectBoundingBox`.
+/// `gradientUnits` keyword per SVG 2 §14.2.2.1 / §14.2.3.1. Mirrors
+/// [`PatternUnits`] but stays a distinct enum so a downstream consumer
+/// can tell at a glance which paint server it's looking at. Default
+/// per spec is `ObjectBoundingBox`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum GradientUnits {
+    /// `x1` … `fr` are user units of the referencing element (a `%`
+    /// is a fraction of the current SVG viewport, §14.2.2.1).
     UserSpaceOnUse,
-    /// SVG 2 §14.2.2.1 / §14.2.3.1 "initial value: objectBoundingBox".
+    /// SVG 2 §14.2.2.1 / §14.2.3.1 "initial value: objectBoundingBox":
+    /// `x1` … `fr` are fractions of the referencing element's object
+    /// bounding box (§8.11; a `%` is the same fraction ÷ 100).
     #[default]
     ObjectBoundingBox,
 }
 
-/// Round 81 — geometry-bearing fields of a gradient definition. Stored
-/// as `Option<f32>` so the SVG 2 §14.1.1 template-inheritance walker
-/// can distinguish "attribute not specified, inherit from template" from
-/// "attribute specified with an explicit value." After resolution the
-/// `None`s collapse to the spec's per-attribute initial value (per
-/// §14.2.2.1 / §14.2.3.1: `x1=0, y1=0, x2=1, y2=0, cx=0.5, cy=0.5, r=0.5,
-/// fx=cx, fy=cy, fr=0`).
-#[derive(Clone, Debug)]
+/// Geometry-bearing fields of a gradient definition, as authored.
+///
+/// Each attribute is kept as a [`Length`] (value + unit) because the
+/// same literal means different things under the two `gradientUnits`
+/// modes (SVG 2 §8.11): under `objectBoundingBox` a bare number is a
+/// fraction of the referencing element's bounding box and `50%` is
+/// `0.5`; under `userSpaceOnUse` a bare number is a user unit and `50%`
+/// is half the viewport axis. The unit therefore has to survive until
+/// the template chain has settled which mode applies.
+///
+/// Stored as `Option<_>` so the SVG 2 §14.1.1 template-inheritance
+/// walker can distinguish "attribute not specified, inherit from the
+/// template" from "attribute specified with an explicit value". After
+/// resolution the `None`s collapse to the spec's per-attribute initial
+/// value (§14.2.2.1 / §14.2.3.1: `x1=0%, y1=0%, x2=100%, y2=0%,
+/// cx=50%, cy=50%, r=50%, fx=cx, fy=cy, fr=0%`).
+#[derive(Clone, Debug, PartialEq)]
 pub enum GradientKind {
     Linear {
-        x1: Option<f32>,
-        y1: Option<f32>,
-        x2: Option<f32>,
-        y2: Option<f32>,
+        x1: Option<Length>,
+        y1: Option<Length>,
+        x2: Option<Length>,
+        y2: Option<Length>,
     },
     Radial {
-        cx: Option<f32>,
-        cy: Option<f32>,
-        r: Option<f32>,
-        fx: Option<f32>,
-        fy: Option<f32>,
-        /// SVG 2-only `fr` attribute (radius of the focal point's
-        /// circle). Defaults to 0 when unspecified per §14.2.3.1.
-        fr: Option<f32>,
+        cx: Option<Length>,
+        cy: Option<Length>,
+        r: Option<Length>,
+        fx: Option<Length>,
+        fy: Option<Length>,
+        /// SVG 2-only `fr` attribute (radius of the focal circle).
+        /// Defaults to 0 when unspecified per §14.2.3.1.
+        fr: Option<Length>,
     },
 }
 
-/// Round 81 — `<linearGradient>` / `<radialGradient>` typed view.
+impl GradientKind {
+    /// A `<linearGradient>` with every geometry attribute unspecified.
+    pub fn linear() -> Self {
+        GradientKind::Linear {
+            x1: None,
+            y1: None,
+            x2: None,
+            y2: None,
+        }
+    }
+
+    /// A `<radialGradient>` with every geometry attribute unspecified.
+    pub fn radial() -> Self {
+        GradientKind::Radial {
+            cx: None,
+            cy: None,
+            r: None,
+            fx: None,
+            fy: None,
+            fr: None,
+        }
+    }
+}
+
+/// `<linearGradient>` / `<radialGradient>` typed view.
 ///
 /// SVG 2 §14.1.1 "Using paint servers as templates" lets a gradient
 /// inherit any unspecified attribute (plus child stops) from a chain
 /// of templates referenced via `href` / `xlink:href`. The typed
 /// `GradientDef` records the *un-resolved* per-element state — each
-/// numeric attribute is `Option<f32>` so the chain walker can tell
-/// `None` (inherit) from `Some(0.0)` (explicitly zero). After
-/// resolution via [`crate::defs::resolve_gradient_chain`] the
-/// `None`s collapse to the spec-default initial values.
+/// attribute is `Option<_>` so the chain walker can tell `None`
+/// (inherit) from `Some(..)` (explicitly specified). After resolution
+/// via [`resolve_gradient_chain`] the `None`s collapse to the
+/// spec-default initial values.
 ///
-/// `units` / `transform` / `spread` are `Option<_>` for the same
-/// reason. `stops` empty means "inherit from template," matching the
-/// §14.1.1 rule "if the current element does not have any child
-/// content other than descriptive elements, the child content of the
-/// template element is cloned to replace it."
+/// `stops` empty means "inherit from template," matching the §14.1.1
+/// rule "if the current element does not have any child content other
+/// than descriptive elements, the child content of the template
+/// element is cloned to replace it."
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct GradientDef {
     pub kind: GradientKind,
     pub units: Option<GradientUnits>,
@@ -107,10 +149,63 @@ pub struct GradientDef {
     pub href: String,
 }
 
-/// Round 81 — final resolved gradient: every attribute pinned to a
-/// concrete value, stops populated. Produced by
-/// [`resolve_gradient_chain`] from a chain of [`GradientDef`]s.
+impl GradientDef {
+    /// A gradient of the given kind with nothing else specified (every
+    /// attribute inherits from the template chain or falls back to the
+    /// spec initial value).
+    pub fn new(kind: GradientKind) -> Self {
+        Self {
+            kind,
+            units: None,
+            transform: None,
+            spread: None,
+            stops: Vec::new(),
+            href: String::new(),
+        }
+    }
+
+    /// Set `gradientUnits`.
+    pub fn with_units(mut self, units: GradientUnits) -> Self {
+        self.units = Some(units);
+        self
+    }
+
+    /// Set `gradientTransform`.
+    pub fn with_transform(mut self, transform: Transform2D) -> Self {
+        self.transform = Some(transform);
+        self
+    }
+
+    /// Set `spreadMethod`.
+    pub fn with_spread(mut self, spread: SpreadMethod) -> Self {
+        self.spread = Some(spread);
+        self
+    }
+
+    /// Replace the `<stop>` list.
+    pub fn with_stops(mut self, stops: Vec<GradientStop>) -> Self {
+        self.stops = stops;
+        self
+    }
+
+    /// Set the template reference (bare id, no `#`).
+    pub fn with_href(mut self, href: impl Into<String>) -> Self {
+        self.href = href.into();
+        self
+    }
+}
+
+/// Final resolved gradient: every attribute pinned to a concrete
+/// value, stops populated. Produced by [`resolve_gradient_chain`] /
+/// [`resolve_gradient_chain_with`] from a chain of [`GradientDef`]s.
+///
+/// The geometry numbers are in the coordinate system `units` names:
+/// bounding-box fractions under `ObjectBoundingBox` (percentages
+/// already divided by 100), user units under `UserSpaceOnUse`
+/// (percentages already resolved against the viewport). Bind the
+/// gradient to a referencing shape with [`bind_gradient`].
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct ResolvedGradient {
     pub kind: ResolvedGradientKind,
     pub units: GradientUnits,
@@ -137,17 +232,35 @@ pub enum ResolvedGradientKind {
     },
 }
 
+/// SVG 2 §14.1.1 template-inheritance walker with a default
+/// [`ResolveContext`] (no viewport: a `%` under `userSpaceOnUse`
+/// resolves to 0). Prefer [`resolve_gradient_chain_with`] when the
+/// document's viewport is known.
+pub fn resolve_gradient_chain(start: &GradientDef, defs: &DefsTables) -> ResolvedGradient {
+    resolve_gradient_chain_with(start, defs, &ResolveContext::default())
+}
+
 /// SVG 2 §14.1.1 template-inheritance walker. Resolves `start.href`
 /// chain through `defs.gradients` filling in any `None` attribute /
 /// missing stops from the nearest template that *does* specify them.
 /// Returns the final resolved gradient (with spec defaults substituted
 /// for attributes that survive the whole chain unspecified).
 ///
+/// `ctx` supplies the viewport a `%` resolves against under
+/// `userSpaceOnUse` (§14.2.2.1: "percentages represent values relative
+/// to the current SVG viewport") — `x`-ish attributes against the
+/// width, `y`-ish against the height, radii against the normalised
+/// diagonal (§7.10).
+///
 /// Cycle / depth limit: the walk caps at [`GRADIENT_HREF_DEPTH_CAP`]
 /// hops (matches the eight-hop cap [`crate::css::Stylesheet::IMPORT_DEPTH_CAP`]
 /// uses for CSS `@import` chains). A self-reference or a longer chain
 /// terminates at the cap with whatever resolution was reached.
-pub fn resolve_gradient_chain(start: &GradientDef, defs: &DefsTables) -> ResolvedGradient {
+pub fn resolve_gradient_chain_with(
+    start: &GradientDef,
+    defs: &DefsTables,
+    ctx: &ResolveContext,
+) -> ResolvedGradient {
     use std::collections::HashSet;
     let mut chain: Vec<&GradientDef> = vec![start];
     let mut visited: HashSet<String> = HashSet::new();
@@ -183,7 +296,7 @@ pub fn resolve_gradient_chain(start: &GradientDef, defs: &DefsTables) -> Resolve
     // mis-inherit otherwise per §14.2.2.1).
     let kind_root = &start.kind;
     let (mut lin, mut rad) = match kind_root {
-        GradientKind::Linear { x1, y1, x2, y2 } => (Some((*x1, *y1, *x2, *y2)), None),
+        GradientKind::Linear { x1, y1, x2, y2 } => (Some([*x1, *y1, *x2, *y2]), None),
         GradientKind::Radial {
             cx,
             cy,
@@ -191,7 +304,7 @@ pub fn resolve_gradient_chain(start: &GradientDef, defs: &DefsTables) -> Resolve
             fx,
             fy,
             fr,
-        } => (None, Some((*cx, *cy, *r, *fx, *fy, *fr))),
+        } => (None, Some([*cx, *cy, *r, *fx, *fy, *fr])),
     };
 
     for def in &chain {
@@ -216,17 +329,10 @@ pub fn resolve_gradient_chain(start: &GradientDef, defs: &DefsTables) -> Resolve
         // child's defaults per §14.2.3.1).
         match (&def.kind, &mut lin, &mut rad) {
             (GradientKind::Linear { x1, y1, x2, y2 }, Some(l), _) => {
-                if l.0.is_none() {
-                    l.0 = *x1;
-                }
-                if l.1.is_none() {
-                    l.1 = *y1;
-                }
-                if l.2.is_none() {
-                    l.2 = *x2;
-                }
-                if l.3.is_none() {
-                    l.3 = *y2;
+                for (slot, v) in l.iter_mut().zip([x1, y1, x2, y2]) {
+                    if slot.is_none() {
+                        *slot = *v;
+                    }
                 }
             }
             (
@@ -241,49 +347,59 @@ pub fn resolve_gradient_chain(start: &GradientDef, defs: &DefsTables) -> Resolve
                 _,
                 Some(rd),
             ) => {
-                if rd.0.is_none() {
-                    rd.0 = *cx;
-                }
-                if rd.1.is_none() {
-                    rd.1 = *cy;
-                }
-                if rd.2.is_none() {
-                    rd.2 = *r;
-                }
-                if rd.3.is_none() {
-                    rd.3 = *fx;
-                }
-                if rd.4.is_none() {
-                    rd.4 = *fy;
-                }
-                if rd.5.is_none() {
-                    rd.5 = *fr;
+                for (slot, v) in rd.iter_mut().zip([cx, cy, r, fx, fy, fr]) {
+                    if slot.is_none() {
+                        *slot = *v;
+                    }
                 }
             }
             _ => {}
         }
     }
 
-    let kind = if let Some((x1, y1, x2, y2)) = lin {
-        ResolvedGradientKind::Linear {
-            // §14.2.2.1 initial values.
-            x1: x1.unwrap_or(0.0),
-            y1: y1.unwrap_or(0.0),
-            x2: x2.unwrap_or(1.0),
-            y2: y2.unwrap_or(0.0),
+    let units = units.unwrap_or_default();
+    // §8.11: under objectBoundingBox "a percentage represents the same
+    // value as the corresponding decimal value (e.g., 50% means the
+    // same as 0.5)"; any other unit suffix is meaningless in box space
+    // and the bare number is used. Under userSpaceOnUse the length
+    // resolves like any other coordinate, with `%` against the
+    // viewport axis.
+    let resolve = |len: Option<Length>, initial: Length, axis: LengthAxis| -> f32 {
+        let len = len.unwrap_or(initial);
+        match units {
+            GradientUnits::ObjectBoundingBox => match len.unit {
+                LengthUnit::Percent => len.value / 100.0,
+                _ => len.value,
+            },
+            GradientUnits::UserSpaceOnUse => {
+                len.resolve(ctx.with_percentage_basis(ctx.percentage_basis_for(axis)))
+            }
         }
-    } else if let Some((cx, cy, r, fx, fy, fr)) = rad {
-        let cx_v = cx.unwrap_or(0.5);
-        let cy_v = cy.unwrap_or(0.5);
+    };
+    let pct = |v: f32| Length::new(v, LengthUnit::Percent);
+
+    let kind = if let Some([x1, y1, x2, y2]) = lin {
+        ResolvedGradientKind::Linear {
+            // §14.2.2.1 initial values: 0%, 0%, 100%, 0%.
+            x1: resolve(x1, pct(0.0), LengthAxis::X),
+            y1: resolve(y1, pct(0.0), LengthAxis::Y),
+            x2: resolve(x2, pct(100.0), LengthAxis::X),
+            y2: resolve(y2, pct(0.0), LengthAxis::Y),
+        }
+    } else if let Some([cx, cy, r, fx, fy, fr]) = rad {
+        // §14.2.3.1 initial values: cx=cy=r=50%, fx=cx, fy=cy, fr=0%.
+        // "If attribute fx is not specified, fx will coincide with the
+        // presentational value of cx for the element whether the value
+        // for cx was inherited or not."
+        let cx_v = resolve(cx, pct(50.0), LengthAxis::X);
+        let cy_v = resolve(cy, pct(50.0), LengthAxis::Y);
         ResolvedGradientKind::Radial {
-            // §14.2.3.1 initial values: cx=cy=0.5, r=0.5, fx=cx, fy=cy,
-            // fr=0.
             cx: cx_v,
             cy: cy_v,
-            r: r.unwrap_or(0.5),
-            fx: fx.unwrap_or(cx_v),
-            fy: fy.unwrap_or(cy_v),
-            fr: fr.unwrap_or(0.0),
+            r: resolve(r, pct(50.0), LengthAxis::Diagonal),
+            fx: fx.map_or(cx_v, |l| resolve(Some(l), pct(0.0), LengthAxis::X)),
+            fy: fy.map_or(cy_v, |l| resolve(Some(l), pct(0.0), LengthAxis::Y)),
+            fr: resolve(fr, pct(0.0), LengthAxis::Diagonal),
         }
     } else {
         unreachable!("kind_root must be Linear or Radial");
@@ -291,11 +407,230 @@ pub fn resolve_gradient_chain(start: &GradientDef, defs: &DefsTables) -> Resolve
 
     ResolvedGradient {
         kind,
-        units: units.unwrap_or_default(),
+        units,
         transform: transform.unwrap_or_else(Transform2D::identity),
         spread: spread.unwrap_or(SpreadMethod::Pad),
         stops,
     }
+}
+
+/// What a resolved gradient becomes once bound to one referencing
+/// shape (SVG 2 §8.11 / §14.2).
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub enum GradientPaint {
+    /// Nothing is painted: no `<stop>` (§14.2.4.3 "as if `none` were
+    /// specified"), an `objectBoundingBox` gradient on a shape whose box
+    /// has no width or height (§8.11 "the given effect … will be
+    /// ignored"), a radial gradient whose end circle has no radius
+    /// (§14.2.3.2 start and end circles fully overlap — "the area
+    /// stays untouched"), or a singular `gradientTransform`.
+    None,
+    /// A paint whose geometry is expressed directly in the referencing
+    /// element's user space — the gradient line / circle was mapped
+    /// through the bounding-box matrix and `gradientTransform`.
+    Paint(Paint),
+    /// A paint that only exists in the gradient's own coordinate
+    /// system: `transform` maps that system onto the referencing
+    /// element's user space and `paint` is expressed in it. Produced
+    /// for a radial gradient under a non-conformal mapping (a
+    /// non-square bounding box or a skewing / non-uniform
+    /// `gradientTransform`): §14.2.3.1 "the rings … will render as
+    /// elliptical", and the scene-graph [`RadialGradient`] only carries
+    /// a circle. A consumer paints `paint` inside a group carrying
+    /// `transform`; the shape builder does exactly that through a
+    /// soft-masked, transformed fill (see `crate::element`).
+    Transformed {
+        /// Gradient space → user space.
+        transform: Transform2D,
+        /// The gradient in its own space (circular rings).
+        paint: Paint,
+    },
+}
+
+/// Bind a resolved gradient to a referencing shape.
+///
+/// `bbox` is the shape's object bounding box in its own user space
+/// (`None` for a shape with no geometry). It is only consulted under
+/// `gradientUnits="objectBoundingBox"`.
+///
+/// The gradient geometry goes through `M = B ∘ gradientTransform`,
+/// where `B` is the §8.11 bounding-box matrix (identity under
+/// `userSpaceOnUse`) — "gradientTransform … is post-multiplied to
+/// (i.e., inserted to the right of) any previously defined
+/// transformations, including the implicit transformation necessary to
+/// convert from object bounding box units to user coordinate system".
+///
+/// * Linear (§14.2.2): any affine image of a linear gradient is again
+///   a linear gradient — its iso-lines stay parallel — so the result is
+///   always exact. When the mapping keeps the gradient normal
+///   perpendicular (axis-parallel vector under an axis-aligned `M`, or
+///   a conformal `M`) the endpoints are simply mapped; otherwise the
+///   equivalent perpendicular-normal line is derived from the mapped
+///   iso-line field (the spec's "may render non-perpendicular relative
+///   to the gradient vector in user space" case).
+/// * Radial (§14.2.3): exact under a conformal `M` (uniform scale,
+///   rotation, reflection — circles stay circles); otherwise
+///   [`GradientPaint::Transformed`].
+/// * Stops are normalised per §14.2.4.3 (offsets clamped to `0..=1`
+///   and made monotonic); one stop paints its solid colour; a
+///   zero-length gradient vector paints the last stop (§14.2.2.2).
+pub fn bind_gradient(r: &ResolvedGradient, bbox: Option<BBox>) -> GradientPaint {
+    let stops = normalised_stops(&r.stops);
+    if stops.is_empty() {
+        return GradientPaint::None;
+    }
+    if stops.len() == 1 {
+        return GradientPaint::Paint(Paint::Solid(stops[0].color));
+    }
+    let last = stops[stops.len() - 1].color;
+
+    let m = match r.units {
+        GradientUnits::ObjectBoundingBox => match bbox {
+            Some(b) if !b.is_degenerate() => b.unit_transform().compose(&r.transform),
+            _ => return GradientPaint::None,
+        },
+        GradientUnits::UserSpaceOnUse => r.transform,
+    };
+    let det = m.determinant();
+    if det == 0.0 || !det.is_finite() {
+        return GradientPaint::None;
+    }
+
+    match r.kind {
+        ResolvedGradientKind::Linear { x1, y1, x2, y2 } => {
+            let p1 = Point::new(x1, y1);
+            let p2 = Point::new(x2, y2);
+            if p1 == p2 {
+                // §14.2.2.2 "If x1 = x2 and y1 = y2, then the area to be
+                // painted will be painted as a single color using the
+                // color and opacity of the last gradient stop."
+                return GradientPaint::Paint(Paint::Solid(last));
+            }
+            let axis_parallel = (m.b == 0.0 && m.c == 0.0) && (x1 == x2 || y1 == y2);
+            let (start, end) = if axis_parallel || is_conformal(&m) {
+                (m.apply(p1), m.apply(p2))
+            } else {
+                // General affine: the gradient parameter is the linear
+                // field t(p) = ((M⁻¹p − p1)·v) / |v|² with v = p2 − p1.
+                // Writing t(p) = g·p + c (g in user space), the
+                // perpendicular-normal line with the same field runs
+                // from S = −c·g/|g|² to E = S + g/|g|².
+                let inv = match m.invert() {
+                    Some(i) => i,
+                    None => return GradientPaint::None,
+                };
+                let vx = x2 - x1;
+                let vy = y2 - y1;
+                let v2 = vx * vx + vy * vy;
+                // g = A⁻ᵀ v / |v|²  (A⁻¹ = [inv.a inv.c; inv.b inv.d]).
+                let gx = (inv.a * vx + inv.b * vy) / v2;
+                let gy = (inv.c * vx + inv.d * vy) / v2;
+                // c = ((inv.e, inv.f) − p1)·v / |v|²
+                let c = ((inv.e - x1) * vx + (inv.f - y1) * vy) / v2;
+                let g2 = gx * gx + gy * gy;
+                if !(g2 > 0.0 && g2.is_finite()) {
+                    return GradientPaint::Paint(Paint::Solid(last));
+                }
+                let sx = -c * gx / g2;
+                let sy = -c * gy / g2;
+                (Point::new(sx, sy), Point::new(sx + gx / g2, sy + gy / g2))
+            };
+            GradientPaint::Paint(Paint::LinearGradient(LinearGradient {
+                start,
+                end,
+                stops,
+                spread: r.spread,
+            }))
+        }
+        ResolvedGradientKind::Radial {
+            cx,
+            cy,
+            r: radius,
+            fx,
+            fy,
+            ..
+        } => {
+            if radius.is_nan() || radius <= 0.0 {
+                // §14.2.3.1: a negative `r` is an error; §14.2.3.2: a
+                // start circle that fully overlaps the end circle paints
+                // nothing. (`fr` has no scene-graph carrier yet and is
+                // not applied.)
+                return GradientPaint::None;
+            }
+            let centre = Point::new(cx, cy);
+            let focal = Point::new(fx, fy);
+            let focal_opt = |f: Point, c: Point| {
+                if (f.x - c.x).abs() < 1e-6 && (f.y - c.y).abs() < 1e-6 {
+                    None
+                } else {
+                    Some(f)
+                }
+            };
+            if is_conformal(&m) {
+                let scale = (m.a * m.a + m.b * m.b).sqrt();
+                let c_u = m.apply(centre);
+                let f_u = m.apply(focal);
+                GradientPaint::Paint(Paint::RadialGradient(RadialGradient {
+                    center: c_u,
+                    radius: radius * scale,
+                    focal: focal_opt(f_u, c_u),
+                    stops,
+                    spread: r.spread,
+                }))
+            } else {
+                GradientPaint::Transformed {
+                    transform: m,
+                    paint: Paint::RadialGradient(RadialGradient {
+                        center: centre,
+                        radius,
+                        focal: focal_opt(focal, centre),
+                        stops,
+                        spread: r.spread,
+                    }),
+                }
+            }
+        }
+    }
+}
+
+/// `true` when the linear part of `t` is a similarity (uniform scale ×
+/// rotation, optionally reflected): columns of equal length and
+/// orthogonal to each other, so circles map to circles.
+fn is_conformal(t: &Transform2D) -> bool {
+    let c1 = t.a * t.a + t.b * t.b;
+    let c2 = t.c * t.c + t.d * t.d;
+    let dot = t.a * t.c + t.b * t.d;
+    let scale = c1.max(c2);
+    if scale.is_nan() || scale <= 0.0 || !scale.is_finite() {
+        return false;
+    }
+    let eps = scale * 1e-5;
+    (c1 - c2).abs() <= eps && dot.abs() <= eps
+}
+
+/// SVG 2 §14.2.4.3 stop normalisation: "Gradient offset values less
+/// than 0 … are rounded up to 0%. Gradient offset values greater than
+/// 1 … are rounded down to 100%. … If a given gradient stop's offset
+/// value is not equal to or greater than all previous offset values,
+/// then the offset value is adjusted to be equal to the largest of all
+/// previous offset values."
+pub fn normalised_stops(stops: &[GradientStop]) -> Vec<GradientStop> {
+    let mut out = Vec::with_capacity(stops.len());
+    let mut running = 0.0_f32;
+    for s in stops {
+        let mut off = if s.offset.is_finite() {
+            s.offset.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        if off < running {
+            off = running;
+        }
+        running = off;
+        out.push(GradientStop::new(off, s.color));
+    }
+    out
 }
 
 /// Per §14.1.1 the template chain "can be indirect to an arbitrary
@@ -763,37 +1098,17 @@ mod tests {
     }
 
     fn linear(href: &str, x2: Option<f32>) -> GradientDef {
-        GradientDef {
-            kind: GradientKind::Linear {
-                x1: None,
-                y1: None,
-                x2,
-                y2: None,
-            },
-            units: None,
-            transform: None,
-            spread: None,
-            stops: Vec::new(),
-            href: href.into(),
-        }
+        GradientDef::new(GradientKind::Linear {
+            x1: None,
+            y1: None,
+            x2: x2.map(Length::user_units),
+            y2: None,
+        })
+        .with_href(href)
     }
 
     fn radial(href: &str) -> GradientDef {
-        GradientDef {
-            kind: GradientKind::Radial {
-                cx: None,
-                cy: None,
-                r: None,
-                fx: None,
-                fy: None,
-                fr: None,
-            },
-            units: None,
-            transform: None,
-            spread: None,
-            stops: Vec::new(),
-            href: href.into(),
-        }
+        GradientDef::new(GradientKind::radial()).with_href(href)
     }
 
     #[test]
@@ -941,12 +1256,12 @@ mod tests {
         let mut defs = DefsTables::new();
         let mut tmpl = radial("");
         tmpl.kind = GradientKind::Radial {
-            cx: Some(2.0),
-            cy: Some(3.0),
-            r: Some(5.0),
+            cx: Some(Length::user_units(2.0)),
+            cy: Some(Length::user_units(3.0)),
+            r: Some(Length::user_units(5.0)),
             fx: None,
             fy: None,
-            fr: Some(0.25),
+            fr: Some(Length::user_units(0.25)),
         };
         defs.gradients.insert("tmpl".into(), tmpl);
 

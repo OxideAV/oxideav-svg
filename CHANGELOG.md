@@ -7,9 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `gradientUnits` is honoured (issue #13). The default `objectBoundingBox` binds `x1` / `y1` / `x2` / `y2` and `cx` / `cy` / `r` / `fx` / `fy` to the referencing shape's object bounding box — bare numbers and percentages alike (SVG 2 §8.11 / §14.2.2.1 / §14.2.3.1), with `gradientTransform` applied in box space — and the scene graph carries the result in the shape's own user space, so a renderer that only knows user units paints the gradient where SVG puts it. Previously every gradient was treated as `userSpaceOnUse`, so a default `x2="1"` gradient spanned one user unit. Under `userSpaceOnUse` a percentage now resolves against the SVG viewport (`%` was read as a bare number before). The bounding box is the tight box of the geometry (Bézier and elliptical-arc extrema, not control points; stroke excluded, §8.10), computed per shape (`bbox::BBox`).
+- Gradient edge cases per spec: a zero-width or zero-height box ignores an `objectBoundingBox` gradient (§8.11: a horizontal / vertical line with a gradient stroke paints nothing); `x1 = x2, y1 = y2` paints the last stop's colour (§14.2.2.2); `r = 0` paints nothing (§14.2.3.2, start circle fully overlapping the end circle); no `<stop>` paints nothing and one `<stop>` paints its solid colour (§14.2.4.3); stop offsets are clamped to `0..=1` and made monotonic (§14.2.4.3).
+- `fill-opacity` / `stroke-opacity` now scale gradient paints too (every stop's alpha), not only solid colours.
+- Reference identity on `parse_with_extras → write_with_extras` is kept per shape: the verbatim `objectBoundingBox` def is re-emitted once and each `fill=` / `stroke=` still points at it.
+
+### Added
+
+- `bbox::BBox` — SVG 2 §8.10 object bounding box of a `Path` (exact curve extrema) plus the §8.11 unit-box matrix.
+- `defs::bind_gradient` / `defs::GradientPaint` — bind a resolved gradient to a shape's box; `defs::resolve_gradient_chain_with` takes the `ResolveContext` a `userSpaceOnUse` percentage resolves against; `defs::normalised_stops`.
+- A radial gradient under a non-conformal mapping (non-square bounding box, or a skewing / non-uniform `gradientTransform` — §14.2.3.1 "the rings … will render as elliptical") has no circular `RadialGradient` equivalent. Such a fill / stroke is emitted as a `Node::SoftMask` whose mask is the shape itself (opaque white, same stroke style for a stroke) and whose content is the circular gradient under the gradient→user matrix (`GradientPaint::Transformed`), so the scene graph stays exact; a plain fill or stroke on the same shape becomes its own layer in paint order. `fr` (SVG 2 focal radius) is parsed but has no scene-graph carrier yet.
+- `Transform2D::invert` / `Transform2D::determinant`.
+- Black-box pixel tests against `rsvg-convert` (`tests/round480_gradient_pixels.rs`): the writer's user-space re-emission of every fixture renders like the source (skipped when the tool is absent).
+
 ### Changed
 
 - edition 2024, MSRV 1.95
+- `defs::GradientKind` geometry attributes are `Option<length::Length>` (unit kept until `gradientUnits` is known); `defs::GradientDef` / `defs::ResolvedGradient` are `#[non_exhaustive]` with `GradientDef::new` + `with_*` builders and `GradientKind::linear()` / `radial()`.
 
 ## [0.1.9](https://github.com/OxideAV/oxideav-svg/compare/v0.1.8...v0.1.9) - 2026-10-03
 

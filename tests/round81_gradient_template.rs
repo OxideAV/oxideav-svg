@@ -203,10 +203,12 @@ fn self_reference_is_broken_and_spec_defaults_apply() {
 
 #[test]
 fn gradient_transform_is_folded_into_flattened_paint() {
-    // `gradientTransform="translate(10, 5) scale(2 1)"` shifts the
-    // start (0,0) → (10, 5) and the end (1, 0) → (10 + 2*1, 5) = (12, 5).
-    // (Bare `objectBoundingBox` units; no extra mapping for this
-    // smoke test.)
+    // `gradientTransform="translate(10, 5) scale(2 1)"` is applied in
+    // bounding-box space (SVG 2 §14.2.2.1: "post-multiplied to … the
+    // implicit transformation necessary to convert from object bounding
+    // box units to user coordinate system"). On the 100×100 rect the
+    // start (0,0) → bbox (10, 5) → user (1000, 500) and the end (1,0) →
+    // bbox (12, 5) → user (1200, 500).
     let src = br##"<?xml version="1.0"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100">
   <defs>
@@ -221,10 +223,10 @@ fn gradient_transform_is_folded_into_flattened_paint() {
     let path = first_path(&frame);
     match &path.fill {
         Some(Paint::LinearGradient(g)) => {
-            assert!((g.start.x - 10.0).abs() < 1e-3);
-            assert!((g.start.y - 5.0).abs() < 1e-3);
-            assert!((g.end.x - 12.0).abs() < 1e-3);
-            assert!((g.end.y - 5.0).abs() < 1e-3);
+            assert!((g.start.x - 1000.0).abs() < 1e-2);
+            assert!((g.start.y - 500.0).abs() < 1e-2);
+            assert!((g.end.x - 1200.0).abs() < 1e-2);
+            assert!((g.end.y - 500.0).abs() < 1e-2);
         }
         other => panic!(
             "expected linear gradient with transformed coords, got {:?}",
@@ -274,19 +276,15 @@ fn typed_def_records_units_transform_and_href() {
 
     // And the typed `ResolvedGradient` mirror agrees.
     let mut defs = DefsTables::new();
-    let def = GradientDef {
-        kind: oxideav_svg::defs::GradientKind::Linear {
-            x1: Some(10.0),
-            y1: Some(20.0),
-            x2: Some(80.0),
-            y2: Some(90.0),
-        },
-        units: Some(GradientUnits::UserSpaceOnUse),
-        transform: None,
-        spread: Some(oxideav_svg::SpreadMethod::Reflect),
-        stops: Vec::new(),
-        href: String::new(),
-    };
+    use oxideav_svg::length::Length;
+    let def = GradientDef::new(oxideav_svg::defs::GradientKind::Linear {
+        x1: Some(Length::user_units(10.0)),
+        y1: Some(Length::user_units(20.0)),
+        x2: Some(Length::user_units(80.0)),
+        y2: Some(Length::user_units(90.0)),
+    })
+    .with_units(GradientUnits::UserSpaceOnUse)
+    .with_spread(oxideav_svg::SpreadMethod::Reflect);
     defs.gradients.insert("g".into(), def.clone());
     let resolved = resolve_gradient_chain(&def, &defs);
     assert_eq!(resolved.units, GradientUnits::UserSpaceOnUse);

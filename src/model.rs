@@ -807,6 +807,28 @@ impl Transform2D {
     pub fn is_identity(&self) -> bool {
         *self == Self::identity()
     }
+
+    /// Determinant of the linear part (`a·d − b·c`); zero for a
+    /// collapsing transform.
+    pub fn determinant(&self) -> f32 {
+        self.a * self.d - self.b * self.c
+    }
+
+    /// The inverse transform, or `None` when this one collapses a
+    /// dimension (zero or non-finite determinant).
+    pub fn invert(&self) -> Option<Self> {
+        let det = self.determinant();
+        if det == 0.0 || !det.is_finite() {
+            return None;
+        }
+        let a = self.d / det;
+        let b = -self.b / det;
+        let c = -self.c / det;
+        let d = self.a / det;
+        let e = -(a * self.e + c * self.f);
+        let f = -(b * self.e + d * self.f);
+        Some(Self { a, b, c, d, e, f })
+    }
 }
 
 impl Default for Transform2D {
@@ -818,6 +840,18 @@ impl Default for Transform2D {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invert_round_trips_a_point() {
+        let t = Transform2D::translate(10.0, -4.0)
+            .compose(&Transform2D::rotate(0.7))
+            .compose(&Transform2D::scale(2.0, 0.5));
+        let inv = t.invert().unwrap();
+        let p = Point::new(3.0, 5.0);
+        let q = inv.apply(t.apply(p));
+        assert!((q.x - p.x).abs() < 1e-4 && (q.y - p.y).abs() < 1e-4);
+        assert!(Transform2D::scale(0.0, 1.0).invert().is_none());
+    }
 
     #[test]
     fn compose_applies_right_operand_first() {
