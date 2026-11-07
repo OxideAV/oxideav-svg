@@ -35,6 +35,7 @@ use crate::parser::Element;
 /// document pre-walk; consumed by
 /// [`crate::encoder::write_with_extras`].
 #[derive(Clone, Debug, Default)]
+#[non_exhaustive]
 pub struct PreservedExtras {
     /// `<style>` element bodies (CSS source). Kept verbatim so an
     /// inline `<style>` block survives round-trip even though the
@@ -761,6 +762,7 @@ pub struct PathLengthBinding {
 /// are optional descriptors the encoder re-emits verbatim on the
 /// re-wrapping `<a>` element.
 #[derive(Clone, Debug, Default)]
+#[non_exhaustive]
 pub struct LinkBinding {
     /// Tree-path through the scene graph; matches the layout of
     /// [`IdScenePath::path`]. Identifies the `<g>` the encoder wraps in
@@ -862,6 +864,7 @@ impl PreservedExtras {
 /// decoder flattens the instance into the scene graph, so this binding
 /// is the only round-trip carrier of the source reference identity.
 #[derive(Clone, Debug, Default)]
+#[non_exhaustive]
 pub struct UseBinding {
     /// Tree-path through the scene graph; matches the layout of
     /// [`IdScenePath::path`]. Identifies the `<g>` the encoder replaces

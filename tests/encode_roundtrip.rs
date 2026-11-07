@@ -14,37 +14,27 @@ fn red_triangle() -> PathNode {
     path.line_to(Point::new(10.0, 0.0));
     path.line_to(Point::new(5.0, 10.0));
     path.close();
-    PathNode {
-        path,
-        fill: Some(Paint::Solid(Rgba::opaque(255, 0, 0))),
-        stroke: Some(Stroke {
-            width: 2.0,
-            paint: Paint::Solid(Rgba::opaque(0, 0, 0)),
-            cap: LineCap::Round,
-            join: LineJoin::Bevel,
-            miter_limit: 4.0,
-            dash: None,
-        }),
-        fill_rule: FillRule::EvenOdd,
-    }
+    PathNode::new(path)
+        .with_fill(Paint::Solid(Rgba::opaque(255, 0, 0)))
+        .with_stroke(
+            Stroke::new(2.0, Paint::Solid(Rgba::opaque(0, 0, 0)))
+                .with_cap(LineCap::Round)
+                .with_join(LineJoin::Bevel)
+                .with_miter_limit(4.0),
+        )
+        .with_fill_rule(FillRule::EvenOdd)
 }
 
 #[test]
 fn solid_paint_round_trip_preserves_shape_and_attrs() {
-    let frame = SvgDocument {
-        width: 20.0,
-        height: 20.0,
-        view_box: Some(ViewBox {
+    let frame = SvgDocument::new(20.0, 20.0)
+        .with_view_box(ViewBox {
             min_x: 0.0,
             min_y: 0.0,
             width: 20.0,
             height: 20.0,
-        }),
-        root: Group {
-            children: vec![Node::Path(red_triangle())],
-            ..Group::default()
-        },
-    };
+        })
+        .with_root(Group::default().with_children(vec![Node::Path(red_triangle())]));
 
     let bytes = write(&frame);
     let frame2 = parse(&bytes).unwrap();
@@ -73,15 +63,12 @@ fn solid_paint_round_trip_preserves_shape_and_attrs() {
 
 #[test]
 fn linear_gradient_round_trips_through_url_reference() {
-    let lg = LinearGradient {
-        start: Point::new(0.0, 0.0),
-        end: Point::new(20.0, 0.0),
-        stops: vec![
+    let lg = LinearGradient::new(Point::new(0.0, 0.0), Point::new(20.0, 0.0))
+        .with_stops(vec![
             GradientStop::new(0.0, Rgba::opaque(255, 0, 0)),
             GradientStop::new(1.0, Rgba::opaque(0, 0, 255)),
-        ],
-        spread: SpreadMethod::Pad,
-    };
+        ])
+        .with_spread(SpreadMethod::Pad);
 
     let mut path = Path::new();
     path.move_to(Point::new(0.0, 0.0));
@@ -89,20 +76,13 @@ fn linear_gradient_round_trips_through_url_reference() {
     path.line_to(Point::new(20.0, 20.0));
     path.close();
 
-    let frame = SvgDocument {
-        width: 20.0,
-        height: 20.0,
-        view_box: None,
-        root: Group {
-            children: vec![Node::Path(PathNode {
-                path,
-                fill: Some(Paint::LinearGradient(lg)),
-                stroke: None,
-                fill_rule: FillRule::NonZero,
-            })],
-            ..Group::default()
-        },
-    };
+    let frame = SvgDocument::new(20.0, 20.0).with_root(Group::default().with_children(vec![
+        Node::Path(
+            PathNode::new(path)
+                .with_fill(Paint::LinearGradient(lg))
+                .with_fill_rule(FillRule::NonZero),
+        ),
+    ]));
 
     let bytes = write(&frame);
     let s = std::str::from_utf8(&bytes).unwrap();
@@ -126,33 +106,20 @@ fn linear_gradient_round_trips_through_url_reference() {
 
 #[test]
 fn group_with_transform_survives() {
-    let inner = PathNode {
-        path: {
-            let mut p = Path::new();
-            p.move_to(Point::new(0.0, 0.0));
-            p.line_to(Point::new(1.0, 1.0));
-            p
-        },
-        fill: Some(Paint::Solid(Rgba::opaque(0, 128, 0))),
-        stroke: None,
-        fill_rule: FillRule::NonZero,
-    };
-    let group = Group {
-        transform: Transform2D::translate(10.0, 20.0),
-        opacity: 0.5,
-        clip: None,
-        children: vec![Node::Path(inner)],
-        cache_key: None,
-    };
-    let frame = SvgDocument {
-        width: 50.0,
-        height: 50.0,
-        view_box: None,
-        root: Group {
-            children: vec![Node::Group(group)],
-            ..Group::default()
-        },
-    };
+    let inner = PathNode::new({
+        let mut p = Path::new();
+        p.move_to(Point::new(0.0, 0.0));
+        p.line_to(Point::new(1.0, 1.0));
+        p
+    })
+    .with_fill(Paint::Solid(Rgba::opaque(0, 128, 0)))
+    .with_fill_rule(FillRule::NonZero);
+    let group = Group::default()
+        .with_transform(Transform2D::translate(10.0, 20.0))
+        .with_opacity(0.5)
+        .with_children(vec![Node::Path(inner)]);
+    let frame = SvgDocument::new(50.0, 50.0)
+        .with_root(Group::default().with_children(vec![Node::Group(group)]));
     let bytes = write(&frame);
     let s = std::str::from_utf8(&bytes).unwrap();
     assert!(s.contains("<g"));

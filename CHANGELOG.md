@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Builders that complete the model's `with_*` sets: `SvgDocument::with_width`
+  / `with_height`, `PathNode::with_path`, `Stroke::with_width`,
+  `LinearGradient::with_start` / `with_end`, `RadialGradient::with_center`
+  / `with_radius`.
+
+### Changed
+
+- API hygiene: `#[non_exhaustive]` on the scene records `SvgDocument`,
+  `Group`, `PathNode`, `Stroke`, `LinearGradient`, `RadialGradient` (build
+  them with `new(..)` / `Default` + `with_*`), on `PreservedExtras`,
+  `LinkBinding`, `UseBinding`, `ResolvedView` and on the `LineJoin` enum
+  (SVG 2 adds join keywords). Plain values (`Point`, `Rgba`, `ViewBox`,
+  `Transform2D`, `GradientStop`, `DashPattern`, `Path`) and the
+  spec-fixed `LineCap` / `FillRule` / `SpreadMethod` / `MaskKind` stay
+  exhaustive.
+- The parser / style / filter / geometry internals are now
+  `#[doc(hidden)]`: `animation`, `bbox`, `color`, `conditional`, `css`,
+  `defs`, `element`, `filter`, `filter_eval`, `image`, `keyframe`,
+  `length`, `parser`, `path_data`, `path_length`, `transform`. The
+  documented surface is the crate root plus `decoder`, `encoder`,
+  `error`, `model`, `picture`, `preserved`, `text` and the `registry`
+  feature modules.
+
 ## [0.2.0](https://github.com/OxideAV/oxideav-svg/compare/v0.1.9...v0.2.0) - 2026-10-24
 
 ### Other

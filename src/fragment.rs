@@ -49,6 +49,7 @@ use crate::preserved::PreservedExtras;
 /// initial render" treat the returned values as overrides for the
 /// matching root attributes.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct ResolvedView {
     /// Resolved `viewBox` after applying the fragment. Falls back to
     /// the document root's `viewBox` when neither the fragment nor the

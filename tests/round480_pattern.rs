@@ -314,10 +314,7 @@ fn typed_chain_resolver_applies_defaults_and_percentages() {
             Length::new(50.0, LengthUnit::Percent),
             Length::user_units(0.25),
         )
-        .with_content(Group {
-            children: vec![Node::Path(PathNode::new(Path::new()))],
-            ..Group::default()
-        });
+        .with_content(Group::default().with_children(vec![Node::Path(PathNode::new(Path::new()))]));
     defs.patterns.insert("t".into(), tmpl);
     let child = PatternDef::new().with_href("t");
     let r = resolve_pattern_chain(&child, &defs);
@@ -345,10 +342,9 @@ fn expansion_is_capped() {
                 Length::user_units(1.0),
                 Length::user_units(1.0),
             )
-            .with_content(Group {
-                children: vec![Node::Path(PathNode::new(Path::new()))],
-                ..Group::default()
-            }),
+            .with_content(
+                Group::default().with_children(vec![Node::Path(PathNode::new(Path::new()))]),
+            ),
         &DefsTables::new(),
     );
     let mut budget = usize::MAX;

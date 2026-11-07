@@ -573,28 +573,43 @@
 //!   tree-path so [`encoder::write_with_extras`] re-emits the
 //!   attribute on round-trip.
 
+#[doc(hidden)]
 pub mod animation;
 mod api;
+#[doc(hidden)]
 pub mod bbox;
+#[doc(hidden)]
 pub mod color;
+#[doc(hidden)]
 pub mod conditional;
 #[cfg(feature = "registry")]
 pub mod container;
+#[doc(hidden)]
 pub mod css;
 pub mod decoder;
+#[doc(hidden)]
 pub mod defs;
+#[doc(hidden)]
 pub mod element;
 pub mod encoder;
 pub mod error;
+#[doc(hidden)]
 pub mod filter;
+#[doc(hidden)]
 pub mod filter_eval;
+#[doc(hidden)]
 pub mod image;
+#[doc(hidden)]
 pub mod keyframe;
+#[doc(hidden)]
 pub mod length;
 pub mod model;
 mod options;
+#[doc(hidden)]
 pub mod parser;
+#[doc(hidden)]
 pub mod path_data;
+#[doc(hidden)]
 pub mod path_length;
 pub mod picture;
 pub mod preserved;
@@ -602,6 +617,7 @@ pub mod preserved;
 pub mod registry;
 #[cfg(feature = "text")]
 pub mod text;
+#[doc(hidden)]
 pub mod transform;
 
 // ---- Image-crate contract (IMAGE_CRATE_API) ----

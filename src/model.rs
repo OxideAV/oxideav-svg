@@ -28,6 +28,7 @@
 /// `root.transform` so a rasteriser that maps the view box onto the
 /// viewport with a plain stretch paints the spec result.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct SvgDocument {
     /// Viewport width in user units.
     pub width: f32,
@@ -37,6 +38,22 @@ pub struct SvgDocument {
     pub view_box: Option<ViewBox>,
     /// Root group of the scene.
     pub root: Group,
+}
+
+impl SvgDocument {
+    /// Set [`SvgDocument::width`].
+    #[must_use]
+    pub fn with_width(mut self, v: f32) -> Self {
+        self.width = v;
+        self
+    }
+
+    /// Set [`SvgDocument::height`].
+    #[must_use]
+    pub fn with_height(mut self, v: f32) -> Self {
+        self.height = v;
+        self
+    }
 }
 
 impl SvgDocument {
@@ -138,6 +155,7 @@ pub enum MaskKind {
 /// A grouping node — transform / opacity / optional clip applied to
 /// all descendants. Mirrors SVG `<g>`.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct Group {
     /// Coordinate transform applied to children. Identity by default.
     pub transform: Transform2D,
@@ -211,6 +229,7 @@ impl Group {
 
 /// A drawn path with optional fill and stroke.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct PathNode {
     /// The geometry.
     pub path: Path,
@@ -220,6 +239,15 @@ pub struct PathNode {
     pub stroke: Option<Stroke>,
     /// Fill rule for self-intersecting / compound paths.
     pub fill_rule: FillRule,
+}
+
+impl PathNode {
+    /// Set [`PathNode::path`].
+    #[must_use]
+    pub fn with_path(mut self, v: Path) -> Self {
+        self.path = v;
+        self
+    }
 }
 
 impl PathNode {
@@ -436,6 +464,7 @@ impl From<Rgba> for Paint {
 
 /// A linear gradient: colour stops sweep along `start` → `end`.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct LinearGradient {
     /// Gradient line start, in user units.
     pub start: Point,
@@ -445,6 +474,22 @@ pub struct LinearGradient {
     pub stops: Vec<GradientStop>,
     /// What happens outside `0.0..=1.0`.
     pub spread: SpreadMethod,
+}
+
+impl LinearGradient {
+    /// Set [`LinearGradient::start`].
+    #[must_use]
+    pub fn with_start(mut self, v: Point) -> Self {
+        self.start = v;
+        self
+    }
+
+    /// Set [`LinearGradient::end`].
+    #[must_use]
+    pub fn with_end(mut self, v: Point) -> Self {
+        self.end = v;
+        self
+    }
 }
 
 impl LinearGradient {
@@ -480,6 +525,7 @@ impl LinearGradient {
 /// A radial gradient: colour stops sweep from `focal` (default
 /// `center`) outward to the circle of `radius` around `center`.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct RadialGradient {
     /// Circle centre, in user units.
     pub center: Point,
@@ -491,6 +537,22 @@ pub struct RadialGradient {
     pub stops: Vec<GradientStop>,
     /// What happens outside `0.0..=1.0`.
     pub spread: SpreadMethod,
+}
+
+impl RadialGradient {
+    /// Set [`RadialGradient::center`].
+    #[must_use]
+    pub fn with_center(mut self, v: Point) -> Self {
+        self.center = v;
+        self
+    }
+
+    /// Set [`RadialGradient::radius`].
+    #[must_use]
+    pub fn with_radius(mut self, v: f32) -> Self {
+        self.radius = v;
+        self
+    }
 }
 
 impl RadialGradient {
@@ -562,6 +624,7 @@ pub enum SpreadMethod {
 
 /// Stroke style.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct Stroke {
     /// Line width in user units.
     pub width: f32,
@@ -575,6 +638,15 @@ pub struct Stroke {
     pub miter_limit: f32,
     /// Dash pattern; `None` means solid.
     pub dash: Option<DashPattern>,
+}
+
+impl Stroke {
+    /// Set [`Stroke::width`].
+    #[must_use]
+    pub fn with_width(mut self, v: f32) -> Self {
+        self.width = v;
+        self
+    }
 }
 
 impl Stroke {
@@ -648,6 +720,7 @@ pub enum LineCap {
 
 /// Line-join style (SVG `stroke-linejoin`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum LineJoin {
     /// Sharp corner, limited by the miter limit.
     #[default]
