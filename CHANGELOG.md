@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/OxideAV/oxideav-svg/compare/v0.1.9...v0.2.0) - 2026-10-24
+
+### Other
+
+- <pattern> paint servers tiled over each referencing shape (SVG 2 §14.3) with units / viewBox / patternTransform / href chains; writer collapses the expansion back to the url(#id) reference
+- gradientUnits honoured — objectBoundingBox gradients bound per shape (SVG 2 §8.11 / §14.2), userSpaceOnUse percentages against the viewport, elliptical radials through a transformed soft mask
+- edition 2024, MSRV 1.95
+
 ### Fixed
 
 - `gradientUnits` is honoured (issue #13). The default `objectBoundingBox` binds `x1` / `y1` / `x2` / `y2` and `cx` / `cy` / `r` / `fx` / `fy` to the referencing shape's object bounding box — bare numbers and percentages alike (SVG 2 §8.11 / §14.2.2.1 / §14.2.3.1), with `gradientTransform` applied in box space — and the scene graph carries the result in the shape's own user space, so a renderer that only knows user units paints the gradient where SVG puts it. Previously every gradient was treated as `userSpaceOnUse`, so a default `x2="1"` gradient spanned one user unit. Under `userSpaceOnUse` a percentage now resolves against the SVG viewport (`%` was read as a bare number before). The bounding box is the tight box of the geometry (Bézier and elliptical-arc extrema, not control points; stroke excluded, §8.10), computed per shape (`bbox::BBox`).
