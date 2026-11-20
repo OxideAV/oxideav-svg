@@ -102,16 +102,13 @@ fn baseline_extent() -> (f32, f32) {
     (leftmost(&xs), rightmost(&xs))
 }
 
-/// `<text textLength="300">` (no `lengthAdjust`) — the chunk extent
-/// (rightmost glyph origin minus leftmost) must match the requested
-/// 300 user units regardless of the natural glyph advance. The
-/// leftmost glyph stays at the `<text>` x origin (text-anchor defaults
-/// to `start`).
-///
-/// Note: `emit_run` advances the pen to the LAST glyph's origin (not
-/// past the last glyph's own advance) per the round-2 implementation
-/// note in `text.rs`, so the chunk's natural extent is exactly
-/// `rightmost_glyph_x − leftmost_glyph_x` from the baseline run.
+/// `<text textLength="300">` (no `lengthAdjust`) — §11.2.1 defines
+/// `textLength` as the sum of all the advance values, so the extent
+/// from the first glyph's origin to the END of the last glyph's
+/// advance must be 300 user units. With `lengthAdjust="spacing"` the
+/// glyphs keep their natural advance, so the last glyph's origin sits
+/// one natural advance short of the target. The leftmost glyph stays
+/// at the `<text>` x origin (text-anchor defaults to `start`).
 #[test]
 fn text_length_rescales_chunk_width_spacing_default() {
     install_resolver();
@@ -136,7 +133,9 @@ fn text_length_rescales_chunk_width_spacing_default() {
 
     let left = leftmost(&xs);
     let right = rightmost(&xs);
-    let adjusted_w = right - left;
+    // "ABCDE" in the monospaced fixture: four origin-to-origin steps.
+    let advance = baseline_w / 4.0;
+    let adjusted_w = right - left + advance;
     assert!(
         (left - 100.0).abs() < 1e-3,
         "leftmost glyph should sit at x=100 for start anchor; got {left}"
@@ -178,12 +177,9 @@ fn length_adjust_spacing_and_glyphs_stretches_outlines() {
         "expected glyph placements for spacingAndGlyphs run"
     );
 
-    // The scale factor `s` is the ratio of the target width (after
-    // accounting for the per-glyph advance subtraction is moot here
-    // because the scale is computed on the chunk extent only). For
-    // monospaced "ABCDE" at the same font-size, the chunk extent is
-    // `4 * per_glyph_advance = baseline_w` so `s = 300 / baseline_w`.
-    let expected_s = 300.0 / baseline_w;
+    // The scale factor is the target over the natural advance sum:
+    // five advances for "ABCDE" (`baseline_w` spans four of them).
+    let expected_s = 300.0 / (baseline_w * 5.0 / 4.0);
     for (a, _, _) in &placements {
         assert!(
             (a - expected_s).abs() < 1e-3,
@@ -248,16 +244,15 @@ fn per_tspan_text_length_isolates_to_its_chunk() {
     let second = &sorted[5..];
 
     let first_w = rightmost(first) - leftmost(first);
-    let second_w = rightmost(second) - leftmost(second);
+    // Advance sum: origin-to-origin extent plus the last advance.
+    let second_w = rightmost(second) - leftmost(second) + baseline_w / 4.0;
 
     // First chunk: natural width, no rescaling.
     assert!(
         (first_w - baseline_w).abs() < 1.0,
         "first chunk should keep natural width {baseline_w}; got {first_w}"
     );
-    // Second chunk: rescaled to ≈ 200 (the chunk extent is
-    // `rightmost − leftmost` glyph-origin, matching how the rescale
-    // pass treats `chunk.x_end − chunk.x_origin`).
+    // Second chunk: its advance sum is rescaled to ≈ 200.
     assert!(
         (second_w - 200.0).abs() < 1.0,
         "second chunk should rescale to ≈ 200; got {second_w}"

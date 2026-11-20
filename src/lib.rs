@@ -51,18 +51,16 @@
 //!   `skewX` / `skewY`).
 //! * Colour values: CSS Color L3 named colours, `#RGB`, `#RGBA`,
 //!   `#RRGGBB`, `#RRGGBBAA`, `rgb()` / `rgba()`, `none`,
-//!   `url(#id)`, `currentColor` (resolved to opaque black in round 1).
+//!   `url(#id)`, `currentColor` (the inherited `color` property).
 //!
 //! # Round 2 additions
 //!
-//! * `<text>` / `<tspan>` — vector-first via
-//!   [`oxideav-scribe`](https://crates.io/crates/oxideav-scribe)'s
-//!   `Shaper::shape_to_paths`. Caller installs a font resolver
-//!   ([`text::set_font_resolver`]) once at startup; SVG-side parsing
-//!   extracts `font-family` / `font-size` / `x` / `y` / inline content
-//!   (and nested `<tspan dx dy>`) and emits positioned glyph PathNodes
-//!   wrapped in a Group at the text origin. Gated behind the
-//!   on-by-default `text` cargo feature.
+//! * `<text>` / `<tspan>` / `<textPath>` — the SVG 2 chapter 11 layout
+//!   algorithm over
+//!   [`oxideav-scribe`](https://crates.io/crates/oxideav-scribe)
+//!   shaping (see [`text`]). The caller installs a font hook
+//!   ([`text::set_font_provider`] / [`text::set_font_resolver`]) once
+//!   at startup. Gated behind the on-by-default `text` cargo feature.
 //! * `<filter>` graceful pass-through. `<filter id="...">` definitions
 //!   are captured into a side table; `filter="url(#id)"` on elements
 //!   is recognised and wraps content in an extra `Group` so the
@@ -457,10 +455,6 @@
 //!   (typed [`crate::defs::MarkerDef`] + verbatim round-trip via
 //!   [`crate::preserved::PreservedExtras::markers`]); the vertex-binding
 //!   of the `marker-*` properties on shapes is the remaining followup.
-//! * `<text>` `textPath` (SVG 2 §11.8) — text-on-path layout **landed
-//!   in round 128** (`method="align"` semantics; the §11.8.2
-//!   `method="stretch"` per-glyph outline warping is the remaining
-//!   refinement).
 //! * Live evaluation of pseudo-elements (`::before` / `::after`) into
 //!   synthesised boxes — also a renderer-side concern (oxideav-raster).
 //!
@@ -617,6 +611,7 @@ pub mod preserved;
 pub mod registry;
 #[cfg(feature = "text")]
 pub mod text;
+pub mod text_style;
 #[doc(hidden)]
 pub mod transform;
 

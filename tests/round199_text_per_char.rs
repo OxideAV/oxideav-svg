@@ -391,21 +391,12 @@ fn empty_rotate_attribute_is_no_op() {
     );
 }
 
-/// Round-176 §11.5 anchored-chunk semantics still hold when a tspan
-/// carries `x="…"` as a multi-value list — the FIRST value of the list
-/// opens a new chunk (matching the §11.5 "absolute positioning
-/// adjustment" rule) and the chunk-anchor shift composes correctly with
-/// per-character `x` placements.
-///
-/// Under `text-anchor="end"`, the chunk's extent equals
-/// `pen.x at chunk close − chunk origin`; with the C glyph's
-/// post-advance pen position factored in (per the round-199
-/// per-character convention), the shift evaluates to `-(200 − 100 +
-/// adv) = -(100 + adv)`. The post-shift positions of B and C are
-/// therefore `100 − (100 + adv) = -adv` and `200 − (100 + adv) =
-/// 100 − adv` respectively — a 100-px gap between them that survives
-/// the anchor shift unchanged (proof the chunk's per-character layout
-/// is faithfully reflected through the anchor pass).
+/// §11.5 anchored chunks with a multi-value `x` list on a tspan: every
+/// character that receives an absolute `x` starts its own anchored
+/// chunk ("Set the anchored chunk flag … if i < new_chunk_count"), so
+/// under `text-anchor="end"` each of `A`, `B` and `C` is a one-glyph
+/// chunk whose END edge sits on its own x — the glyph origin lands one
+/// advance to the left of 0, 100 and 200 respectively.
 #[test]
 fn tspan_list_x_first_value_opens_chunk() {
     install_resolver();
@@ -418,39 +409,14 @@ fn tspan_list_x_first_value_opens_chunk() {
         .collect();
     assert_eq!(xs.len(), 3, "expected 3 glyphs; got {}", xs.len());
     let adv = natural_advance();
-    // Chunk 0 ('A'): a single glyph under end-anchor with the
-    // round-2 legacy `pen sits at last visible glyph origin`
-    // convention has extent 0, so the shift is 0 and A stays at its
-    // origin x=0. (This matches the round-176 baseline for any
-    // single-glyph chunk.)
-    assert!(
-        xs[0].abs() < 1e-3,
-        "char A under end-anchor should sit at 0; got {}",
-        xs[0]
-    );
-    // Chunk 1 ('B','C'): origin 100; post-walk x_end = pen.x = 200 +
-    // adv (the C-glyph advance was retained because the run carried
-    // a per-character override). Extent = 100 + adv; shift = -(100 +
-    // adv). B and C therefore land at:
-    //   B: 100 − (100 + adv) = −adv
-    //   C: 200 − (100 + adv) = 100 − adv
-    // The crucial invariant: the gap between B and C is exactly 100
-    // px (the spread the author requested via `x="100 200"`),
-    // independent of the anchor shift.
-    let expected_b = -adv;
-    let expected_c = 100.0 - adv;
-    assert!(
-        (xs[1] - expected_b).abs() < 1e-3,
-        "char B should land at -adv ({}); got {}",
-        expected_b,
-        xs[1]
-    );
-    assert!(
-        (xs[2] - expected_c).abs() < 1e-3,
-        "char C should land at 100-adv ({}); got {}",
-        expected_c,
-        xs[2]
-    );
+    for (i, origin) in [0.0f32, 100.0, 200.0].into_iter().enumerate() {
+        assert!(
+            (xs[i] - (origin - adv)).abs() < 1e-3,
+            "glyph {i} should end at x={origin} (origin at {}); got {}",
+            origin - adv,
+            xs[i]
+        );
+    }
     let gap = xs[2] - xs[1];
     assert!(
         (gap - 100.0).abs() < 1e-3,

@@ -1484,6 +1484,18 @@ pub struct PaintState {
     /// round-trips the source attribute via the
     /// [`crate::preserved::DominantBaselineBinding`] side-channel.
     pub dominant_baseline: DominantBaseline,
+    /// The `color` property (inherited; initial black) — what the
+    /// `currentColor` paint keyword resolves to (SVG 2 §13.2).
+    pub color: Rgba,
+    /// `fill` is `currentColor`: it follows `color` down the tree.
+    pub fill_is_current_color: bool,
+    /// `stroke` is `currentColor`.
+    pub stroke_is_current_color: bool,
+    /// Inherited text properties (SVG 2 §11.10: `font-family`,
+    /// `font-style`, `font-weight`, `letter-spacing`, `word-spacing`,
+    /// `writing-mode`, `direction`, `white-space`, `xml:space`, …).
+    /// Consumed by the `<text>` layout engine.
+    pub text: crate::text_style::TextProps,
 }
 
 impl Default for PaintState {
@@ -1549,6 +1561,10 @@ impl Default for PaintState {
             // before applying the element's own attribute (matching
             // the `display` / `vector-effect` / `overflow` resets).
             dominant_baseline: DominantBaseline::Auto,
+            color: Rgba::opaque(0, 0, 0),
+            fill_is_current_color: false,
+            stroke_is_current_color: false,
+            text: crate::text_style::TextProps::default(),
         }
     }
 }
@@ -1621,6 +1637,11 @@ impl PaintState {
         // side-channel captures the source attribute on its own emit
         // slot instead.
         s.dominant_baseline = DominantBaseline::Auto;
+        // `opacity` is NOT inherited (SVG 2 §13.6 / CSS Color: it
+        // applies to the element as a group). Without the reset a
+        // `<g opacity="0.5">` would hand 0.5 to every nested group and
+        // the two would multiply.
+        s.opacity = 1.0;
         let el = mctx.el;
         // 1) presentation attributes from `el`. SVG 2 §4.2 (attribute
         //    syntax): a presentation attribute whose value fails to
@@ -1628,8 +1649,7 @@ impl PaintState {
         //    initial value" — it is not a document error. Apply on a
         //    scratch copy so a failed parse leaves the other fields of
         //    the partially-applied property untouched.
-        for (name, _) in &el.attrs {
-            let value = attr(el, name).unwrap_or("");
+        for (name, value) in &el.attrs {
             let mut trial = s.clone();
             match self.apply_one(&mut trial, name, value) {
                 Ok(()) => s = trial,
@@ -1654,9 +1674,37 @@ impl PaintState {
     fn apply_one(&self, s: &mut PaintState, name: &str, value: &str) -> Result<()> {
         let lower = name.to_ascii_lowercase();
         match lower.as_str() {
-            "fill" => s.fill = parse_paint(value)?,
+            // `currentColor` (SVG 2 §13.2) is the element's `color`;
+            // it keeps following `color` in descendants that inherit
+            // the paint.
+            "fill" => {
+                s.fill_is_current_color = value.trim().eq_ignore_ascii_case("currentcolor");
+                s.fill = if s.fill_is_current_color {
+                    PaintValue::Color(s.color)
+                } else {
+                    parse_paint(value)?
+                };
+            }
             "fill-opacity" => s.fill_opacity = parse_opacity(value)?,
-            "stroke" => s.stroke = parse_paint(value)?,
+            "stroke" => {
+                s.stroke_is_current_color = value.trim().eq_ignore_ascii_case("currentcolor");
+                s.stroke = if s.stroke_is_current_color {
+                    PaintValue::Color(s.color)
+                } else {
+                    parse_paint(value)?
+                };
+            }
+            "color" => {
+                if let PaintValue::Color(c) = parse_paint(value)? {
+                    s.color = c;
+                    if s.fill_is_current_color {
+                        s.fill = PaintValue::Color(c);
+                    }
+                    if s.stroke_is_current_color {
+                        s.stroke = PaintValue::Color(c);
+                    }
+                }
+            }
             "stroke-opacity" => s.stroke_opacity = parse_opacity(value)?,
             "stroke-width" => {
                 s.stroke_width = value
@@ -1941,10 +1989,12 @@ impl PaintState {
                     s.dominant_baseline = db;
                 }
             }
-            // Round-4 CSS may carry properties we don't yet model
-            // (font-family, transform, …). Ignore them rather than
-            // failing the document.
-            _ => {}
+            // Inherited text properties (SVG 2 §11.10); anything else
+            // is a property the state does not model — ignored rather
+            // than failing the document.
+            other => {
+                s.text.apply(other, value);
+            }
         }
         Ok(())
     }
@@ -2355,6 +2405,179 @@ fn masked_paint_node(mask: PathNode, transform: Transform2D, paint: Paint, exten
     }
 }
 
+/// Compose one geometry's fill and stroke layers into a scene node in
+/// SVG 2 §13.8 paint order. `fill` / `stroke` are the plain paint
+/// slots (opaque white where the side paints through a soft mask —
+/// [`ShapePaint::Transformed`] / [`ShapePaint::Pattern`]); `bbox` is the
+/// object bounding box the paint servers were bound to. Returns the
+/// node plus whether the fill / stroke side went through a mask.
+#[allow(clippy::too_many_arguments)]
+fn compose_painted_geometry(
+    path: Path,
+    state: &PaintState,
+    bbox: Option<BBox>,
+    fill_sp: ShapePaint,
+    stroke_sp: ShapePaint,
+    fill: Option<Paint>,
+    stroke: Option<Stroke>,
+    ctx: &mut ParseContext,
+) -> (Node, bool, bool) {
+    let fill_masked = matches!(
+        fill_sp,
+        ShapePaint::Transformed { .. } | ShapePaint::Pattern(_)
+    );
+    let stroke_masked = matches!(
+        stroke_sp,
+        ShapePaint::Transformed { .. } | ShapePaint::Pattern(_)
+    );
+    let node = if fill_masked || stroke_masked {
+        // Round 480 — at least one side paints through a soft
+        // mask (see `masked_paint_node`). Each side becomes its
+        // own layer — a single-purpose PathNode for a plain
+        // paint, a SoftMask for a transformed one — composited
+        // in §13.8 paint order inside an identity group.
+        let fill_extent = bbox.unwrap_or(BBox::new(0.0, 0.0, 0.0, 0.0));
+        // The stroke reaches past the geometry box by half the
+        // width, more at a mitred corner — cover generously, the
+        // mask bounds what is actually painted.
+        let stroke_reach = stroke
+            .as_ref()
+            .map(|s| s.width.abs() * s.miter_limit.max(1.0))
+            .unwrap_or(0.0);
+        let stroke_extent = fill_extent.expand(stroke_reach);
+        let fill_layer = fill.and_then(|f| {
+            let node = PathNode {
+                path: path.clone(),
+                fill: Some(f),
+                stroke: None,
+                fill_rule: state.fill_rule,
+            };
+            match fill_sp {
+                ShapePaint::Transformed { transform, paint } => {
+                    Some(masked_paint_node(node, transform, paint, fill_extent))
+                }
+                ShapePaint::Pattern(pat) => pattern_layer_node(
+                    node,
+                    &pat,
+                    bbox,
+                    fill_extent,
+                    state.fill_opacity,
+                    &mut ctx.pattern_tile_budget,
+                ),
+                _ => Some(Node::Path(node)),
+            }
+        });
+        let stroke_layer = stroke.and_then(|s| {
+            let node = PathNode {
+                path: path.clone(),
+                fill: None,
+                stroke: Some(s),
+                fill_rule: state.fill_rule,
+            };
+            match stroke_sp {
+                ShapePaint::Transformed { transform, paint } => {
+                    Some(masked_paint_node(node, transform, paint, stroke_extent))
+                }
+                ShapePaint::Pattern(pat) => pattern_layer_node(
+                    node,
+                    &pat,
+                    bbox,
+                    stroke_extent,
+                    state.stroke_opacity,
+                    &mut ctx.pattern_tile_budget,
+                ),
+                _ => Some(Node::Path(node)),
+            }
+        });
+        let children: Vec<Node> = if state.paint_order.stroke_before_fill() {
+            stroke_layer.into_iter().chain(fill_layer).collect()
+        } else {
+            fill_layer.into_iter().chain(stroke_layer).collect()
+        };
+        Node::Group(Group {
+            transform: Transform2D::identity(),
+            opacity: 1.0,
+            clip: None,
+            children,
+            cache_key: None,
+        })
+    } else if state.paint_order.stroke_before_fill() && fill.is_some() && stroke.is_some() {
+        // Split: stroke-only PathNode painted first, fill-only
+        // PathNode painted second. Both reference the same
+        // geometric path; the stroke-only's `fill` is None so
+        // the rasteriser does not double-paint the interior,
+        // and the fill-only's `stroke` is None so the stroke
+        // does not also re-paint on top.
+        let stroke_node = PathNode {
+            path: path.clone(),
+            fill: None,
+            stroke: stroke.clone(),
+            fill_rule: state.fill_rule,
+        };
+        let fill_node = PathNode {
+            path,
+            fill,
+            stroke: None,
+            fill_rule: state.fill_rule,
+        };
+        Node::Group(Group {
+            transform: Transform2D::identity(),
+            opacity: 1.0,
+            clip: None,
+            children: vec![Node::Path(stroke_node), Node::Path(fill_node)],
+            cache_key: None,
+        })
+    } else {
+        Node::Path(PathNode {
+            path,
+            fill,
+            stroke,
+            fill_rule: state.fill_rule,
+        })
+    };
+    (node, fill_masked, stroke_masked)
+}
+
+/// Paint a text-derived outline (`path`, in the `<text>` element's user
+/// space) with the cascaded `fill` / `stroke` of `state`, binding
+/// `objectBoundingBox` paint servers to `bbox` — the bounding box of
+/// the whole `<text>` element (SVG 2 §11.1: "relative to the entire
+/// 'text' element in all cases"). Glyph outlines always fill non-zero.
+#[cfg(feature = "text")]
+pub(crate) fn paint_text_geometry(
+    path: Path,
+    state: &PaintState,
+    bbox: Option<BBox>,
+    ctx: &mut ParseContext,
+) -> Option<Node> {
+    if state.visibility == Visibility::Hidden || path.commands.is_empty() {
+        return None;
+    }
+    let fill_sp = state.fill_for_shape(bbox, ctx);
+    let stroke_sp = state.stroke_for_shape(bbox, ctx);
+    let white = Paint::Solid(Rgba::opaque(255, 255, 255));
+    let fill: Option<Paint> = match &fill_sp {
+        ShapePaint::None => None,
+        ShapePaint::Paint(p) => Some(p.clone()),
+        ShapePaint::Transformed { .. } | ShapePaint::Pattern(_) => Some(white.clone()),
+    };
+    let stroke: Option<Stroke> = match &stroke_sp {
+        ShapePaint::None => None,
+        ShapePaint::Paint(p) => Some(state.stroke_with_paint(p.clone())),
+        ShapePaint::Transformed { .. } | ShapePaint::Pattern(_) => {
+            Some(state.stroke_with_paint(white))
+        }
+    };
+    if fill.is_none() && stroke.is_none() {
+        return None;
+    }
+    let mut state = state.clone();
+    state.fill_rule = FillRule::NonZero;
+    let (node, _, _) =
+        compose_painted_geometry(path, &state, bbox, fill_sp, stroke_sp, fill, stroke, ctx);
+    Some(node)
+}
+
 fn apply_alpha(color: Rgba, alpha: f32) -> Rgba {
     let a = ((color.a as f32 / 255.0) * alpha.clamp(0.0, 1.0)) * 255.0;
     Rgba::new(color.r, color.g, color.b, a.round() as u8)
@@ -2601,6 +2824,10 @@ pub struct ParseContext {
     /// end of each `parse_element_to_node_ctx` call (the drain matches
     /// the round-221 .. round-261 flows).
     pub pending_dominant_baseline: Option<String>,
+    /// Per-document text caches (resolved fonts and glyph outlines) so
+    /// a font is resolved once per document, not once per text run.
+    #[cfg(feature = "text")]
+    pub(crate) text_caches: crate::text::TextCaches,
     /// Round 118 — "next element is a `<use>` instance root" flag.
     /// SVG 1.1 §11.5: "setting display: none on a `<path>` element will
     /// prevent that element from getting rendered directly onto the
@@ -2745,6 +2972,8 @@ impl ParseContext {
             pending_cursor: None,
             dominant_baselines: Vec::new(),
             pending_dominant_baseline: None,
+            #[cfg(feature = "text")]
+            text_caches: crate::text::TextCaches::default(),
             uses: Vec::new(),
             switches: Vec::new(),
             texts: Vec::new(),
@@ -4875,15 +5104,9 @@ fn parse_element_to_node_ctx_inner(
             // purpose of node emission (the markers slot is otherwise
             // a no-op today, as documented at the
             // [`crate::defs::MarkerDef`] capture site).
-            let fill_masked = matches!(
-                fill_sp,
-                ShapePaint::Transformed { .. } | ShapePaint::Pattern(_)
-            );
-            let stroke_masked = matches!(
-                stroke_sp,
-                ShapePaint::Transformed { .. } | ShapePaint::Pattern(_)
-            );
-            let inner_node = if fill_masked || stroke_masked {
+            let (inner_node, fill_masked, stroke_masked) =
+                compose_painted_geometry(path, &state, bbox, fill_sp, stroke_sp, fill, stroke, ctx);
+            if fill_masked || stroke_masked {
                 // The writer collapses this layer group back to one
                 // element referencing the source paint servers
                 // (`PaintRefBinding`); hand it the reference strings.
@@ -4893,115 +5116,11 @@ fn parse_element_to_node_ctx_inner(
                         .then(|| paint_ref_text(&state.stroke))
                         .flatten(),
                 ));
-                // Round 480 — at least one side paints through a soft
-                // mask (see `masked_paint_node`). Each side becomes its
-                // own layer — a single-purpose PathNode for a plain
-                // paint, a SoftMask for a transformed one — composited
-                // in §13.8 paint order inside an identity group.
-                let fill_extent = bbox.unwrap_or(BBox::new(0.0, 0.0, 0.0, 0.0));
-                // The stroke reaches past the geometry box by half the
-                // width, more at a mitred corner — cover generously, the
-                // mask bounds what is actually painted.
-                let stroke_reach = stroke
-                    .as_ref()
-                    .map(|s| s.width.abs() * s.miter_limit.max(1.0))
-                    .unwrap_or(0.0);
-                let stroke_extent = fill_extent.expand(stroke_reach);
-                let fill_layer = fill.and_then(|f| {
-                    let node = PathNode {
-                        path: path.clone(),
-                        fill: Some(f),
-                        stroke: None,
-                        fill_rule: state.fill_rule,
-                    };
-                    match fill_sp {
-                        ShapePaint::Transformed { transform, paint } => {
-                            Some(masked_paint_node(node, transform, paint, fill_extent))
-                        }
-                        ShapePaint::Pattern(pat) => pattern_layer_node(
-                            node,
-                            &pat,
-                            bbox,
-                            fill_extent,
-                            state.fill_opacity,
-                            &mut ctx.pattern_tile_budget,
-                        ),
-                        _ => Some(Node::Path(node)),
-                    }
-                });
-                let stroke_layer = stroke.and_then(|s| {
-                    let node = PathNode {
-                        path: path.clone(),
-                        fill: None,
-                        stroke: Some(s),
-                        fill_rule: state.fill_rule,
-                    };
-                    match stroke_sp {
-                        ShapePaint::Transformed { transform, paint } => {
-                            Some(masked_paint_node(node, transform, paint, stroke_extent))
-                        }
-                        ShapePaint::Pattern(pat) => pattern_layer_node(
-                            node,
-                            &pat,
-                            bbox,
-                            stroke_extent,
-                            state.stroke_opacity,
-                            &mut ctx.pattern_tile_budget,
-                        ),
-                        _ => Some(Node::Path(node)),
-                    }
-                });
-                let children: Vec<Node> = if state.paint_order.stroke_before_fill() {
-                    stroke_layer.into_iter().chain(fill_layer).collect()
-                } else {
-                    fill_layer.into_iter().chain(stroke_layer).collect()
-                };
-                Node::Group(Group {
-                    transform: Transform2D::identity(),
-                    opacity: 1.0,
-                    clip: None,
-                    children,
-                    cache_key: None,
-                })
-            } else if state.paint_order.stroke_before_fill() && fill.is_some() && stroke.is_some() {
-                // Split: stroke-only PathNode painted first, fill-only
-                // PathNode painted second. Both reference the same
-                // geometric path; the stroke-only's `fill` is None so
-                // the rasteriser does not double-paint the interior,
-                // and the fill-only's `stroke` is None so the stroke
-                // does not also re-paint on top.
-                let stroke_node = PathNode {
-                    path: path.clone(),
-                    fill: None,
-                    stroke: stroke.clone(),
-                    fill_rule: state.fill_rule,
-                };
-                let fill_node = PathNode {
-                    path,
-                    fill,
-                    stroke: None,
-                    fill_rule: state.fill_rule,
-                };
-                Node::Group(Group {
-                    transform: Transform2D::identity(),
-                    opacity: 1.0,
-                    clip: None,
-                    children: vec![Node::Path(stroke_node), Node::Path(fill_node)],
-                    cache_key: None,
-                })
-            } else {
-                Node::Path(PathNode {
-                    path,
-                    fill,
-                    stroke,
-                    fill_rule: state.fill_rule,
-                })
-            };
+            }
             // If element-level transform or opacity differs from
             // parent's, wrap in a tiny one-child group so the
             // round-trip preserves them.
-            let needs_wrap =
-                transform.is_some() || (state.opacity - parent_state.opacity).abs() > f32::EPSILON;
+            let needs_wrap = transform.is_some() || (state.opacity - 1.0).abs() > f32::EPSILON;
             let inner = if needs_wrap {
                 Node::Group(Group {
                     transform: transform.unwrap_or_else(Transform2D::identity),
@@ -5027,7 +5146,17 @@ fn parse_element_to_node_ctx_inner(
             // (canonicalised to the spec's camelCase). Absent /
             // `inherit` / unrecognised tokens skip recording.
             ctx.pending_text_rendering = capture_text_rendering_attr(el);
-            crate::text::parse_text_element(el, &state, ctx)?
+            let mut node = crate::text::parse_text_element_ctx(el, &state, ctx, mctx)?;
+            // The element's own `transform` and `opacity` apply to the
+            // text as a whole (the same wrapping the shape branch
+            // does).
+            if let Some(Node::Group(g)) = node.as_mut() {
+                if let Some(t) = attr(el, "transform") {
+                    g.transform = transform_or_initial(t);
+                }
+                g.opacity = state.opacity;
+            }
+            node
         }
         // <text> without the `text` feature: no glyph outlines are
         // shaped, but the element keeps its scene-graph slot as an
@@ -6905,6 +7034,12 @@ pub fn derive_child_ctx(
     for (name, value) in declarations_for(mctx, sheet) {
         if name.eq_ignore_ascii_case("font-size") {
             effective = Some(value);
+        } else if name.eq_ignore_ascii_case("font")
+            && let Some(size) = crate::text_style::font_shorthand_size(&value)
+        {
+            // CSS `font` shorthand carries the size as its one
+            // mandatory component.
+            effective = Some(size.to_string());
         }
     }
     let raw = match effective {
@@ -6916,6 +7051,27 @@ pub fn derive_child_ctx(
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return *parent;
+    }
+    // CSS Fonts absolute / relative size keywords (`medium` is the
+    // 16 px initial value; each step scales by 1.2).
+    let keyword_px = match trimmed.to_ascii_lowercase().as_str() {
+        "xx-small" => Some(9.0),
+        "x-small" => Some(10.0),
+        "small" => Some(13.0),
+        "medium" => Some(16.0),
+        "large" => Some(18.0),
+        "x-large" => Some(24.0),
+        "xx-large" => Some(32.0),
+        "xxx-large" => Some(48.0),
+        "larger" => Some(parent.font_size_px * 1.2),
+        "smaller" => Some(parent.font_size_px / 1.2),
+        _ => None,
+    };
+    if let Some(px) = keyword_px {
+        return ResolveContext {
+            font_size_px: px,
+            ..*parent
+        };
     }
     let parsed = match parse_length(trimmed) {
         Ok(l) => l,
