@@ -20,7 +20,7 @@ features = ["text"]
 
 # Builds the `FaceChain` the `text` target's font hook hands out.
 [dependencies.oxideav-scribe]
-version = "0.1.1"
+version = "0.1.10"
 
 # Prevent this from interfering with workspaces
 [workspace]

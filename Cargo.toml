@@ -34,10 +34,12 @@ text = ["dep:oxideav-scribe", "registry"]
 # framework dependency tree entirely. `Node::SoftMask` + `MaskKind`
 # (used by the `<mask>` / `<clipPath>` bridge) need oxideav-core 0.1.15+.
 oxideav-core = { version = "0.1", optional = true }
-# Vector-text APIs (`Face::glyph_node` + `Shaper::shape_to_paths`) land
-# in 0.1.1; gated behind the `text` feature so the SVG crate stays
-# usable when callers don't need text shaping.
-oxideav-scribe = { version = "0.1.1", optional = true }
+# Text layout shapes through `FaceChain::shape` /
+# `shape_with_features`, reads `Face::glyph_node` outlines and runs the
+# bidirectional algorithm from scribe's `bidi` module — all present in
+# 0.1.10. Gated behind the `text` feature so the SVG crate stays usable
+# when callers don't need text shaping.
+oxideav-scribe = { version = "0.1.10", optional = true }
 # `.svgz` (gzip-compressed SVG, RFC 1952) inflate / deflate through the
 # workspace's compression provider. Only the gzip algorithm is needed;
 # the capped decoder is the decompression-bomb guard.
