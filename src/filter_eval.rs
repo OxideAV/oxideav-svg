@@ -1829,10 +1829,9 @@ impl Turbulence {
                 // Draw a non-zero gradient vector; components are mapped
                 // from the LCG into [−1, 1) at 1/BSize resolution.
                 loop {
-                    for j in 0..2 {
+                    for component in &mut t.gradient[k][i] {
                         s = random_step(s);
-                        t.gradient[k][i][j] = ((s % (B_SIZE as i64 + B_SIZE as i64))
-                            - B_SIZE as i64) as f64
+                        *component = ((s % (B_SIZE as i64 + B_SIZE as i64)) - B_SIZE as i64) as f64
                             / B_SIZE as f64;
                     }
                     if !(t.gradient[k][i][0] == 0.0 && t.gradient[k][i][1] == 0.0) {
@@ -1866,10 +1865,8 @@ impl Turbulence {
         // half for both lattice and gradient tables.
         for i in 0..B_SIZE + 2 {
             t.lattice[B_SIZE + i] = t.lattice[i];
-            for k in 0..4 {
-                for j in 0..2 {
-                    t.gradient[k][B_SIZE + i][j] = t.gradient[k][i][j];
-                }
+            for channel in &mut t.gradient {
+                channel[B_SIZE + i] = channel[i];
             }
         }
         t
