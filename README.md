@@ -436,6 +436,60 @@ keep their own colours under a plain fill).
   round-trip; their visual effect is consumed downstream by
   `oxideav-raster` / `oxideav-scribe`.
 
+## Performance
+
+`benches/pipeline.rs` (dependency-free, `cargo bench --bench pipeline`)
+times the stages over four generated document sets and the in-crate
+filter evaluators. Before → after the performance pass that followed the
+text-layout work, on
+one Apple-silicon machine shared with other builds — each figure is the
+median of three interleaved rounds of nine runs, built standalone
+against the published dependencies:
+
+| Set | Stage | Before | After | |
+|---|---|---:|---:|---:|
+| icons — 200 stroke icons, 132 KB | `parse` | 3.76 ms | 1.37 ms | 2.7× |
+| map — one 8.7 MB document, 18 000 styled paths + 480 `<use>` | XML tree | 10.2 ms | 5.5 ms | 1.8× |
+| | `parse` (XML + cascade + geometry + scene) | 411 ms | 50.9 ms | 8.1× |
+| | hand-off (`VectorFrame::from`) | 2.3 ms | 2.3 ms | — |
+| text — 100 anchored lines, 1 200 words, 300 `<tspan>` | `parse` (incl. shaping + layout) | 81.1 ms | 6.4 ms | 12.7× |
+| filters — 400 filtered groups, 12 six-primitive filters | `parse` | 3.49 ms | 0.83 ms | 4.2× |
+| filter graph, 8 primitives, 256 × 256 (1×) | evaluate | 5.84 ms | 2.90 ms | 2.0× |
+| filter graph, 8 primitives, 1024 × 1024 (4×) | evaluate | 308 ms | 136 ms | 2.3× |
+| | — with a 4-thread budget | — | 49.7 ms | 6.2× |
+
+What changed (output unchanged throughout — the filter routines and the
+number parser are tested bit for bit against the forms they replace):
+
+* **One cascade pass per element.** An element's matched declarations
+  and cascaded state were recomputed for the `display` test, the
+  element's branch, its font size, its `d` property and its keyframes;
+  they are computed once and shared. The cascade no longer clones the
+  whole state per attribute.
+* **No allocation to compare names.** Attribute lookup and tag tests
+  compare in place; selectors are rejected on their subject's tag / id /
+  class before being walked.
+* **XML without re-validation.** Names, values and text are sliced from
+  the already-valid input instead of re-checking UTF-8 per slice;
+  entity decoding copies straight through when there is no `&`.
+* **Short decimals parsed exactly.** A path number of at most seven
+  significant digits is `mantissa / 10^k` — two exact `f32`s, one
+  correctly rounded division.
+* **Fonts and glyphs resolved once per document**, not once per text
+  run (the 12.7× above is mostly a font no longer being parsed 400
+  times).
+* **Filters.** The box-blur window sum keeps its tap order but is built
+  a row at a time into two swapped buffers; `feMorphology` runs as two
+  1-D passes; 8-bit decode is tabulated; graph inputs are borrowed.
+
+Everything is serial by default. The one place a thread budget pays is
+the blur: `filter_eval::evaluate_filter_graph_threads(.., threads)` /
+`gaussian_blur_edge_threads` split the rows across that many scoped
+threads when the caller grants them, with identical output at every
+budget. Not taken: a sliding-window blur sum would make the blur
+independent of the radius but changes the last bits of the float sums,
+so the tap-ordered sum stays.
+
 ## Round-trip conformance
 
 A write-side conformance gate
@@ -499,10 +553,13 @@ explicit ceiling:
 A curated adversarial corpus plus a seeded byte-mutation fuzzer over the
 path/transform/length/paint/XML/document parsers (see
 `tests/round403_parser_robustness.rs`) enforce the no-panic invariant,
-and two `cargo fuzz` targets under `fuzz/` run it continuously:
+and three `cargo fuzz` targets under `fuzz/` run it continuously:
 `decode` (probe / info / decode* / parse* over raw bytes, default and
-tight limits) and `write_roundtrip` (the plain writer fixed point,
-`.svgz` round-trip and re-parseability of the extras writer's output).
+tight limits), `write_roundtrip` (the plain writer fixed point,
+`.svgz` round-trip and re-parseability of the extras writer's output)
+and `text` (a font is installed, so `<text>` / `<textPath>` shape real
+glyphs under position lists, `textLength`, vertical and bidirectional
+layout, paint servers, decorations and wrapping).
 
 ## Not yet supported
 
@@ -513,12 +570,27 @@ tight limits) and `write_roundtrip` (the plain writer fixed point,
   operators (whose mixing formulae live in the un-staged `[COMPOSITING-1]`
   / `[PORTERDUFF]` companion specs) and `feImage` external-reference
   resolution also remain rasteriser work.
-* Marker rendering, `textPath method="stretch"` per-glyph warping,
+* Marker rendering (`<marker>` definitions and the `marker-*`
+  references round-trip; nothing is drawn at the vertices),
   *painting* the captured `<image>` raster into vector space (the
   element itself is parsed + losslessly round-tripped — see **`<image>`
   capture** above), and live pseudo-element / stateful pseudo-class
   evaluation (selectors parse + round-trip; the synthesised-box renderer
   is `oxideav-raster` work).
+* Applying a `filter=` to its element: the scene graph has no filter
+  node, so a filtered element is handed over unfiltered (the graph is
+  parsed and the evaluators above can run it on pixels a rasteriser
+  supplies).
+* `vector-effect: non-scaling-stroke` (parsed and round-tripped; the
+  stroke still scales), text in a shape (`shape-inside`), and the
+  `:root` pseudo-class.
+
+Every example of the staged SVG 2 and Filter Effects specifications (99
+documents) parses and renders; the ones that differ from the
+specification's figures are the filter examples, the marker examples
+and the non-scaling-stroke example, for the reasons above, plus two
+whose markup is not a document (`<parent>`-rooted XML, an unclosed
+`<circle>`).
 
 ## License
 

@@ -47,6 +47,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `stroke-width`, `stroke-dasharray` and `stroke-dashoffset` accept CSS
   units and percentages.
 
+### Performance
+
+- `benches/pipeline.rs`: xml / parse / hand-off / write over icons, a
+  map-like 8.7 MB document, a text-heavy and a filter-heavy document,
+  plus the filter evaluators at 1× / 4×. Parse of the map document
+  411 ms → 51 ms, of the text document 81 ms → 6.4 ms, of 200 icons
+  3.8 ms → 1.4 ms; an eight-primitive filter graph at 1024 × 1024
+  308 ms → 136 ms (see the README table for the method). Output is
+  unchanged.
+- `filter_eval::evaluate_filter_graph_threads` /
+  `gaussian_blur_edge_threads` / `evaluate_gaussian_blur_node_threads`:
+  an explicit thread budget for the blur passes (serial by default,
+  identical output at every budget).
+
 ### Fixed
 
 - The outermost `<svg>` element's presentation attributes and CSS were
