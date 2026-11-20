@@ -19,8 +19,12 @@ static RESOLVER_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 fn install() {
     let _ = set_font_resolver(|family, _size| {
-        RESOLVER_CALLS.fetch_add(1, Ordering::SeqCst);
-        if family == "Fixture Mono" || family == "sans-serif" {
+        // Only the family one test reserves is counted, so tests
+        // running in parallel do not disturb the count.
+        if family == "Counted Mono" {
+            RESOLVER_CALLS.fetch_add(1, Ordering::SeqCst);
+        }
+        if family == "Fixture Mono" || family == "Counted Mono" || family == "sans-serif" {
             Face::from_ttf_bytes(FONT.to_vec()).ok().map(FaceChain::new)
         } else {
             None
@@ -323,25 +327,21 @@ fn missing_family_falls_back_down_the_list_then_to_sans_serif() {
 
 #[test]
 fn a_font_is_resolved_once_per_document() {
-    install();
-    let mut body = String::new();
+    let mut body = String::from("<g font-family=\"Counted Mono\">");
     for i in 0..50 {
         body.push_str(&format!(
             "<text x=\"0\" y=\"{}\">row <tspan fill=\"red\">{i}</tspan> text</text>",
             10 * i
         ));
     }
-    // Other tests share the counter; measure a delta on one thread of
-    // work and allow for their concurrent calls being few.
-    let before = RESOLVER_CALLS.load(Ordering::SeqCst);
+    body.push_str("</g>");
     let d = doc(&body);
-    let after = RESOLVER_CALLS.load(Ordering::SeqCst);
-    assert_eq!(d.root.children.len(), 50);
-    assert!(
-        after - before < 40,
-        "100 spans of one font must not resolve it 100 times ({} calls)",
-        after - before
-    );
+    let Node::Group(g) = &d.root.children[0] else {
+        panic!("the wrapping group");
+    };
+    assert_eq!(g.children.len(), 50);
+    // 150 spans, one font, one size: one resolver call.
+    assert_eq!(RESOLVER_CALLS.load(Ordering::SeqCst), 1);
 }
 
 #[test]
