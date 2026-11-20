@@ -39,6 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   then to `sans-serif` (for the older `set_font_resolver` too); italic,
   bold and small capitals are synthesised when the face lacks them.
 - `currentColor` resolves to the inherited `color` property.
+- Fuzz target `text`: the whole text pipeline on hostile markup with a
+  real font installed.
 - Auto-wrapped text: `inline-size` (SVG 2 §11.4.1) breaks lines at white
   space and between ideographs, in horizontal and vertical writing
   modes.
@@ -64,6 +66,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the `viewBox` size in user units.
 - CSS rules matching a `<use>` element were not inherited by its
   instance (only its presentation attributes were).
+- Writer fixed point: a clip inside `<mask>` content lost its
+  `clip-path=` reference (leaving an orphan `<clipPath>`), and an empty
+  `stroke-dasharray=""` parsed as an empty dash list instead of `none`
+  (both found by the `write_roundtrip` fuzz target).
 - `<text transform="…">` was ignored; text `opacity` was multiplied
   into the fill alpha per glyph instead of applied to the element.
 - `xml:space` never reached the cascade (the namespaced attribute name

@@ -10,11 +10,17 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 
-# Standalone build: the fuzz surface is the framework-free contract
-# layer + the vector document API, so no `oxideav-core` in the tree.
+# The `text` feature is on so the `text` target can shape real glyphs;
+# the other targets only touch the contract layer + the vector document
+# API.
 [dependencies.oxideav-svg]
 path = ".."
 default-features = false
+features = ["text"]
+
+# Builds the `FaceChain` the `text` target's font hook hands out.
+[dependencies.oxideav-scribe]
+version = "0.1.1"
 
 # Prevent this from interfering with workspaces
 [workspace]
@@ -42,5 +48,15 @@ doc = false
 [[bin]]
 name = "write_roundtrip"
 path = "fuzz_targets/write_roundtrip.rs"
+test = false
+doc = false
+
+# Text layout target: a font hook is installed, so `<text>` /
+# `<tspan>` / `<textPath>` run the whole SVG 2 chapter 11 pipeline
+# (white space, bidi, shaping, positioning, path placement, paint
+# servers, decorations) on hostile markup. Liveness only.
+[[bin]]
+name = "text"
+path = "fuzz_targets/text.rs"
 test = false
 doc = false

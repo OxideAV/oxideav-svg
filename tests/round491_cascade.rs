@@ -277,3 +277,39 @@ fn a_sizeless_document_resolves_percentages_against_the_default_viewport() {
     let b = oxideav_svg::bbox::BBox::of_path(&first_path(&d).path).unwrap();
     assert_eq!((b.width, b.height), (300.0, 150.0));
 }
+
+#[test]
+fn clip_inside_mask_content_is_a_writer_fixed_point() {
+    // Found by the write_roundtrip fuzz target: a nested `<svg>` (whose
+    // viewport clips) inside `<mask>` content registered a `<clipPath>`
+    // def the mask writer never referenced, so the def appeared on the
+    // first write and vanished on the second.
+    let src = br##"<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120">
+  <defs><mask id="m" mask-type="alpha"><svg width="60" height="60"><rect width="120" height="120" fill="#fff"/></svg></mask></defs>
+  <circle cx="60" cy="60" r="50" mask="url(#m)"/>
+</svg>"##;
+    let once = oxideav_svg::write(&parse(src).unwrap());
+    let twice = oxideav_svg::write(&parse(&once).unwrap());
+    assert_eq!(
+        String::from_utf8_lossy(&once),
+        String::from_utf8_lossy(&twice)
+    );
+    let text = String::from_utf8_lossy(&once);
+    assert!(
+        text.contains("<clipPath") && text.contains("clip-path=\"url(#"),
+        "{text}"
+    );
+}
+
+#[test]
+fn empty_dasharray_is_none() {
+    // Found by the write_roundtrip fuzz target: `stroke-dasharray=""`
+    // produced an empty dash list whose offset the writer emitted
+    // alone, then dropped on the next cycle.
+    let src = br##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><line x2="9" y2="9" stroke="#111" stroke-dasharray="" stroke-dashoffset="1"/></svg>"##;
+    let d = parse(src).unwrap();
+    assert!(first_path(&d).stroke.as_ref().unwrap().dash.is_none());
+    let once = oxideav_svg::write(&d);
+    let twice = oxideav_svg::write(&parse(&once).unwrap());
+    assert_eq!(once, twice);
+}

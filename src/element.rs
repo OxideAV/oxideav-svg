@@ -1760,7 +1760,8 @@ impl PaintState {
                                 .ok_or_else(|| Error::invalid("SVG: malformed stroke-dasharray"))
                         })
                         .collect();
-                    s.stroke_dasharray = Some(arr?);
+                    // An empty list is `none` (SVG 2 §13.5.6).
+                    s.stroke_dasharray = Some(arr?).filter(|a| !a.is_empty());
                 }
             }
             "stroke-dashoffset" => {

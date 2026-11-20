@@ -732,7 +732,7 @@ pub fn write_with_extras(frame: &SvgDocument, extras: &PreservedExtras) -> Vec<u
                 write_raw_element(&mut out, raw, 2);
                 continue;
             }
-            write_mask(&mut out, id, *kind, content, &gradients);
+            write_mask(&mut out, id, *kind, content, &gradients, &clips);
         }
         out.push_str("  </defs>\n");
     }
@@ -2569,6 +2569,7 @@ fn write_mask(
     kind: MaskKind,
     content: &Node,
     gradients: &GradientCollector,
+    clips: &ClipPathCollector,
 ) {
     let kind_attr = match kind {
         MaskKind::Luminance => "",
@@ -2579,13 +2580,14 @@ fn write_mask(
         escape_attr(id),
         kind_attr
     ));
-    // Mask content is emitted under the defs section. We pass empty
-    // clip / mask collectors here because nested clip-paths / masks
-    // inside a mask are an edge case (deferred): downstream rasterizer
-    // doesn't support them either. Round 13 — pass empty id_paths
-    // / animation maps too (the mask subtree is a def, not part of
-    // the live scene graph that animations attach to).
-    let empty_clips = ClipPathCollector::default();
+    // Mask content is emitted under the defs section. Clips inside it
+    // (a clipped group, the viewport clip of a nested `<svg>`) keep
+    // their `clip-path=` reference — their defs are registered by the
+    // collection walk and written before the masks, so dropping the
+    // reference left an orphan `<clipPath>` that vanished on the next
+    // write. Masks nested in a mask stay unsupported. Round 13 — pass
+    // empty id_paths / animation maps too (the mask subtree is a def,
+    // not part of the live scene graph that animations attach to).
     let empty_masks = MaskCollector::default();
     let empty_idx = EmitIndex::default();
     let mut empty_stack: Vec<usize> = Vec::new();
@@ -2608,7 +2610,7 @@ fn write_mask(
                 cg,
                 3,
                 gradients,
-                &empty_clips,
+                clips,
                 &empty_masks,
                 &empty_idx,
                 &mut empty_stack,
@@ -2619,7 +2621,7 @@ fn write_mask(
             content,
             3,
             gradients,
-            &empty_clips,
+            clips,
             &empty_masks,
             &empty_idx,
             &mut empty_stack,
