@@ -149,31 +149,17 @@ pub fn info_with(bytes: &[u8], opts: &DecodeOptions) -> Result<ImageInfo> {
         .map(str::trim)
         .filter(|s| !s.is_empty());
 
-    // The user-unit size exactly as `parse` stores it (numeric prefix,
-    // percentages → view box).
-    let user_width = user_unit_or_default(w_attr, view_box.map(|vb| vb.width).unwrap_or(0.0))?;
-    let user_height = user_unit_or_default(h_attr, view_box.map(|vb| vb.height).unwrap_or(0.0))?;
-
     // CSS px at 96 dpi (SVG 2 §8.6 / CSS Values L4 §6.1): absolute
     // units convert; relative ones fall back to the view box; a missing
-    // axis follows the view-box aspect ratio.
-    let w_px = w_attr.and_then(absolute_px);
-    let h_px = h_attr.and_then(absolute_px);
-    let (cw, ch) = match (w_px, h_px, view_box) {
-        (Some(w), Some(h), _) => (w, h),
-        (Some(w), None, Some(vb)) if vb.width > 0.0 => (w, w * vb.height / vb.width),
-        (None, Some(h), Some(vb)) if vb.height > 0.0 => (h * vb.width / vb.height, h),
-        (Some(w), None, _) => (w, 0.0),
-        (None, Some(h), _) => (0.0, h),
-        (None, None, Some(vb)) => (vb.width, vb.height),
-        (None, None, None) => (0.0, 0.0),
-    };
+    // axis follows the view-box aspect ratio. `parse` stores the same
+    // canvas in `SvgDocument::{width, height}`.
+    let (cw, ch) = root_canvas_px(w_attr, h_attr, view_box);
     let width = px_to_u32(cw);
     let height = px_to_u32(ch);
 
     let mut out = ImageInfo::new(width, height);
-    out.user_width = user_width;
-    out.user_height = user_height;
+    out.user_width = cw;
+    out.user_height = ch;
     out.view_box = view_box;
     out.compressed = compressed;
     out.has_xmp = has_element(&text, "xmpmeta") || has_element(&text, "RDF");
@@ -226,11 +212,26 @@ fn parse_view_box_attr(s: &str) -> Result<ViewBox> {
     Ok(ViewBox::new(nums[0], nums[1], nums[2], nums[3]))
 }
 
-fn user_unit_or_default(v: Option<&str>, default: f32) -> Result<f32> {
-    match v {
-        None => Ok(default),
-        Some(s) if s.ends_with('%') => Ok(default),
-        Some(s) => crate::element::parse_number(Some(s), default),
+/// The canvas of an outermost `<svg>` in CSS px from its `width` /
+/// `height` attributes and `viewBox`: absolute units convert at 96 dpi,
+/// percentages and font- / viewport-relative lengths are not intrinsic
+/// and fall back to the view box, and a single missing axis follows the
+/// view-box aspect ratio.
+pub(crate) fn root_canvas_px(
+    width: Option<&str>,
+    height: Option<&str>,
+    view_box: Option<ViewBox>,
+) -> (f32, f32) {
+    let w_px = width.map(str::trim).and_then(absolute_px);
+    let h_px = height.map(str::trim).and_then(absolute_px);
+    match (w_px, h_px, view_box) {
+        (Some(w), Some(h), _) => (w, h),
+        (Some(w), None, Some(vb)) if vb.width > 0.0 => (w, w * vb.height / vb.width),
+        (None, Some(h), Some(vb)) if vb.height > 0.0 => (h * vb.width / vb.height, h),
+        (Some(w), None, _) => (w, 0.0),
+        (None, Some(h), _) => (0.0, h),
+        (None, None, Some(vb)) => (vb.width, vb.height),
+        (None, None, None) => (0.0, 0.0),
     }
 }
 
@@ -437,10 +438,17 @@ mod tests {
         assert_eq!((i.width, i.height), (128, 64));
         let i = info(br#"<svg height="2em" viewBox="0 0 64 32"/>"#).unwrap();
         assert_eq!((i.width, i.height), (64, 32));
-        // `parse` keeps the numeric prefix as user units.
+        // Absolute units are CSS px at 96 dpi, for `parse` too.
         let i = info(br#"<svg width="10cm" height="5cm"/>"#).unwrap();
-        assert_eq!((i.user_width, i.user_height), (10.0, 5.0));
+        assert!(
+            (i.user_width - 377.95276).abs() < 1e-3 && (i.user_height - 188.97638).abs() < 1e-3
+        );
         assert_eq!((i.width, i.height), (378, 189));
+        let doc = crate::parse(br#"<svg width="10cm" height="5cm"/>"#).unwrap();
+        assert_eq!((doc.width, doc.height), (i.user_width, i.user_height));
+        // One absolute axis: `parse` follows the view-box ratio too.
+        let doc = crate::parse(br#"<svg width="128" viewBox="0 0 64 32"/>"#).unwrap();
+        assert_eq!((doc.width, doc.height), (128.0, 64.0));
         // No intrinsic size at all.
         let i = info(br#"<svg/>"#).unwrap();
         assert_eq!((i.width, i.height), (0, 0));

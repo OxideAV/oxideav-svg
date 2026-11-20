@@ -96,17 +96,33 @@ with the sRGB colour signal stamped. `SvgError` maps onto
 The deprecated `parse_svg*` / `write_svg*` wrappers keep their
 `VectorFrame` signatures for one release.
 
-`<text>` / `<tspan>` emit glyph paths only when a font resolver is
-installed (the crate does not own a font registry):
+`<text>` emits glyphs only when a font hook is installed (the crate does
+not own a font registry). The provider is asked once per distinct
+`(family, weight, style)` of a document and its answer is shared by
+every size and run, so hand out the same `Arc<FaceChain>`:
 
 ```rust,no_run
+use std::sync::Arc;
 use oxideav_scribe::{Face, FaceChain};
 
-let dejavu = std::fs::read("DejaVuSans.ttf").unwrap();
-oxideav_svg::text::set_font_resolver(move |_family, _size_px| {
-    Face::from_ttf_bytes(dejavu.clone()).ok().map(FaceChain::new)
+let regular = Arc::new(FaceChain::new(
+    Face::from_ttf_bytes(std::fs::read("DejaVuSans.ttf").unwrap()).unwrap(),
+));
+oxideav_svg::text::set_font_provider(move |query| {
+    // query.family() / .families() / .weight() / .italic() / .size_px()
+    let _ = query;
+    Some(regular.clone())
 }).ok();
 ```
+
+The provider first sees the raw `font-family` list; if it declines it is
+asked for each family in turn and finally for `sans-serif`, so a missing
+family falls back instead of dropping the text. An upright face answers
+an italic query with sheared outlines, a regular one a bold query with
+a thin outline in the fill colour, and a face without the `smcp` feature
+gets small capitals from reduced capitals. The older
+`text::set_font_resolver(|family, size_px| -> Option<FaceChain>)` keeps
+working (same fallback order; called once per family *and size*).
 
 ## Supported layouts
 
@@ -151,7 +167,9 @@ number is one user unit = 1 px), percentages and font-relative lengths
 falling back to the `viewBox`, a missing axis derived from the other
 via the `viewBox` aspect ratio, rounded up to whole pixels; `0 × 0`
 when the document has no intrinsic size. `user_width` / `user_height`
-carry the raw user-unit values `parse` stores in `SvgDocument`.
+carry the same canvas unrounded — the values `parse` stores in
+`SvgDocument::{width, height}`, so a rasteriser sizes `12cm` as
+453.54 px rather than 12.
 `frames` is always `1`: SMIL animation is a continuous timeline
 (`parse_at`), flagged by `animated`.
 
@@ -216,17 +234,16 @@ could allocate — it is header-only — and `decode_with` turns that into
   template chain) is re-emitted and the `fill=` / `stroke=` reference
   re-points at the source id instead of a flattened synthesised
   `grad{N}` twin.
-* **Text** — `<text>` / `<tspan>` (and `textPath` align-mode layout)
-  rasterised vector-first through
-  [`oxideav-scribe`](https://github.com/OxideAV/oxideav-scribe); the
-  caller installs a font resolver once at startup. Gated behind the
-  default-on `text` feature. A
-  `parse_with_extras → write_with_extras` round-trip re-emits
-  the **verbatim `<text>` element** (SVG 2 §11.2) in place of the
-  flattened glyph outlines — string content, font selection properties,
-  the §11.2.2 `<tspan>` per-character positioning arrays
-  (`x`/`y`/`dx`/`dy`/`rotate`), `<textPath>` layout, and animation
-  children all survive byte-exactly through a
+* **Text** — `<text>` / `<tspan>` / `<textPath>` / `<a>` laid out by
+  the SVG 2 §11.5 algorithm over
+  [`oxideav-scribe`](https://github.com/OxideAV/oxideav-scribe) shaping;
+  gated behind the default-on `text` feature. See **Text** below for the
+  property coverage. A `parse_with_extras → write_with_extras`
+  round-trip re-emits the **verbatim `<text>` element** (SVG 2 §11.2) in
+  place of the flattened glyph outlines — string content, font
+  selection properties, the §11.2.2 `<tspan>` per-character positioning
+  arrays (`x`/`y`/`dx`/`dy`/`rotate`), `<textPath>` layout, and
+  animation children all survive byte-exactly through a
   mixed-content-preserving serialiser (no synthetic indentation around
   spans, so `xml:space="default"` collapsing cannot corrupt inter-span
   whitespace).
@@ -366,12 +383,38 @@ could allocate — it is header-only — and `decode_with` turns that into
   (its verbatim capture rides `PreservedExtras`); unknown content
   survives the verbatim round-trip via `PreservedExtras`.
 
+## Text
+
+| Feature | Coverage |
+|---|---|
+| Paint | `fill` and `stroke` of `<text>`, `<tspan>`, `<textPath>`: colours, `currentColor`, linear / radial gradients and patterns in both `objectBoundingBox` and `userSpaceOnUse` units, the paint-list fallback, `fill-opacity` / `stroke-opacity`, stroke width / caps / joins / dashes, `paint-order`. Bounding-box units bind to the box of the **whole `<text>` element** (union of the glyph cells — advance × em box, §8.10), whichever span carries the paint (§11.1). |
+| White space | `xml:space` `default` / `preserve` and `white-space` `normal` / `nowrap` / `pre` / `pre-wrap` / `pre-line` / `break-spaces` (§11.10.3); collapsing works across element boundaries; `pre` / `pre-line` line feeds are forced line breaks stacked by `line-height`; tabs advance to 8-space stops; soft hyphens and bidi controls are not addressable. |
+| Positioning | `x` / `y` / `dx` / `dy` / `rotate` lists with units, indexed by addressable character, descendants overriding ancestors, the last `rotate` repeating; `dx` / `dy` accumulate and add to an absolute position on the same character. |
+| `textLength` | on `<text>`, `<tspan>` and `<textPath>`, with units; `lengthAdjust="spacing"` distributes the difference between typographic characters (a nested element with its own `textLength` moves as one unit), `spacingAndGlyphs` also stretches the outlines; following text keeps its distance. |
+| Anchoring | `text-anchor` per anchored chunk (each absolute `x` / `y`, each line, each `<textPath>`), in the element's `direction`; collapsible space before a repositioned chunk is trimmed as line-end space. |
+| Spacing | `letter-spacing` (optional ligatures are not formed across it) and `word-spacing`, lengths in any unit. |
+| Baselines | `dominant-baseline` (inherited through the element), `alignment-baseline`, `baseline-shift` (`sub` / `super` / length / percentage, accumulating): alphabetic, ideographic, hanging, mathematical, central, middle, text-top / text-before-edge, text-bottom / text-after-edge. |
+| Writing modes | `writing-mode` `horizontal-tb`, `vertical-rl`, `vertical-lr`, `sideways-rl`, `sideways-lr` and the SVG 1.1 `lr` / `rl` / `tb` forms; `text-orientation` `mixed` (vertical scripts upright, others sideways) / `upright` / `sideways`, `glyph-orientation-vertical` `0` / `90`; lines stack right-to-left or left-to-right. |
+| Bidirectional text | Unicode bidirectional algorithm per line with `direction` as the base and `unicode-bidi` `embed` / `bidi-override` / `isolate` / `isolate-override` / `plaintext`; right-to-left runs are shaped in logical order, mirrored and placed in visual order. |
+| Fonts | `font-family` lists with fallback, `font-size` (lengths, percentages, `em`, the size keywords), `font-weight` (keywords, numbers, `bolder` / `lighter`), `font-style`, `font-variant: small-caps`, the `font` shorthand, `line-height`; all inherited from any ancestor including the root `<svg>` and settable from CSS. |
+| Decoration | `text-decoration` / `-line` / `-style` / `-color` and the SVG `text-decoration-fill` / `-stroke`: underline, overline, line-through in `solid` / `double` / `dotted` / `dashed` / `wavy`, painted with the paint (gradients included) of the element that declared them, under the glyphs except line-through; bars follow rotated and on-path glyphs. |
+| `<textPath>` | `href` to a `<path>` or a basic shape (its equivalent path) or the `path` attribute, with the target's own `transform` and `pathLength`; `startOffset` (length or percentage, negative and >100 % allowed); `side="right"`; `method="align"` and `method="stretch"` (outlines bent along the path); the single-closed-subpath wrap-around rule; `x` / `dx` along the path and `dy` along its normal; text after the path continues from its end point. |
+
+Not covered: auto-wrapped text (`inline-size`, `shape-inside`),
+`textPath` `spacing="auto"`, `font-stretch` / `font-size-adjust`,
+`text-decoration-thickness` / `text-underline-position`, and colour
+bitmap glyphs (the scene graph has no image node; layered colour glyphs
+keep their own colours under a plain fill).
+
 ## Styling
 
 * **Presentation attributes** — `fill` / `stroke` (named CSS colours,
   `#hex` 3/4/6/8, `rgb()`/`rgba()`, `none`, `url(#id)`, `currentColor`),
   `stroke-width`, line cap / join / miterlimit, dash array / offset,
-  opacity family, `fill-rule`, `transform`.
+  opacity family, `fill-rule`, `transform`. `currentColor` is the
+  inherited `color` property; `opacity` is per element (not inherited).
+  The outermost `<svg>` takes part in the cascade like any element, so
+  the icon idiom `<svg fill="none" stroke="currentColor" …>` works.
 * **CSS cascade** — `<style>` blocks and inline `style="..."` resolve
   through a CSS 3 Selectors Level 3 subset (tag / class / id selectors,
   attribute predicates, combinators, structural pseudo-classes) with

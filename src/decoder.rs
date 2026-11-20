@@ -19,7 +19,7 @@ use crate::css::MatchContext;
 use crate::element::{
     PaintState, ParseContext, derive_child_ctx, flatten_gradient_to_paint, parse_clip_path_def,
     parse_clip_rule_attr, parse_element_to_node_ctx, parse_filter_def, parse_linear_gradient_def,
-    parse_marker_def, parse_mask_def, parse_number, parse_pattern_def, parse_radial_gradient_def,
+    parse_marker_def, parse_mask_def, parse_pattern_def, parse_radial_gradient_def,
     parse_symbol_def, parse_view_def,
 };
 use crate::filter::{MeetOrSlice, PreserveAspectRatio, PreserveAspectRatioAlign};
@@ -709,19 +709,16 @@ fn parse_svg_root(
         None => None,
     };
 
-    // `width` / `height` default to 100% — but round 1 needs concrete
-    // numbers to populate the frame, so fall back to the viewBox size
-    // when the attributes are missing or are percentages.
-    let width = parse_length_or_default(
-        attr(svg, "width"),
-        view_box.map(|vb| vb.width).unwrap_or(0.0),
-    )?;
-    let height = parse_length_or_default(
-        attr(svg, "height"),
-        view_box.map(|vb| vb.height).unwrap_or(0.0),
-    )?;
+    // The outermost viewport in CSS px (SVG 2 §8.6): absolute units
+    // convert at 96 dpi, a percentage / relative length falls back to
+    // the viewBox size, and a single missing axis follows the viewBox
+    // aspect ratio — the same canvas `info` reports.
+    let (width, height) = crate::api::root_canvas_px(
+        attr(svg, "width").filter(|s| !s.trim().is_empty()),
+        attr(svg, "height").filter(|s| !s.trim().is_empty()),
+        view_box,
+    );
 
-    let parent_state = PaintState::default();
     // Round 19 — seed the root [`ResolveContext`] from the SVG root's
     // viewport (so descendant `vw` / `vh` / `vmin` / `vmax` resolve
     // against the document size) and the spec-default 16 px font-size
@@ -821,6 +818,13 @@ fn parse_svg_root(
     // (`a + b`, `a ~ b`) match against the document tree.
     let mut root = Group::default();
     let svg_mctx = MatchContext::root(svg);
+    // The outermost `<svg>` is an element like any other: its
+    // presentation attributes and matched CSS (`fill="none"
+    // stroke="currentColor"` on an icon's root, `font-family`, …)
+    // are inherited by the whole document, and its `opacity` applies
+    // to the content as a group.
+    let parent_state = PaintState::default().merged_with_mctx(&svg_mctx, &ctx.stylesheet)?;
+    root.opacity = parent_state.opacity;
     let (total, tag_totals) = count_element_children(svg);
     let mut child_idx = 0usize;
     let mut tag_seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
@@ -1124,17 +1128,6 @@ fn parse_view_box(s: &str) -> Result<ViewBox> {
         width: nums[2],
         height: nums[3],
     })
-}
-
-fn parse_length_or_default(v: Option<&str>, default: f32) -> Result<f32> {
-    let s = match v {
-        None => return Ok(default),
-        Some(s) => s.trim(),
-    };
-    if s.is_empty() || s.ends_with('%') {
-        return Ok(default);
-    }
-    parse_number(Some(s), default)
 }
 
 #[cfg(test)]

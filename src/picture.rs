@@ -554,7 +554,7 @@ pub struct ImageInfo {
     /// `true` when a `<metadata>` element carries an XMP packet
     /// (`<x:xmpmeta` or `<rdf:RDF`).
     pub has_xmp: bool,
-    /// The root `width` as user units before CSS resolution — what
+    /// The root `width` in user units (unrounded CSS px) — what
     /// [`crate::parse`] stores in `SvgDocument::width`.
     pub user_width: f32,
     /// The root `height` as user units (see `user_width`).

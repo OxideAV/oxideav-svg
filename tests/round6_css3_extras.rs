@@ -60,9 +60,11 @@ fn path_commands_in_order(frame: &SvgDocument) -> Vec<Vec<PathCommand>> {
 
 #[test]
 fn nth_last_child_matches_last_element() {
-    // Five rects; `:nth-last-child(1)` matches only the last.
+    // Five rects; `rect:nth-last-child(1)` matches only the last. (The
+    // bare universal form would also match the root `<svg>` — a sole
+    // child is its own last child — whose `fill` every rect inherits.)
     let src = br##"<svg xmlns="http://www.w3.org/2000/svg" width="50" height="10">
-  <style>:nth-last-child(1) { fill: #ff0000 }</style>
+  <style>rect:nth-last-child(1) { fill: #ff0000 }</style>
   <rect x="0"  y="0" width="10" height="10"/>
   <rect x="10" y="0" width="10" height="10"/>
   <rect x="20" y="0" width="10" height="10"/>
@@ -88,7 +90,7 @@ fn nth_last_child_keyword_odd_matches_from_end() {
     // last_idx=3 (odd) MATCH; child_index 2 → last_idx=2 (even);
     // child_index 3 → last_idx=1 (odd) MATCH.
     let src = br##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="10">
-  <style>:nth-last-child(odd) { fill: #00ff00 }</style>
+  <style>rect:nth-last-child(odd) { fill: #00ff00 }</style>
   <rect x="0"  y="0" width="10" height="10"/>
   <rect x="10" y="0" width="10" height="10"/>
   <rect x="20" y="0" width="10" height="10"/>

@@ -9,6 +9,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Paint servers on text: `fill` and `stroke` of `<text>`, `<tspan>` and
+  `<textPath>` take linear / radial gradients and patterns in
+  `objectBoundingBox` and `userSpaceOnUse` units, bound to the bounding
+  box of the whole `<text>` element (SVG 2 §11.1, glyph cells per
+  §8.10). Text can be stroked at all (it could not), with `paint-order`.
+- The text chapter's layout algorithm (SVG 2 §11.5) replaces the
+  pen-walk: `xml:space` / `white-space` processing across element
+  boundaries with forced line breaks under `pre` / `pre-line`; position
+  lists with units resolved per addressable character; `textLength` on
+  any text content element with units and nested lengths;
+  `letter-spacing` / `word-spacing`; `dominant-baseline`,
+  `alignment-baseline`, `baseline-shift`; vertical `writing-mode`s with
+  `text-orientation`; the Unicode bidirectional algorithm with
+  `direction` / `unicode-bidi`; `text-decoration` lines and styles
+  painted with the declaring element's paint; `<textPath>` on basic
+  shapes, `path=`, `side`, `method="stretch"`, the closed-path
+  wrap-around, `pathLength`-scaled `startOffset`, the target's
+  `transform`, and continuation from the path's end point.
+- Inherited text properties on every element's cascade
+  (`text_style::TextProps` on `PaintState`): `font-family`,
+  `font-style`, `font-weight`, `font-variant`, the `font` shorthand,
+  `letter-spacing`, `word-spacing`, `writing-mode`, `text-orientation`,
+  `direction`, `white-space`, `xml:space`, `line-height`; font-size
+  keywords (`small` … `xx-large`, `larger` / `smaller`).
+- `text::set_font_provider` + `text::FontQuery`: a font hook that sees
+  family, weight and style and is asked once per distinct font of a
+  document. Missing families fall back down the `font-family` list and
+  then to `sans-serif` (for the older `set_font_resolver` too); italic,
+  bold and small capitals are synthesised when the face lacks them.
+- `currentColor` resolves to the inherited `color` property.
+
+### Fixed
+
+- The outermost `<svg>` element's presentation attributes and CSS were
+  not cascaded: an icon written as `<svg fill="none"
+  stroke="currentColor" stroke-width="2">` painted black fills and no
+  strokes.
+- `opacity` was inherited: a group nested in a `<g opacity="0.5">`
+  applied 0.5 again, and a shape whose own opacity equalled its
+  parent's lost it.
+- `SvgDocument::{width, height}` took the numeric prefix of the root
+  `width` / `height` (`12cm` → 12); they are now CSS px at 96 dpi with a
+  single missing axis following the `viewBox` ratio, the same canvas
+  `info` reports (`ImageInfo::user_width` / `user_height` follow).
+- `<text transform="…">` was ignored; text `opacity` was multiplied
+  into the fill alpha per glyph instead of applied to the element.
+- `xml:space` never reached the cascade (the namespaced attribute name
+  was looked up without its prefix).
+- A font was resolved (and, with a resolver that parses on demand,
+  parsed) once per text run; it is now resolved once per document.
+
 - Builders that complete the model's `with_*` sets: `SvgDocument::with_width`
   / `with_height`, `PathNode::with_path`, `Stroke::with_width`,
   `LinearGradient::with_start` / `with_end`, `RadialGradient::with_center`
