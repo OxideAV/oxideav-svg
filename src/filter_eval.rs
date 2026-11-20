@@ -357,6 +357,10 @@ fn edge_sample(c: isize, len: usize, mode: EdgeMode) -> Option<usize> {
 /// is part of the result's bits, so it is fixed. The sums are built a
 /// whole row at a time (`row += shifted row`), which keeps the
 /// accumulator row in cache and lets the additions vectorise.
+///
+/// `threads` is the caller's thread budget: above 1 the rows are split
+/// into that many bands, each summed on its own scoped thread. Rows are
+/// independent, so the output is the same at every budget.
 fn box_blur_axis_into(
     src: &FilterImage,
     out: &mut FilterImage,
@@ -364,14 +368,42 @@ fn box_blur_axis_into(
     hi: isize,
     horizontal: bool,
     mode: EdgeMode,
+    threads: usize,
 ) {
     let (w, h) = (src.width, src.height);
-    let n = (hi - lo + 1) as f32;
-    out.data.fill(0.0);
     if w == 0 || h == 0 {
         return;
     }
     let stride = w * 4;
+    let bands = threads.clamp(1, h);
+    if bands == 1 {
+        box_blur_rows(src, &mut out.data, 0, lo, hi, horizontal, mode);
+        return;
+    }
+    let rows_per_band = h.div_ceil(bands);
+    std::thread::scope(|scope| {
+        for (i, band) in out.data.chunks_mut(rows_per_band * stride).enumerate() {
+            scope.spawn(move || {
+                box_blur_rows(src, band, i * rows_per_band, lo, hi, horizontal, mode)
+            });
+        }
+    });
+}
+
+/// The box-blur rows `first_row..` of `src` into `band` (whole rows).
+fn box_blur_rows(
+    src: &FilterImage,
+    band: &mut [f32],
+    first_row: usize,
+    lo: isize,
+    hi: isize,
+    horizontal: bool,
+    mode: EdgeMode,
+) {
+    let (w, h) = (src.width, src.height);
+    let n = (hi - lo + 1) as f32;
+    let stride = w * 4;
+    band.fill(0.0);
     let add = |dst: &mut [f32], from: &[f32]| {
         for (d, s) in dst.iter_mut().zip(from) {
             *d += *s;
@@ -381,10 +413,9 @@ fn box_blur_axis_into(
         // For `duplicate` / `wrap`, the source column of each output
         // column under tap `t`.
         let mut columns: Vec<usize> = Vec::new();
-        for (dst, row) in out
-            .data
+        for (dst, row) in band
             .chunks_exact_mut(stride)
-            .zip(src.data.chunks_exact(stride))
+            .zip(src.data[first_row * stride..].chunks_exact(stride))
         {
             for t in lo..=hi {
                 match mode {
@@ -410,7 +441,8 @@ fn box_blur_axis_into(
             }
         }
     } else {
-        for (y, dst) in out.data.chunks_exact_mut(stride).enumerate() {
+        for (i, dst) in band.chunks_exact_mut(stride).enumerate() {
+            let y = first_row + i;
             for t in lo..=hi {
                 if let Some(sy) = edge_sample(y as isize + t, h, mode) {
                     add(dst, &src.data[sy * stride..(sy + 1) * stride]);
@@ -418,7 +450,7 @@ fn box_blur_axis_into(
             }
         }
     }
-    for v in &mut out.data {
+    for v in band {
         *v /= n;
     }
 }
@@ -446,6 +478,20 @@ pub fn gaussian_blur_edge(
     std_dev_y: f32,
     edge_mode: EdgeMode,
 ) -> FilterImage {
+    gaussian_blur_edge_threads(src, std_dev_x, std_dev_y, edge_mode, 1)
+}
+
+/// [`gaussian_blur_edge`] with a caller-granted thread budget: `threads`
+/// above 1 splits each box-blur pass into that many bands of rows on
+/// scoped threads (blocking; no thread outlives the call). `0` and `1`
+/// are serial. The output is identical at every budget.
+pub fn gaussian_blur_edge_threads(
+    src: &FilterImage,
+    std_dev_x: f32,
+    std_dev_y: f32,
+    edge_mode: EdgeMode,
+    threads: usize,
+) -> FilterImage {
     let mut img = src.clone();
     if std_dev_x < 0.0 || std_dev_y < 0.0 {
         return img;
@@ -453,7 +499,7 @@ pub fn gaussian_blur_edge(
     // Two buffers, swapped after every pass.
     let mut scratch = FilterImage::new(src.width, src.height);
     let mut pass = |img: &mut FilterImage, lo: isize, hi: isize, horizontal: bool| {
-        box_blur_axis_into(img, &mut scratch, lo, hi, horizontal, edge_mode);
+        box_blur_axis_into(img, &mut scratch, lo, hi, horizontal, edge_mode, threads);
         std::mem::swap(img, &mut scratch);
     };
     for (s, horizontal) in [(std_dev_x, true), (std_dev_y, false)] {
@@ -1109,6 +1155,38 @@ pub fn evaluate_gaussian_blur_node(
     let space = node.color_interpolation_filters;
     let src = FilterImage::from_rgba8(width, height, source_rgba8, space)?;
     Some(gaussian_blur_edge(&src, *std_deviation_x, *std_deviation_y, *edge_mode).to_rgba8(space))
+}
+
+/// [`evaluate_gaussian_blur_node`] with a caller-granted thread budget
+/// (see [`gaussian_blur_edge_threads`]).
+pub fn evaluate_gaussian_blur_node_threads(
+    node: &FilterPrimitiveNode,
+    source_rgba8: &[u8],
+    width: usize,
+    height: usize,
+    threads: usize,
+) -> Option<Vec<u8>> {
+    let FilterPrimitive::GaussianBlur {
+        std_deviation_x,
+        std_deviation_y,
+        edge_mode,
+        ..
+    } = &node.primitive
+    else {
+        return None;
+    };
+    let space = node.color_interpolation_filters;
+    let src = FilterImage::from_rgba8(width, height, source_rgba8, space)?;
+    Some(
+        gaussian_blur_edge_threads(
+            &src,
+            *std_deviation_x,
+            *std_deviation_y,
+            *edge_mode,
+            threads,
+        )
+        .to_rgba8(space),
+    )
 }
 
 /// Apply one [`TransferFunction`] to a single non-premultiplied colour
@@ -3229,6 +3307,23 @@ pub fn evaluate_filter_graph_clipped(
     height: usize,
     subregions: &[Option<PixelRect>],
 ) -> Option<Vec<u8>> {
+    evaluate_filter_graph_threads(graph, sources, width, height, subregions, 1)
+}
+
+/// [`evaluate_filter_graph_clipped`] with a caller-granted thread
+/// budget. The default entry points are serial; pass the number of
+/// threads the caller is willing to lend (`0` / `1` = serial) and the
+/// primitives that scale with it — today the `feGaussianBlur` passes —
+/// split their rows across that many scoped threads. The result is the
+/// same at every budget.
+pub fn evaluate_filter_graph_threads(
+    graph: &FilterGraph,
+    sources: &FilterSources,
+    width: usize,
+    height: usize,
+    subregions: &[Option<PixelRect>],
+    threads: usize,
+) -> Option<Vec<u8>> {
     if graph.primitives.is_empty() {
         return None;
     }
@@ -3246,7 +3341,7 @@ pub fn evaluate_filter_graph_clipped(
                 evaluate_color_matrix_node(node, &resolve(input), width, height)
             }
             FilterPrimitive::GaussianBlur { input, .. } => {
-                evaluate_gaussian_blur_node(node, &resolve(input), width, height)
+                evaluate_gaussian_blur_node_threads(node, &resolve(input), width, height, threads)
             }
             FilterPrimitive::Offset { input, .. } => {
                 evaluate_offset_node(node, &resolve(input), width, height)
@@ -6398,7 +6493,7 @@ mod reference_tests {
         mode: EdgeMode,
     ) -> FilterImage {
         let mut out = FilterImage::new(src.width, src.height);
-        box_blur_axis_into(src, &mut out, lo, hi, horizontal, mode);
+        box_blur_axis_into(src, &mut out, lo, hi, horizontal, mode, 1);
         out
     }
 
@@ -6487,6 +6582,18 @@ mod reference_tests {
             }
         }
         out
+    }
+
+    #[test]
+    fn blur_output_is_the_same_at_every_thread_budget() {
+        let img = noise(53, 37, 5);
+        for mode in [EdgeMode::None, EdgeMode::Duplicate, EdgeMode::Wrap] {
+            let serial = gaussian_blur_edge(&img, 3.5, 1.25, mode);
+            for threads in [0, 2, 3, 4, 7, 64] {
+                let banded = gaussian_blur_edge_threads(&img, 3.5, 1.25, mode, threads);
+                assert_eq!(bits(&banded), bits(&serial), "{mode:?} threads={threads}");
+            }
+        }
     }
 
     #[test]

@@ -232,6 +232,15 @@ fn median_ms(runs: usize, mut f: impl FnMut()) -> f64 {
 
 fn stages(name: &str, docs: &[String], runs: usize) {
     let bytes: usize = docs.iter().map(String::len).sum();
+    // `OXIDEAV_SVG_BENCH_DUMP=<dir>` writes the generated documents
+    // out (to feed a rasteriser at 1× / 4×) instead of timing them.
+    if let Ok(dir) = std::env::var("OXIDEAV_SVG_BENCH_DUMP") {
+        for (i, d) in docs.iter().take(8).enumerate() {
+            let path = format!("{dir}/{name}-{i}.svg");
+            std::fs::write(&path, d).unwrap_or_else(|e| panic!("{path}: {e}"));
+        }
+        return;
+    }
     // `OXIDEAV_SVG_BENCH_STAGE=parse` loops the parse stage alone, for
     // a profiler to attach to.
     if std::env::var("OXIDEAV_SVG_BENCH_STAGE").as_deref() == Ok("parse") {
@@ -277,9 +286,12 @@ fn stages(name: &str, docs: &[String], runs: usize) {
     );
 }
 
-/// The filter evaluators on a synthetic source at `side × side`.
+/// The filter evaluators on a synthetic source at `side × side`, serial
+/// (the default) and with a caller-granted budget of four threads.
 fn filter_eval(side: usize, runs: usize) {
-    use oxideav_svg::filter_eval::{FilterSources, evaluate_filter_graph};
+    use oxideav_svg::filter_eval::{
+        FilterSources, evaluate_filter_graph, evaluate_filter_graph_threads,
+    };
     let src = format!(
         r##"<filter id="f"><feGaussianBlur in="SourceAlpha" stdDeviation="{0}" result="b"/><feOffset in="b" dx="{0}" dy="{0}" result="o"/><feFlood flood-color="#036" flood-opacity="0.5" result="c"/><feComposite in="c" in2="o" operator="in" result="s"/><feColorMatrix in="SourceGraphic" type="hueRotate" values="90" result="m"/><feMorphology in="m" operator="dilate" radius="{1}" result="d"/><feComponentTransfer in="d" result="t"><feFuncR type="gamma" exponent="1.5"/><feFuncA type="linear" slope="0.9"/></feComponentTransfer><feMerge><feMergeNode in="s"/><feMergeNode in="t"/></feMerge></filter>"##,
         side as f32 / 64.0,
@@ -303,7 +315,19 @@ fn filter_eval(side: usize, runs: usize) {
     let ms = median_ms(runs, || {
         black_box(evaluate_filter_graph(&graph, &sources, side, side));
     });
-    println!("filter-eval {side:>4} x {side:<4} (8 primitives) | {ms:>9.3} ms");
+    let ms4 = median_ms(runs, || {
+        black_box(evaluate_filter_graph_threads(
+            &graph,
+            &sources,
+            side,
+            side,
+            &[],
+            4,
+        ));
+    });
+    println!(
+        "filter-eval {side:>4} x {side:<4} (8 primitives) | {ms:>9.3} ms | 4 threads {ms4:>9.3} ms"
+    );
 }
 
 fn main() {
