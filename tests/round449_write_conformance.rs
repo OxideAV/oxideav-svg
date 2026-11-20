@@ -94,6 +94,17 @@ fn gate(name: &str, src: &[u8], census_shapes: bool) {
         tags.extend_from_slice(SHAPE_CENSUS);
     }
     for tag in tags {
+        // A nested `<svg>` is written as a `<g>` whose viewport clip
+        // (SVG 2 §8.2, the user-agent `overflow: hidden`) becomes a
+        // `<clipPath>` the source did not spell out: that count may
+        // grow, never shrink.
+        if tag == "<clipPath" && s.matches("<svg").count() > 1 {
+            assert!(
+                s1.matches(tag).count() >= s.matches(tag).count(),
+                "{name}: no source {tag:?} may be lost:\n{s1}"
+            );
+            continue;
+        }
         assert_eq!(
             s.matches(tag).count(),
             s1.matches(tag).count(),

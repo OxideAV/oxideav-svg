@@ -180,6 +180,11 @@ pub enum StatefulPseudo {
     Disabled,
     /// `:enabled` — form control in an enabled state (default).
     Enabled,
+    /// `:target` — the element the document URL's fragment names. A
+    /// document parsed from bytes has no fragment.
+    Target,
+    /// `:focus-visible` / `:focus-within` — focus states.
+    FocusWithin,
 }
 
 /// **Round 11** — a CSS pseudo-element (`::before`, `::after`, …).
@@ -1752,6 +1757,10 @@ fn parse_pseudo(name: &str, arg: Option<&str>) -> Option<Pseudo> {
         ("link", None) => Some(Pseudo::Stateful(StatefulPseudo::Link)),
         ("disabled", None) => Some(Pseudo::Stateful(StatefulPseudo::Disabled)),
         ("enabled", None) => Some(Pseudo::Stateful(StatefulPseudo::Enabled)),
+        ("target", None) => Some(Pseudo::Stateful(StatefulPseudo::Target)),
+        ("focus-visible" | "focus-within", None) => {
+            Some(Pseudo::Stateful(StatefulPseudo::FocusWithin))
+        }
         // Anything else — silently drop (over-matches the rule, which
         // is the friendlier failure mode for unknown pseudos).
         _ => None,

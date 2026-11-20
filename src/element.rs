@@ -1484,6 +1484,10 @@ pub struct PaintState {
     /// round-trips the source attribute via the
     /// [`crate::preserved::DominantBaselineBinding`] side-channel.
     pub dominant_baseline: DominantBaseline,
+    /// A `stroke-width` given in a font- or viewport-relative unit
+    /// (`em`, `%`, `vw`, …), kept until an element that paints resolves
+    /// it against its own font size and viewport.
+    pub stroke_width_relative: Option<Length>,
     /// The `color` property (inherited; initial black) — what the
     /// `currentColor` paint keyword resolves to (SVG 2 §13.2).
     pub color: Rgba,
@@ -1561,6 +1565,7 @@ impl Default for PaintState {
             // before applying the element's own attribute (matching
             // the `display` / `vector-effect` / `overflow` resets).
             dominant_baseline: DominantBaseline::Auto,
+            stroke_width_relative: None,
             color: Rgba::opaque(0, 0, 0),
             fill_is_current_color: false,
             stroke_is_current_color: false,
@@ -1706,11 +1711,18 @@ impl PaintState {
                 }
             }
             "stroke-opacity" => s.stroke_opacity = parse_opacity(value)?,
+            // `<length-percentage>` (SVG 2 §13.5.2). Absolute units
+            // convert here; a font- or viewport-relative width is kept
+            // to be resolved where it is used
+            // ([`PaintState::resolve_relative_lengths`]).
             "stroke-width" => {
-                s.stroke_width = value
-                    .trim()
-                    .parse::<f32>()
-                    .map_err(|_| Error::invalid("SVG: malformed stroke-width"))?;
+                let (v, relative) = parse_stroke_length(value)
+                    .ok_or_else(|| Error::invalid("SVG: malformed stroke-width"))?;
+                if v < 0.0 {
+                    return Err(Error::invalid("SVG: negative stroke-width"));
+                }
+                s.stroke_width = v;
+                s.stroke_width_relative = relative;
             }
             "stroke-linecap" => {
                 s.stroke_linecap = match value.trim() {
@@ -1743,18 +1755,18 @@ impl PaintState {
                         .split(|c: char| c == ',' || c.is_whitespace())
                         .filter(|p| !p.is_empty())
                         .map(|n| {
-                            n.parse::<f32>()
-                                .map_err(|_| Error::invalid("SVG: malformed stroke-dasharray"))
+                            parse_stroke_length(n)
+                                .map(|(v, _)| v)
+                                .ok_or_else(|| Error::invalid("SVG: malformed stroke-dasharray"))
                         })
                         .collect();
                     s.stroke_dasharray = Some(arr?);
                 }
             }
             "stroke-dashoffset" => {
-                s.stroke_dashoffset = value
-                    .trim()
-                    .parse::<f32>()
-                    .map_err(|_| Error::invalid("SVG: malformed stroke-dashoffset"))?;
+                s.stroke_dashoffset = parse_stroke_length(value)
+                    .map(|(v, _)| v)
+                    .ok_or_else(|| Error::invalid("SVG: malformed stroke-dashoffset"))?;
             }
             "opacity" => s.opacity = parse_opacity(value)?,
             "fill-rule" => {
@@ -1999,6 +2011,22 @@ impl PaintState {
         Ok(())
     }
 
+    /// Resolve a relative `stroke-width` (`em`, `%` of the viewport
+    /// diagonal, `vw`, …) for an element whose lengths resolve in
+    /// `rctx`.
+    pub(crate) fn resolve_relative_lengths(&mut self, rctx: &ResolveContext) {
+        if let Some(l) = self.stroke_width_relative {
+            let basis = ResolveContext {
+                percentage_basis_px: rctx.percentage_basis_for(LengthAxis::Diagonal),
+                ..*rctx
+            };
+            let v = l.resolve(basis);
+            if v.is_finite() && v >= 0.0 {
+                self.stroke_width = v;
+            }
+        }
+    }
+
     /// The cascaded stroke style (`stroke-width` / caps / joins / miter
     /// limit / dash) around the given paint.
     fn stroke_with_paint(&self, paint: Paint) -> Stroke {
@@ -2028,6 +2056,29 @@ impl PaintState {
     fn stroke_for_shape(&self, bbox: Option<BBox>, ctx: &mut ParseContext) -> ShapePaint {
         resolve_shape_paint(&self.stroke, self.stroke_opacity, bbox, ctx)
     }
+}
+
+/// Parse a stroke `<length-percentage>` (`stroke-width`, dash values).
+/// Returns the value in user units — relative units resolved against
+/// the 16 px initial font size and an empty viewport for now — plus the
+/// typed length when it IS relative and needs the element's context.
+fn parse_stroke_length(value: &str) -> Option<(f32, Option<Length>)> {
+    let l = parse_length(value.trim()).ok()?;
+    let v = l.resolve(ResolveContext::default());
+    if !v.is_finite() {
+        return None;
+    }
+    let relative = matches!(
+        l.unit,
+        crate::length::LengthUnit::Em
+            | crate::length::LengthUnit::Rem
+            | crate::length::LengthUnit::Percent
+            | crate::length::LengthUnit::Vw
+            | crate::length::LengthUnit::Vh
+            | crate::length::LengthUnit::Vmin
+            | crate::length::LengthUnit::Vmax
+    );
+    Some((v, relative.then_some(l)))
 }
 
 /// Outcome of resolving one `fill` / `stroke` value for one shape.
@@ -4810,7 +4861,17 @@ fn parse_element_to_node_ctx_inner(
                 let mut group = Group {
                     transform,
                     opacity: state.opacity,
-                    clip: None,
+                    // A nested `<svg>` clips to its viewport unless it
+                    // says `overflow: visible` (§8.2: the user-agent
+                    // style sheet sets `overflow: hidden` on it) — what
+                    // makes `preserveAspectRatio="… slice"` slice.
+                    clip: viewport_clip(
+                        el,
+                        &declarations_for(mctx, &ctx.stylesheet),
+                        &viewport_t,
+                        width,
+                        height,
+                    ),
                     children: Vec::new(),
                     cache_key: None,
                 };
@@ -4914,12 +4975,13 @@ fn parse_element_to_node_ctx_inner(
         // x / y / transform / width / height. See `parse_use_element`.
         "use" => parse_use_element(el, parent_state, ctx, mctx)?,
         "rect" | "circle" | "ellipse" | "line" | "polyline" | "polygon" | "path" => {
-            let state = parent_state.merged_with_mctx(mctx, &ctx.stylesheet)?;
+            let mut state = parent_state.merged_with_mctx(mctx, &ctx.stylesheet)?;
             // Round 19 — derive the per-element resolve context: any
             // `font-size: …` cascade on this shape applies to its own
             // `em`/`rem` resolution. The viewport / root font-size /
             // viewport axes inherit from the parent unchanged.
             let elem_ctx = derive_child_ctx(el, mctx, &ctx.stylesheet, &ctx.resolve_ctx);
+            state.resolve_relative_lengths(&elem_ctx);
             let path_opt = match local.as_str() {
                 "rect" => parse_rect(el, &elem_ctx)?,
                 "circle" => parse_circle(el, &elem_ctx)?,
@@ -5981,6 +6043,44 @@ fn apply_referenced_defs(el: &Element, mut node: Node, defs: &DefsTables) -> Nod
     node
 }
 
+/// The clip a viewport-establishing element (`<svg>`, an instantiated
+/// `<symbol>`) applies to its content under the user-agent style
+/// sheet's `overflow: hidden` (SVG 2 §8.2 / §3.11): the `width × height`
+/// viewport rectangle expressed in the content's coordinate system
+/// (through the inverse of the viewport transform). `None` when the
+/// element declares `overflow: visible | auto`, or the transform is
+/// singular.
+fn viewport_clip(
+    el: &Element,
+    decls: &[(String, String)],
+    viewport_t: &Transform2D,
+    width: f32,
+    height: f32,
+) -> Option<Path> {
+    let declared = decls
+        .iter()
+        .rev()
+        .find(|(n, _)| n.eq_ignore_ascii_case("overflow"))
+        .map(|(_, v)| v.as_str())
+        .or_else(|| attr(el, "overflow"));
+    if let Some(v) = declared
+        && matches!(
+            Overflow::parse_keyword(v),
+            Some(Overflow::Visible | Overflow::Auto)
+        )
+    {
+        return None;
+    }
+    let inv = viewport_t.invert()?;
+    let mut clip = Path::new();
+    clip.move_to(inv.apply(Point::new(0.0, 0.0)));
+    clip.line_to(inv.apply(Point::new(width, 0.0)));
+    clip.line_to(inv.apply(Point::new(width, height)));
+    clip.line_to(inv.apply(Point::new(0.0, height)));
+    clip.close();
+    Some(clip)
+}
+
 /// Wrap `node` so the rasterizer applies `clip` to its children.
 /// Existing groups gain the clip directly (avoiding an extra layer);
 /// other node kinds get a fresh single-child group.
@@ -6560,7 +6660,7 @@ pub fn parse_use_element(
     el: &Element,
     parent_state: &PaintState,
     ctx: &mut ParseContext,
-    _mctx: &MatchContext<'_>,
+    mctx: &MatchContext<'_>,
 ) -> Result<Option<Node>> {
     let href = match attr(el, "href").or_else(|| attr(el, "xlink:href")) {
         Some(v) => v.trim(),
@@ -6595,7 +6695,10 @@ pub fn parse_use_element(
     let translate = Transform2D::translate(x, y);
     let total = use_transform.compose(&translate);
 
-    let state = parent_state.merged_with(el)?;
+    // The `<use>` element's own cascade — presentation attributes AND
+    // matched CSS / inline style — is what the instantiated content
+    // inherits (SVG 2 §5.6: the shadow tree inherits from its host).
+    let state = parent_state.merged_with_mctx(mctx, &ctx.stylesheet)?;
 
     // Round 14: <use> may carry its own width / height that override
     // the symbol's intrinsic size. Captured here so the symbol branch
@@ -6622,6 +6725,7 @@ pub fn parse_use_element(
     let source_local = tag_local(&source.name);
     let mut children: Vec<Node> = Vec::new();
     let mut viewport_transform: Option<Transform2D> = None;
+    let mut symbol_clip: Option<Path> = None;
     if source_local == "symbol" {
         // Round 14: prefer the pre-parsed SymbolDef (it carries the
         // symbol's viewBox + preserveAspectRatio + intrinsic size).
@@ -6664,6 +6768,9 @@ pub fn parse_use_element(
             // Spec algorithm 8.2 — viewport rect (0..w × 0..h)
             // mapping to viewBox rect.
             let mut vp = symbol_viewport_transform(w, h, vb, sym_par);
+            // The symbol's viewport clips its content (user-agent
+            // `overflow: hidden`, §5.5) unless the symbol overrides it.
+            symbol_clip = viewport_clip(&source, &[], &vp, w, h);
             // SVG 2 §5.5 — `refX` / `refY` align the symbol's
             // reference point (given in the symbol's own coordinate
             // system) with the use's `x` / `y`. Mirroring the
@@ -6727,7 +6834,7 @@ pub fn parse_use_element(
         vec![Node::Group(Group {
             transform: vp,
             opacity: 1.0,
-            clip: None,
+            clip: symbol_clip,
             children,
             cache_key: None,
         })]

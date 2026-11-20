@@ -528,6 +528,76 @@ fn bidi_override_reverses_latin() {
     );
 }
 
+// ───────────── auto-wrapped text (§11.4.1) ─────────────
+
+#[test]
+fn inline_size_wraps_at_spaces_and_hangs_them() {
+    let a = adv();
+    // 8 advances fit "AAA BBB" (7) but not "AAA BBB CC".
+    let d = doc(&format!(
+        r#"<text x="10" y="50" style="inline-size: {}px; line-height: 20px">AAA BBB CC DDDDDDDDDD E</text>"#,
+        8.0 * a + 0.5
+    ));
+    let (x, y) = (xs(&d), ys(&d));
+    let rows: Vec<f32> = {
+        let mut r = y.clone();
+        r.dedup();
+        r
+    };
+    assert_eq!(rows, [50.0, 70.0, 90.0, 110.0], "{y:?}");
+    // Every line starts at x; the space a line ends with is not kept.
+    for (i, row) in rows.iter().enumerate() {
+        let first = y.iter().position(|v| v == row).unwrap();
+        assert!(close(x[first], 10.0), "line {i} starts at {}", x[first]);
+    }
+    // "CC" opens line 2; the over-long word gets a line of its own and
+    // overflows instead of being split.
+    assert_eq!(y.iter().filter(|v| **v == 70.0).count(), 2);
+    assert_eq!(y.iter().filter(|v| **v == 90.0).count(), 10);
+}
+
+#[test]
+fn wrapped_lines_are_anchored_one_by_one_and_ignore_tspan_positions() {
+    let a = adv();
+    let d = doc(&format!(
+        r#"<text x="300" y="50" text-anchor="middle" style="inline-size: {}px">AAAA <tspan x="0" y="0" dy="9">BB</tspan></text>"#,
+        5.0 * a
+    ));
+    let (x, y) = (xs(&d), ys(&d));
+    assert!(
+        close(x[0], 300.0 - 2.0 * a) && close(x[4], 300.0 - a),
+        "{x:?}"
+    );
+    // §11.7: in auto-wrapped text x / y / dy on the tspan are ignored.
+    assert!(y[4] > 60.0 && y[4] < 80.0, "{y:?}");
+}
+
+#[test]
+fn vertical_inline_size_wraps_ideographs_between_characters() {
+    // Twelve full-width characters, three em per column.
+    let d = doc(
+        "<text x=\"200\" y=\"10\" style=\"writing-mode: vertical-rl; inline-size: 48px; line-height: 20px\">\u{3042}\u{3044}\u{3046}\u{3048}\u{304A}\u{304B}\u{3002}</text>",
+    );
+    let g = glyphs(&d);
+    if g.len() == 7 {
+        // Columns step left; the full stop may not start a column, so
+        // the second column takes it along with a kana before it.
+        let cols: Vec<i32> = {
+            let mut c: Vec<i32> = g.iter().map(|t| t.e.round() as i32).collect();
+            c.dedup();
+            c
+        };
+        assert!(
+            cols.len() >= 2 && cols.windows(2).all(|w| w[1] < w[0]),
+            "{cols:?}"
+        );
+        assert!(
+            (g[6].e - g[5].e).abs() < 0.5,
+            "the full stop stays with the previous kana"
+        );
+    }
+}
+
 // ───────────── decorations (§11.11) ─────────────
 
 /// (bounding box, solid fill colour, index among the text's children)

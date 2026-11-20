@@ -604,6 +604,8 @@ struct Collector<'a> {
     at_line_start: bool,
     pending_breaks: u16,
     vertical: bool,
+    /// `inline-size` wrapping is requested.
+    wrapping: bool,
 }
 
 fn own_prop<'a>(el: &'a Element, decls: &'a [(String, String)], name: &str) -> Option<&'a str> {
@@ -627,11 +629,12 @@ impl Collector<'_> {
         &mut self,
         el: &Element,
         mctx: &MatchContext<'_>,
-        state: PaintState,
+        mut state: PaintState,
         rctx: &ResolveContext,
         parent: Option<usize>,
         kind: SpanKind,
     ) -> usize {
+        state.resolve_relative_lengths(rctx);
         let decls = declarations_for(mctx, &self.ctx.stylesheet);
         let size = rctx.font_size_px;
         let tp = &state.text;
@@ -881,7 +884,11 @@ impl Collector<'_> {
                     // "trimmed from the start or end of a line"), so it
                     // cannot skew the previous chunk's `text-anchor`.
                     let sp = &self.spans[idx];
-                    if !sp.xs.is_empty() || !sp.ys.is_empty() || kind == SpanKind::TextPath {
+                    // (Not in auto-wrapped text, where those positions
+                    // are ignored.)
+                    if kind == SpanKind::TextPath
+                        || (!self.wrapping && (!sp.xs.is_empty() || !sp.ys.is_empty()))
+                    {
                         self.pending_space = None;
                         self.at_line_start = true;
                     }
@@ -1286,6 +1293,31 @@ fn is_upright_in_vertical(c: char) -> bool {
         | 0x1B000..=0x1B2FF
         | 0x1F000..=0x1FAFF
         | 0x20000..=0x3FFFD)
+}
+
+/// Closing punctuation and marks a line may not begin with (the
+/// line-start prohibition of the scripts written without spaces).
+fn is_line_start_forbidden(c: char) -> bool {
+    matches!(
+        c,
+        '\u{3001}'
+            | '\u{3002}'
+            | '\u{FF0C}'
+            | '\u{FF0E}'
+            | '\u{FF01}'
+            | '\u{FF1F}'
+            | '\u{FF09}'
+            | '\u{3009}'
+            | '\u{300B}'
+            | '\u{300D}'
+            | '\u{300F}'
+            | '\u{3011}'
+            | '\u{3015}'
+            | '\u{30FC}'
+            | '\u{3005}'
+            | '\u{FF1A}'
+            | '\u{FF1B}'
+    )
 }
 
 fn is_word_separator(c: char) -> bool {
@@ -1711,6 +1743,64 @@ impl Layout {
                 warp: None,
             });
         }
+    }
+
+    /// §11.4.1 `inline-size`: break the single line into lines no wider
+    /// than `limit`. Lines break after white space (which then hangs —
+    /// it is not rendered at the line end) and between characters of
+    /// the scripts written without spaces; a word wider than the limit
+    /// overflows rather than being split. Records the breaks on the
+    /// characters; returns whether any was made (the caller reshapes).
+    fn wrap(&mut self, limit: f32) -> bool {
+        let breakable_alone = |c: char| is_upright_in_vertical(c) && !is_line_start_forbidden(c);
+        let mut changed = false;
+        for seg in &self.segments {
+            let range = seg.clusters.clone();
+            let mut line_start = range.start;
+            let mut last_break: Option<usize> = None;
+            let mut width = 0.0f32;
+            for k in range.clone() {
+                let ch = self.chars[self.clusters[k].first].c;
+                let space = matches!(ch, ' ' | '\t' | '\u{200B}');
+                if k > line_start {
+                    let prev = self.chars[self.clusters[k - 1].first].c;
+                    let after_space = matches!(prev, ' ' | '\t' | '\u{200B}');
+                    if !space
+                        && (after_space
+                            || ((breakable_alone(ch) || is_upright_in_vertical(prev))
+                                && !is_line_start_forbidden(ch)))
+                    {
+                        last_break = Some(k);
+                    }
+                }
+                let adv = self.clusters[k].adv.abs();
+                if !space
+                    && width + adv > limit + 1e-3
+                    && let Some(b) = last_break.filter(|b| *b > line_start)
+                {
+                    let first_char = self.clusters[b].first;
+                    self.chars[first_char].breaks = self.chars[first_char].breaks.saturating_add(1);
+                    // The white space the line ends with hangs.
+                    let mut t = b;
+                    while t > line_start {
+                        let c = &self.clusters[t - 1];
+                        if !matches!(self.chars[c.first].c, ' ' | '\t' | '\u{200B}') {
+                            break;
+                        }
+                        for hung in &mut self.chars[c.first..c.end] {
+                            hung.ctrl = true;
+                        }
+                        t -= 1;
+                    }
+                    width = self.clusters[b..k].iter().map(|c| c.adv.abs()).sum();
+                    line_start = b;
+                    last_break = None;
+                    changed = true;
+                }
+                width += adv;
+            }
+        }
+        changed
     }
 
     /// The cluster index range whose characters lie in `[first, last]`.
@@ -2622,6 +2712,21 @@ pub(crate) fn parse_text_element_ctx(
 ) -> Result<Option<Node>> {
     let mode = state.text.writing_mode;
     let rctx = derive_child_ctx(el, mctx, &ctx.stylesheet, &ctx.resolve_ctx);
+    // `inline-size` (§11.4.1): a positive length turns on wrapping.
+    let inline_axis = if mode.is_vertical() {
+        LengthAxis::Y
+    } else {
+        LengthAxis::X
+    };
+    let inline_size = own_prop(el, &declarations_for(mctx, &ctx.stylesheet), "inline-size")
+        .and_then(|v| parse_length(v.trim()).ok())
+        .map(|l| {
+            l.resolve(ResolveContext {
+                percentage_basis_px: rctx.percentage_basis_for(inline_axis),
+                ..rctx
+            })
+        })
+        .filter(|v| v.is_finite() && *v > 0.0);
     let caches = std::mem::take(&mut ctx.text_caches);
     let mut collector = Collector {
         ctx,
@@ -2633,6 +2738,7 @@ pub(crate) fn parse_text_element_ctx(
         at_line_start: true,
         pending_breaks: 0,
         vertical: mode.is_vertical(),
+        wrapping: inline_size.is_some(),
     };
     let root = collector.open_span(el, mctx, state.clone(), &rctx, None, SpanKind::Text);
     let root_decls = declarations_for(mctx, &collector.ctx.stylesheet);
@@ -2671,11 +2777,37 @@ pub(crate) fn parse_text_element_ctx(
         glyphs: Vec::new(),
         mode,
     };
+    // §11.4.1 auto-wrapped text: only the first `x` / `y` of the
+    // `<text>` positions the content (§11.7); every other positioning
+    // attribute is ignored.
+    let wrap = inline_size.filter(|_| layout.spans.iter().all(|s| s.text_path.is_none()));
+    if wrap.is_some() {
+        for (i, s) in layout.spans.iter_mut().enumerate() {
+            let keep = usize::from(i == 0);
+            s.xs.truncate(keep);
+            s.ys.truncate(keep);
+            s.dxs.clear();
+            s.dys.clear();
+            s.rotates.clear();
+            s.text_length = None;
+        }
+    }
     layout.compute_span_ranges();
     layout.resolve_char_attrs();
     layout.build_segments();
     for s in 0..layout.segments.len() {
         layout.shape_segment(s);
+    }
+    if let Some(limit) = wrap
+        && layout.wrap(limit)
+    {
+        layout.segments.clear();
+        layout.clusters.clear();
+        layout.glyphs.clear();
+        layout.build_segments();
+        for s in 0..layout.segments.len() {
+            layout.shape_segment(s);
+        }
     }
     layout.position();
 

@@ -400,7 +400,12 @@ could allocate — it is header-only — and `decode_with` turns that into
 | Decoration | `text-decoration` / `-line` / `-style` / `-color` and the SVG `text-decoration-fill` / `-stroke`: underline, overline, line-through in `solid` / `double` / `dotted` / `dashed` / `wavy`, painted with the paint (gradients included) of the element that declared them, under the glyphs except line-through; bars follow rotated and on-path glyphs. |
 | `<textPath>` | `href` to a `<path>` or a basic shape (its equivalent path) or the `path` attribute, with the target's own `transform` and `pathLength`; `startOffset` (length or percentage, negative and >100 % allowed); `side="right"`; `method="align"` and `method="stretch"` (outlines bent along the path); the single-closed-subpath wrap-around rule; `x` / `dx` along the path and `dy` along its normal; text after the path continues from its end point. |
 
-Not covered: auto-wrapped text (`inline-size`, `shape-inside`),
+`inline-size` (§11.4.1) wraps the text: lines break after white space
+(which hangs) and between characters of the scripts written without
+spaces, stack by `line-height`, and are anchored one by one; only the
+first `x` / `y` of the `<text>` positions them.
+
+Not covered: text in a shape (`shape-inside` / `shape-subtract`),
 `textPath` `spacing="auto"`, `font-stretch` / `font-size-adjust`,
 `text-decoration-thickness` / `text-underline-position`, and colour
 bitmap glyphs (the scene graph has no image node; layered colour glyphs
@@ -415,6 +420,10 @@ keep their own colours under a plain fill).
   inherited `color` property; `opacity` is per element (not inherited).
   The outermost `<svg>` takes part in the cascade like any element, so
   the icon idiom `<svg fill="none" stroke="currentColor" …>` works.
+  `stroke-width` and the dash values take any CSS unit and percentages
+  (of the viewport diagonal). A nested `<svg>` and an instantiated
+  `<symbol>` clip to their viewport unless `overflow` says otherwise;
+  a `<use>` passes its own CSS-matched style down to the instance.
 * **CSS cascade** — `<style>` blocks and inline `style="..."` resolve
   through a CSS 3 Selectors Level 3 subset (tag / class / id selectors,
   attribute predicates, combinators, structural pseudo-classes) with

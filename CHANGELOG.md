@@ -39,6 +39,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   then to `sans-serif` (for the older `set_font_resolver` too); italic,
   bold and small capitals are synthesised when the face lacks them.
 - `currentColor` resolves to the inherited `color` property.
+- Auto-wrapped text: `inline-size` (SVG 2 §11.4.1) breaks lines at white
+  space and between ideographs, in horizontal and vertical writing
+  modes.
+- `stroke-width`, `stroke-dasharray` and `stroke-dashoffset` accept CSS
+  units and percentages.
 
 ### Fixed
 
@@ -53,6 +58,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `width` / `height` (`12cm` → 12); they are now CSS px at 96 dpi with a
   single missing axis following the `viewBox` ratio, the same canvas
   `info` reports (`ImageInfo::user_width` / `user_height` follow).
+- A nested `<svg>` and an instantiated `<symbol>` did not clip to their
+  viewport, so `preserveAspectRatio="… slice"` never sliced.
+- Percentage lengths resolved against the canvas size in px instead of
+  the `viewBox` size in user units.
+- CSS rules matching a `<use>` element were not inherited by its
+  instance (only its presentation attributes were).
 - `<text transform="…">` was ignored; text `opacity` was multiplied
   into the fill alpha per glyph instead of applied to the element.
 - `xml:space` never reached the cascade (the namespaced attribute name

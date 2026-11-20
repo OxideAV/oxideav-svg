@@ -725,7 +725,21 @@ fn parse_svg_root(
     // (CSS Values L4 §6.1.2). The root's own `font-size` cascade — if
     // any — gets folded in below via `derive_child_ctx` so a
     // `<svg font-size="20">` propagates `1em → 20` to descendants.
-    let root_ctx = ResolveContext::default().with_viewport(width, height);
+    // Percentages resolve against the viewport *in user units* — the
+    // `viewBox` size when there is one (SVG 2 §8.9: "the width of the
+    // SVG viewport in user units"), not the canvas size in px.
+    let (vp_w, vp_h) = match view_box {
+        Some(vb) if vb.width > 0.0 && vb.height > 0.0 => (vb.width, vb.height),
+        // No intrinsic size at all: percentages inside the document
+        // still need a viewport — the 300 × 150 CSS px a replaced
+        // element without intrinsic dimensions gets (CSS 2.1 §10.3.2 /
+        // §10.6.2). The document itself keeps reporting 0 × 0.
+        _ => (
+            if width > 0.0 { width } else { 300.0 },
+            if height > 0.0 { height } else { 150.0 },
+        ),
+    };
+    let root_ctx = ResolveContext::default().with_viewport(vp_w, vp_h);
     let mut ctx = ParseContext::new()
         .with_time(t_seconds)
         .with_resolve_ctx(root_ctx)

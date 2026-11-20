@@ -467,7 +467,15 @@ pub fn write_with_extras(frame: &SvgDocument, extras: &PreservedExtras) -> Vec<u
     // the corresponding child can reference it by `mask=` /
     // `clip-path=` attribute.
     let mut gradients: GradientCollector = GradientCollector::default();
-    let mut clips: ClipPathCollector = ClipPathCollector::default();
+    let mut clips: ClipPathCollector = ClipPathCollector {
+        use_paths: extras.uses.iter().map(|u| u.path.clone()).collect(),
+        source_bound: extras
+            .clip_refs
+            .iter()
+            .map(|b| b.fingerprint.clone())
+            .collect(),
+        ..ClipPathCollector::default()
+    };
     let mut masks: MaskCollector = MaskCollector::default();
     // Round 480 — a layer group the writer collapses back to a
     // `fill="url(#…)"` reference emits none of its expansion, so its
@@ -2340,7 +2348,14 @@ fn walk_collect_defs_node(
                 }
                 return;
             }
-            walk_collect_defs(g, gradients, clips, masks, skip, path_stack)
+            let instance = clips.use_paths.contains(path_stack.as_slice());
+            if instance {
+                clips.in_use += 1;
+            }
+            walk_collect_defs(g, gradients, clips, masks, skip, path_stack);
+            if instance {
+                clips.in_use -= 1;
+            }
         }
         Node::SoftMask {
             mask,
@@ -2369,12 +2384,27 @@ struct ClipPathCollector {
     /// the encoder re-emits that original id everywhere (reference
     /// attribute + verbatim def) instead of the synthesised `clip{N}`.
     id_override: HashMap<String, String>,
+    /// Scene paths of the groups the writer collapses back to a
+    /// `<use>` reference: nothing inside them is emitted.
+    use_paths: std::collections::HashSet<Vec<usize>>,
+    /// Fingerprints of the clips bound to a source `<clipPath>` def.
+    source_bound: std::collections::HashSet<String>,
+    /// Depth inside collapsed `<use>` instances during collection.
+    in_use: usize,
 }
 
 impl ClipPathCollector {
     fn ensure(&mut self, path: &Path) {
         let fp = path_fingerprint(path);
         if self.by_fp.contains_key(&fp) {
+            return;
+        }
+        // Inside an instance that is written as `<use …/>` only a clip
+        // bound to a source `<clipPath>` still needs its def (the
+        // verbatim target references it); a synthesised one — the
+        // viewport clip of an instantiated `<symbol>` — would be an
+        // orphan.
+        if self.in_use > 0 && !self.source_bound.contains(&fp) {
             return;
         }
         let id = format!("clip{}", self.entries.len() + 1);
