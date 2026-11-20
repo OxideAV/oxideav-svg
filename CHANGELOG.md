@@ -43,7 +43,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   real font installed.
 - Auto-wrapped text: `inline-size` (SVG 2 §11.4.1) breaks lines at white
   space and between ideographs, in horizontal and vertical writing
-  modes.
+  modes; `white-space: pre | nowrap` text overflows instead, and
+  `text-overflow: clip | ellipsis` (§11.10.2.10) clips or abbreviates
+  it.
 - `stroke-width`, `stroke-dasharray` and `stroke-dashoffset` accept CSS
   units and percentages.
 

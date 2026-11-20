@@ -57,7 +57,7 @@ use crate::model::{Group, Node, Paint, Path, PathCommand, PathNode, Point, Strok
 use crate::parser::{Element, Node as XmlNode, attr, tag_local};
 use crate::text_style::{
     DECORATION_LINE_THROUGH, DECORATION_OVERLINE, DECORATION_UNDERLINE, Direction, FontStyle,
-    LineHeight, TextOrientation, WritingMode, parse_decoration_lines,
+    LineHeight, TextOrientation, WhiteSpace, WritingMode, parse_decoration_lines,
 };
 
 use path::PathSampler;
@@ -1803,6 +1803,110 @@ impl Layout {
         changed
     }
 
+    /// §11.10.2.10 `text-overflow` against a wrapping area `limit` long
+    /// on the inline axis, placed from the text position by
+    /// `text-anchor`. `ellipsis` (horizontal left-to-right text): on
+    /// each line that overflows, the characters that do not fit beside
+    /// an ellipsis are dropped and the ellipsis drawn in their place.
+    /// Otherwise — `clip`, or a layout the ellipsis rule does not cover
+    /// — the returned rectangle clips the text ("characters may be
+    /// partially rendered").
+    fn apply_text_overflow(&mut self, limit: f32, ellipsis: bool) -> Option<Path> {
+        let vertical = self.vertical();
+        let root = &self.spans[0];
+        let rtl =
+            (root.state.text.direction == Direction::Rtl) != (self.mode == WritingMode::SidewaysLr);
+        let origin = if vertical {
+            root.ys.first().copied().unwrap_or(0.0)
+        } else {
+            root.xs.first().copied().unwrap_or(0.0)
+        };
+        let (lo, hi) = match (root.state.text_anchor, rtl) {
+            (TextAnchor::Start, false) | (TextAnchor::End, true) => (origin, origin + limit),
+            (TextAnchor::Start, true) | (TextAnchor::End, false) => (origin - limit, origin),
+            (TextAnchor::Middle, _) => (origin - limit * 0.5, origin + limit * 0.5),
+        };
+        if ellipsis && !vertical && !rtl {
+            for seg in 0..self.segments.len() {
+                let range = self.segments[seg].clusters.clone();
+                let overflows = self.clusters[range.clone()]
+                    .iter()
+                    .any(|c| c.x.max(c.x + c.adv) > hi + 1e-3);
+                let Some(first) = range.clone().next().filter(|_| overflows) else {
+                    continue;
+                };
+                // The ellipsis in the font of the line's first character.
+                let font = self.clusters[first].font.clone();
+                let size = self.clusters[first].size;
+                let shaped = font.shape("\u{2026}", size, None);
+                let g_start = self.glyphs.len();
+                let mut pen = 0.0f32;
+                for g in &shaped {
+                    self.glyphs.push(GlyphRef {
+                        face_idx: g.face_idx,
+                        glyph_id: g.glyph_id,
+                        x: pen + g.x_offset,
+                        y: g.y_offset,
+                    });
+                    pen += g.x_advance;
+                }
+                // Keep what fits beside the ellipsis; it goes where the
+                // first dropped character started.
+                let mut at = (self.clusters[first].x, self.clusters[first].y);
+                let mut span = self.clusters[first].span;
+                let mut kept_end = f32::NEG_INFINITY;
+                for c in &mut self.clusters[range] {
+                    let end = c.x.max(c.x + c.adv);
+                    if end + pen <= hi + 1e-3 && c.angle == 0.0 {
+                        if end > kept_end {
+                            kept_end = end;
+                            at = (end, c.y);
+                            span = c.span;
+                        }
+                    } else {
+                        c.hidden = true;
+                    }
+                }
+                self.clusters.push(Cluster {
+                    first: 0,
+                    end: 0,
+                    span,
+                    font,
+                    size,
+                    glyphs: g_start..self.glyphs.len(),
+                    natural: pen,
+                    adv: pen,
+                    orient: Orient::Horizontal,
+                    seg,
+                    tab: false,
+                    inline: at.0,
+                    perp: at.1,
+                    x: at.0,
+                    y: at.1,
+                    angle: 0.0,
+                    scale: 1.0,
+                    hidden: false,
+                    chunk: false,
+                    warp: None,
+                });
+            }
+            return None;
+        }
+        const FAR: f32 = 1.0e7;
+        let corners = if vertical {
+            [(-FAR, lo), (FAR, lo), (FAR, hi), (-FAR, hi)]
+        } else {
+            [(lo, -FAR), (hi, -FAR), (hi, FAR), (lo, FAR)]
+        };
+        let mut clip = Path::new();
+        clip.move_to(Point::new(corners[0].0, corners[0].1));
+        for (x, y) in &corners[1..] {
+            clip.line_to(Point::new(*x, *y));
+        }
+        clip.close();
+        Some(clip)
+    }
+
     /// The cluster index range whose characters lie in `[first, last]`.
     fn clusters_in(&self, first: usize, last: usize) -> std::ops::Range<usize> {
         let lo = self.clusters.partition_point(|c| c.first < first);
@@ -2780,7 +2884,24 @@ pub(crate) fn parse_text_element_ctx(
     // §11.4.1 auto-wrapped text: only the first `x` / `y` of the
     // `<text>` positions the content (§11.7); every other positioning
     // attribute is ignored.
-    let wrap = inline_size.filter(|_| layout.spans.iter().all(|s| s.text_path.is_none()));
+    let area = inline_size.filter(|_| layout.spans.iter().all(|s| s.text_path.is_none()));
+    // `white-space: pre | nowrap` never wraps: the text overflows the
+    // area and `text-overflow` decides what is shown (§11.10.2.10).
+    let no_wrap = matches!(
+        state.text.white_space,
+        Some(WhiteSpace::Pre | WhiteSpace::NoWrap)
+    );
+    let wrap = area.filter(|_| !no_wrap);
+    let overflow = area.and_then(|limit| {
+        let v = own_prop(el, &root_decls, "text-overflow")?
+            .trim()
+            .to_ascii_lowercase();
+        match v.as_str() {
+            "clip" => Some((limit, false)),
+            "ellipsis" => Some((limit, true)),
+            _ => None,
+        }
+    });
     if wrap.is_some() {
         for (i, s) in layout.spans.iter_mut().enumerate() {
             let keep = usize::from(i == 0);
@@ -2810,6 +2931,9 @@ pub(crate) fn parse_text_element_ctx(
         }
     }
     layout.position();
+    if let Some((limit, ellipsis)) = overflow {
+        group.clip = layout.apply_text_overflow(limit, ellipsis);
+    }
 
     let bbox = layout.bbox();
     // §11.11 / CSS Text Decoration painting order: underlines and

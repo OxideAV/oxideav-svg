@@ -598,6 +598,69 @@ fn vertical_inline_size_wraps_ideographs_between_characters() {
     }
 }
 
+#[test]
+fn preformatted_text_overflows_instead_of_wrapping() {
+    let a = adv();
+    // SVG 2 §11.10.2.10 example: `white-space: pre` keeps one line.
+    let d = doc(
+        r#"<text x="50" y="35" style="white-space: pre; inline-size: 40px">ABC DEF GHI</text>"#,
+    );
+    let (x, y) = (xs(&d), ys(&d));
+    assert!(y.iter().all(|v| close(*v, 35.0)), "{y:?}");
+    assert!(close(*x.last().unwrap(), 50.0 + 10.0 * a), "{x:?}");
+    assert!(text_group(&d).clip.is_none());
+}
+
+#[test]
+fn text_overflow_clip_clips_to_the_wrapping_area() {
+    let d = doc(
+        r#"<text x="50" y="35" style="white-space: pre; inline-size: 40px; text-overflow: clip">ABC DEF GHI</text>"#,
+    );
+    let clip = text_group(&d).clip.as_ref().expect("clip rectangle");
+    let b = oxideav_svg::bbox::BBox::of_path(clip).unwrap();
+    assert!(
+        close(b.x, 50.0) && close(b.max_x(), 90.0) && b.height > 1.0e6,
+        "{b:?}"
+    );
+    // Every glyph is still there: the clip shows the part that fits.
+    assert_eq!(xs(&d).len(), 9);
+    // The area follows the anchor.
+    let d = doc(
+        r#"<text x="50" y="35" text-anchor="middle" style="white-space: nowrap; inline-size: 40px; text-overflow: clip">ABC DEF GHI</text>"#,
+    );
+    let b = oxideav_svg::bbox::BBox::of_path(text_group(&d).clip.as_ref().unwrap()).unwrap();
+    assert!(close(b.x, 30.0) && close(b.max_x(), 70.0), "{b:?}");
+}
+
+#[test]
+fn text_overflow_ellipsis_replaces_what_does_not_fit() {
+    let a = adv();
+    // Six advances of room: four characters and the ellipsis fit
+    // ("ABC " then the ellipsis), "DEF GHI" does not.
+    let d = doc(&format!(
+        r#"<text x="50" y="35" style="white-space: pre; inline-size: {}px; text-overflow: ellipsis">ABC DEF GHI</text>"#,
+        6.0 * a
+    ));
+    let x = xs(&d);
+    // A, B, C (the space has no outline), a fitting "D", the ellipsis.
+    assert!(x.len() >= 4 && x.len() <= 5, "{x:?}");
+    let last = *x.last().unwrap();
+    assert!(
+        last + a <= 50.0 + 6.0 * a + 0.01,
+        "the ellipsis ends inside the area: {x:?}"
+    );
+    assert!(
+        last > x[x.len() - 2],
+        "the ellipsis follows the kept text: {x:?}"
+    );
+    assert!(text_group(&d).clip.is_none());
+    // Text that fits is left alone.
+    let d = doc(
+        r#"<text x="50" y="35" style="white-space: pre; inline-size: 400px; text-overflow: ellipsis">ABC</text>"#,
+    );
+    assert_eq!(xs(&d).len(), 3);
+}
+
 // ───────────── decorations (§11.11) ─────────────
 
 /// (bounding box, solid fill colour, index among the text's children)

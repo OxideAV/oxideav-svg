@@ -403,7 +403,11 @@ could allocate — it is header-only — and `decode_with` turns that into
 `inline-size` (§11.4.1) wraps the text: lines break after white space
 (which hangs) and between characters of the scripts written without
 spaces, stack by `line-height`, and are anchored one by one; only the
-first `x` / `y` of the `<text>` positions them.
+first `x` / `y` of the `<text>` positions them. Under `white-space:
+pre | nowrap` the text does not wrap and `text-overflow` (§11.10.2.10)
+applies to what leaves the area: `clip` clips it, `ellipsis` replaces
+the characters that do not fit (horizontal left-to-right text; other
+layouts clip).
 
 Not covered: text in a shape (`shape-inside` / `shape-subtract`),
 `textPath` `spacing="auto"`, `font-stretch` / `font-size-adjust`,
