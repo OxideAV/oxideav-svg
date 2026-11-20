@@ -328,7 +328,7 @@ impl SimpleSelector {
         }
         let el = mctx.el;
         if let Some(tag) = &self.tag
-            && !tag_local(&el.name).eq_ignore_ascii_case(tag)
+            && !crate::parser::local_name(&el.name).eq_ignore_ascii_case(tag)
         {
             return false;
         }
@@ -340,9 +340,8 @@ impl SimpleSelector {
         }
         if !self.classes.is_empty() {
             let class_attr = attr(el, "class").unwrap_or("");
-            let have: Vec<&str> = class_attr.split_whitespace().collect();
             for c in &self.classes {
-                if !have.iter().any(|h| *h == c) {
+                if !has_class(class_attr, c) {
                     return false;
                 }
             }
@@ -359,6 +358,19 @@ impl SimpleSelector {
         }
         true
     }
+}
+
+/// `true` when the white-space separated `class` attribute value
+/// contains the class `want` as a whole token. A sole class — the
+/// usual case — is a single comparison.
+fn has_class(class_attr: &str, want: &str) -> bool {
+    if class_attr.len() < want.len() || want.is_empty() {
+        return false;
+    }
+    if class_attr.len() == want.len() {
+        return class_attr == want;
+    }
+    class_attr.split_whitespace().any(|h| h == want)
 }
 
 impl AttrPredicate {
@@ -499,7 +511,16 @@ impl CompoundSelector {
         // Match `sn` against mctx.el; then for each i in (n..0) match
         // s[i-1] against an ancestor / sibling reached via combinator
         // c[i].
-        let (rightmost, lefts) = match self.segments.last() {
+        // The candidate's own simple selector decides most rules: test
+        // it before assembling the left-hand chain.
+        let subject = match self.segments.last() {
+            None => &self.head,
+            Some((_, simple)) => simple,
+        };
+        if !subject.matches(mctx) {
+            return false;
+        }
+        let (_rightmost, lefts) = match self.segments.last() {
             None => (&self.head, Vec::<(&Combinator, &SimpleSelector)>::new()),
             Some(_) => {
                 let mut v: Vec<(&Combinator, &SimpleSelector)> = Vec::new();
@@ -517,9 +538,6 @@ impl CompoundSelector {
                 (rightmost, v)
             }
         };
-        if !rightmost.matches(mctx) {
-            return false;
-        }
         // Walk left-side selectors in order, threading `cursor`.
         let mut cursor: MatchContext<'_> = *mctx;
         for (combo, left) in lefts {
@@ -615,7 +633,7 @@ fn sibling_info(parent: &Element, target: &Element, target_idx: usize) -> (usize
             if elem_idx == target_idx {
                 return (of_type, 0);
             }
-            if tag_local(&e.name).eq_ignore_ascii_case(&target_tag) {
+            if crate::parser::local_name(&e.name).eq_ignore_ascii_case(&target_tag) {
                 of_type += 1;
             }
             elem_idx += 1;
@@ -631,7 +649,9 @@ fn of_type_count(parent: &Element, target: &Element) -> usize {
         .children
         .iter()
         .filter(|c| match c {
-            XmlNode::Element(e) => tag_local(&e.name).eq_ignore_ascii_case(&target_tag),
+            XmlNode::Element(e) => {
+                crate::parser::local_name(&e.name).eq_ignore_ascii_case(&target_tag)
+            }
             _ => false,
         })
         .count()
@@ -1284,6 +1304,40 @@ impl Stylesheet {
         // first, ties broken by source order.
         type SortKey = (u32, u32, u32, usize);
         let mut hits: Vec<(SortKey, &(String, String))> = Vec::new();
+        if self.rules.is_empty() {
+            return Vec::new();
+        }
+        // The element's own keys, read once: most selectors are decided
+        // by their subject's tag / id / class and are rejected here
+        // without walking the selector.
+        let el = mctx.el;
+        let tag = crate::parser::local_name(&el.name);
+        let id = attr(el, "id");
+        let class_attr = attr(el, "class").unwrap_or("");
+        let tokens: Vec<&str> = if class_attr.chars().any(char::is_whitespace) {
+            class_attr.split_whitespace().collect()
+        } else {
+            Vec::new()
+        };
+        let has_class = |c: &str| {
+            if tokens.is_empty() {
+                class_attr == c
+            } else {
+                tokens.contains(&c)
+            }
+        };
+        let may_match = |sel: &CompoundSelector| {
+            let subject = match sel.segments.last() {
+                None => &sel.head,
+                Some((_, simple)) => simple,
+            };
+            subject
+                .tag
+                .as_ref()
+                .is_none_or(|t| tag.eq_ignore_ascii_case(t))
+                && subject.id.as_ref().is_none_or(|i| id == Some(i.as_str()))
+                && subject.classes.iter().all(|c| has_class(c))
+        };
         for (rule_idx, rule) in self.rules.iter().enumerate() {
             // Find the *highest-specificity* selector in the rule that
             // matches — CSS treats each rule's selectors independently,
@@ -1291,7 +1345,7 @@ impl Stylesheet {
             // two specificities for any given element.
             let mut best: Option<(u32, u32, u32)> = None;
             for sel in &rule.selectors {
-                if sel.matches(mctx) {
+                if may_match(sel) && sel.matches(mctx) {
                     let s = sel.specificity();
                     let take = match best {
                         None => true,
@@ -2632,7 +2686,7 @@ fn strip_comments(s: &str) -> String {
 /// children (CDATA-wrapped or bare).
 pub fn collect_stylesheet(root: &Element, sheet: &mut Stylesheet) {
     fn walk(el: &Element, sheet: &mut Stylesheet) {
-        if tag_local(&el.name).eq_ignore_ascii_case("style") {
+        if crate::parser::local_name(&el.name).eq_ignore_ascii_case("style") {
             let mut body = String::new();
             for child in &el.children {
                 if let XmlNode::Text(t) = child {

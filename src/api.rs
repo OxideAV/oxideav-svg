@@ -134,7 +134,7 @@ pub fn info_with(bytes: &[u8], opts: &DecodeOptions) -> Result<ImageInfo> {
     } else {
         bytes
     };
-    let text = crate::parser::decode_utf8_lossy_stripping_bom(raw);
+    let text = crate::parser::decode_utf8_lossy_borrowed(raw);
     let root = parse_root_start_tag(&text)?
         .ok_or_else(|| SvgError::invalid("SVG: missing <svg> root element"))?;
 

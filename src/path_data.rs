@@ -259,17 +259,44 @@ impl<'a> PathDataParser<'a> {
             self.pos += 1;
         }
 
+        // The digits are accumulated as they are scanned: a number of
+        // at most seven significant digits and ten decimals — nearly
+        // every coordinate — is then `mantissa / 10^decimals`, two
+        // exactly representable `f32`s whose single IEEE division is
+        // correctly rounded, i.e. bit-identical to the general
+        // decimal-to-float conversion, without running it.
         let mut saw_digit = false;
+        let mut mantissa: u32 = 0;
+        let mut significant = 0u32;
+        let mut decimals = 0u32;
         while self.pos < self.src.len() && self.src[self.pos].is_ascii_digit() {
+            let d = (self.src[self.pos] - b'0') as u32;
+            if significant > 0 || d != 0 {
+                significant += 1;
+                mantissa = mantissa.wrapping_mul(10).wrapping_add(d);
+            }
             self.pos += 1;
             saw_digit = true;
         }
         if self.pos < self.src.len() && self.src[self.pos] == b'.' {
             self.pos += 1;
             while self.pos < self.src.len() && self.src[self.pos].is_ascii_digit() {
+                let d = (self.src[self.pos] - b'0') as u32;
+                if significant > 0 || d != 0 {
+                    significant += 1;
+                    mantissa = mantissa.wrapping_mul(10).wrapping_add(d);
+                }
+                decimals += 1;
                 self.pos += 1;
                 saw_digit = true;
             }
+        }
+        let has_exponent =
+            self.pos < self.src.len() && (self.src[self.pos] == b'e' || self.src[self.pos] == b'E');
+        if saw_digit && !has_exponent && significant <= 7 && decimals <= 10 {
+            const POW10: [f32; 11] = [1.0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10];
+            let v = mantissa as f32 / POW10[decimals as usize];
+            return Ok(if self.src[start] == b'-' { -v } else { v });
         }
         // Optional exponent.
         if self.pos < self.src.len() && (self.src[self.pos] == b'e' || self.src[self.pos] == b'E') {
@@ -455,5 +482,64 @@ mod tests {
         let cmds = parse_path_data("M1.5 .5 L 1e2 -.25").unwrap();
         assert_eq!(cmds[0], PathCommand::MoveTo(Point::new(1.5, 0.5)));
         assert_eq!(cmds[1], PathCommand::LineTo(Point::new(100.0, -0.25)));
+    }
+}
+
+#[cfg(test)]
+mod fast_number_tests {
+    use super::*;
+
+    /// The short-number path must agree bit for bit with the general
+    /// decimal-to-float conversion.
+    #[test]
+    fn short_decimals_match_the_general_conversion_bit_for_bit() {
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let mut checked = 0u32;
+        for _ in 0..200_000 {
+            let r = next();
+            let int_digits = (r % 8) as usize;
+            let frac_digits = ((r >> 8) % 11) as usize;
+            let mut text = String::new();
+            match (r >> 16) % 3 {
+                0 => text.push('-'),
+                1 => text.push('+'),
+                _ => {}
+            }
+            for _ in 0..int_digits {
+                text.push((b'0' + (next() % 10) as u8) as char);
+            }
+            if frac_digits > 0 || (r >> 20) % 2 == 0 {
+                text.push('.');
+            }
+            for _ in 0..frac_digits {
+                text.push((b'0' + (next() % 10) as u8) as char);
+            }
+            if !text.bytes().any(|b| b.is_ascii_digit()) {
+                continue;
+            }
+            let expected: f32 = text.parse().unwrap();
+            let cmds = parse_path_data(&format!("M{text} 0")).unwrap();
+            let PathCommand::MoveTo(p) = cmds[0] else {
+                panic!("moveto expected");
+            };
+            assert_eq!(p.x.to_bits(), expected.to_bits(), "{text:?}");
+            checked += 1;
+        }
+        assert!(checked > 150_000);
+        // Longer numbers and exponents take the general path.
+        for text in ["123456789.125", "1e-3", "0.30000001192092896", "16777217"] {
+            let expected: f32 = text.parse().unwrap();
+            let cmds = parse_path_data(&format!("M{text} 0")).unwrap();
+            let PathCommand::MoveTo(p) = cmds[0] else {
+                panic!("moveto expected");
+            };
+            assert_eq!(p.x.to_bits(), expected.to_bits(), "{text:?}");
+        }
     }
 }

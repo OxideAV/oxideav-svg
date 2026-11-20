@@ -569,6 +569,11 @@ pub fn evaluate_at(
     sheet: &Stylesheet,
     t_seconds: f32,
 ) -> Vec<(String, String)> {
+    // No `@keyframes` anywhere: nothing can animate, and the selector
+    // matching below would be wasted on every element of the document.
+    if sheet.keyframes.is_empty() {
+        return Vec::new();
+    }
     let decls = declarations_for(mctx, sheet);
     let names_raw = match find_decl(&decls, "animation-name") {
         Some(v) => v,

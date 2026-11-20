@@ -1602,6 +1602,18 @@ impl PaintState {
     /// (`a > b`, `a + b`, `a ~ b`, descendant) and structural pseudo-
     /// classes (`:nth-child`, `:first-of-type`, …) can match.
     pub fn merged_with_mctx(&self, mctx: &MatchContext<'_>, sheet: &Stylesheet) -> Result<Self> {
+        self.merged_with_decls(mctx.el, &declarations_for(mctx, sheet))
+    }
+
+    /// [`Self::merged_with_mctx`] with the element's effective
+    /// declaration list ([`declarations_for`]) already in hand, so one
+    /// selector-matching pass serves every consumer of an element's
+    /// cascade.
+    pub(crate) fn merged_with_decls(
+        &self,
+        el: &Element,
+        decls: &[(String, String)],
+    ) -> Result<Self> {
         let mut s = self.clone();
         // Round 118 — `display` is NOT inherited (SVG 1.1 §11.5,
         // Inherited: no). Reset it to the initial `true` before the
@@ -1647,28 +1659,22 @@ impl PaintState {
         // `<g opacity="0.5">` would hand 0.5 to every nested group and
         // the two would multiply.
         s.opacity = 1.0;
-        let el = mctx.el;
         // 1) presentation attributes from `el`. SVG 2 §4.2 (attribute
         //    syntax): a presentation attribute whose value fails to
         //    parse "is assumed to have been specified as the given
-        //    initial value" — it is not a document error. Apply on a
-        //    scratch copy so a failed parse leaves the other fields of
-        //    the partially-applied property untouched.
+        //    initial value" — it is not a document error.
+        //    [`Self::apply_one`] validates before it assigns, so a
+        //    failed value leaves the state untouched.
         for (name, value) in &el.attrs {
-            let mut trial = s.clone();
-            match self.apply_one(&mut trial, name, value) {
-                Ok(()) => s = trial,
-                Err(_) => reset_to_initial(&mut s, name),
+            if Self::apply_one(&mut s, name, value).is_err() {
+                reset_to_initial(&mut s, name);
             }
         }
         // 2) matched CSS rules + inline style — last write wins. A
         //    declaration with an invalid value is ignored (CSS 2.1
         //    §4.1.8, cited by SVG 2 §4.2): the previous value stands.
-        for (name, value) in declarations_for(mctx, sheet) {
-            let mut trial = s.clone();
-            if self.apply_one(&mut trial, &name, &value).is_ok() {
-                s = trial;
-            }
+        for (name, value) in decls {
+            let _ = Self::apply_one(&mut s, name, value);
         }
         Ok(s)
     }
@@ -1676,28 +1682,42 @@ impl PaintState {
     /// Apply one (name, value) presentation property to `s`. Unknown
     /// names are ignored (so `style=""` content like `font-family` doesn't
     /// blow up — it's just silently filed under "not modelled yet").
-    fn apply_one(&self, s: &mut PaintState, name: &str, value: &str) -> Result<()> {
-        let lower = name.to_ascii_lowercase();
-        match lower.as_str() {
+    ///
+    /// Every arm parses and validates the value BEFORE its first
+    /// assignment: an `Err` leaves `s` exactly as it was.
+    fn apply_one(s: &mut PaintState, name: &str, value: &str) -> Result<()> {
+        // Property names are almost always lower case already.
+        let folded;
+        let lower: &str = if name.bytes().any(|b| b.is_ascii_uppercase()) {
+            folded = name.to_ascii_lowercase();
+            &folded
+        } else {
+            name
+        };
+        match lower {
             // `currentColor` (SVG 2 §13.2) is the element's `color`;
             // it keeps following `color` in descendants that inherit
             // the paint.
             "fill" => {
-                s.fill_is_current_color = value.trim().eq_ignore_ascii_case("currentcolor");
-                s.fill = if s.fill_is_current_color {
+                let current = value.trim().eq_ignore_ascii_case("currentcolor");
+                let paint = if current {
                     PaintValue::Color(s.color)
                 } else {
                     parse_paint(value)?
                 };
+                s.fill = paint;
+                s.fill_is_current_color = current;
             }
             "fill-opacity" => s.fill_opacity = parse_opacity(value)?,
             "stroke" => {
-                s.stroke_is_current_color = value.trim().eq_ignore_ascii_case("currentcolor");
-                s.stroke = if s.stroke_is_current_color {
+                let current = value.trim().eq_ignore_ascii_case("currentcolor");
+                let paint = if current {
                     PaintValue::Color(s.color)
                 } else {
                     parse_paint(value)?
                 };
+                s.stroke = paint;
+                s.stroke_is_current_color = current;
             }
             "color" => {
                 if let PaintValue::Color(c) = parse_paint(value)? {
@@ -4152,9 +4172,16 @@ pub fn parse_path_with_css(
     mctx: &MatchContext<'_>,
     sheet: &Stylesheet,
 ) -> Result<Option<Path>> {
-    // Walk the cascade in order — last `d` declaration wins.
-    let mut effective: Option<String> = attr(el, "d").map(|s| s.to_string());
-    for (name, value) in declarations_for(mctx, sheet) {
+    parse_path_with_decls(el, &declarations_for(mctx, sheet))
+}
+
+/// [`parse_path_with_css`] over an already-computed declaration list.
+fn parse_path_with_decls(el: &Element, decls: &[(String, String)]) -> Result<Option<Path>> {
+    // Walk the cascade in order — last `d` declaration wins. The path
+    // data is borrowed, not copied: a map's worth of `d` strings would
+    // otherwise be duplicated just to be parsed.
+    let mut effective: Option<&str> = attr(el, "d");
+    for (name, value) in decls {
         if name == "d" {
             effective = Some(value);
         }
@@ -4163,7 +4190,7 @@ pub fn parse_path_with_css(
         Some(v) => v,
         None => return Ok(None),
     };
-    let stripped = unwrap_d_property(&raw);
+    let stripped = unwrap_d_property(raw);
     if stripped.eq_ignore_ascii_case("none") || stripped.is_empty() {
         return Ok(None);
     }
@@ -4246,7 +4273,7 @@ fn child_sibling_totals(parent_el: &Element) -> (usize, HashMap<String, usize>) 
     for c in &parent_el.children {
         if let XmlNode::Element(e) = c {
             total += 1;
-            let lower = tag_local(&e.name).to_ascii_lowercase();
+            let lower = tag_local(&e.name);
             *tag_totals.entry(lower).or_insert(0) += 1;
         }
     }
@@ -4446,6 +4473,12 @@ fn parse_element_to_node_ctx_inner(
     let mctx_local = MatchContext { el, ..*mctx };
     let mctx = &mctx_local;
     let local = tag_local(&el.name);
+    // One selector-matching pass per element: the declaration list and
+    // the cascaded state it yields serve the `display` test, the
+    // element's own branch, its font-size / `d` lookups and its
+    // viewport clip alike.
+    let decls = declarations_for(mctx, &ctx.stylesheet);
+    let own_state = parent_state.merged_with_decls(el, &decls)?;
     // Round 118 — SVG 1.1 §11.5 `display:none`. The property applies to
     // `svg`, `g`, `switch`, `a`, `foreignObject`, graphics elements
     // (incl. `text`) and `use`. When resolved to `none`, the element
@@ -4464,11 +4497,7 @@ fn parse_element_to_node_ctx_inner(
     // subtree still drops, matching how a direct render would behave.
     if display_applies(&local) {
         let exempt = std::mem::take(&mut ctx.use_instance_root_pending);
-        if !exempt
-            && !parent_state
-                .merged_with_mctx(mctx, &ctx.stylesheet)?
-                .display
-        {
+        if !exempt && !own_state.display {
             return Ok(None);
         }
     } else {
@@ -4480,13 +4509,13 @@ fn parse_element_to_node_ctx_inner(
     }
     let node_opt = match local.as_str() {
         "g" => {
-            let state = parent_state.merged_with_mctx(mctx, &ctx.stylesheet)?;
+            let state = own_state;
             // Round 19 — push the `<g>`'s `font-size` cascade into a
             // child resolve context so descendants resolve `em` /
             // `rem` against the group's font-size, not the outer
             // viewport's. Restored after this branch returns.
             let saved_ctx = ctx.resolve_ctx;
-            ctx.resolve_ctx = derive_child_ctx(el, mctx, &ctx.stylesheet, &saved_ctx);
+            ctx.resolve_ctx = derive_child_ctx_decls(el, &decls, &saved_ctx);
             // Round 205 — capture any `paint-order=` carried on the
             // `<g>` itself so the round-trip preserves the attribute
             // on the same emit site. A `<g paint-order="stroke">`
@@ -4592,7 +4621,7 @@ fn parse_element_to_node_ctx_inner(
             let mut tag_seen: HashMap<String, usize> = HashMap::new();
             for child in &el.children {
                 if let XmlNode::Element(c) = child {
-                    let lower = tag_local(&c.name).to_ascii_lowercase();
+                    let lower = tag_local(&c.name);
                     let of_idx = *tag_seen.entry(lower.clone()).or_insert(0);
                     *tag_seen.get_mut(&lower).unwrap() += 1;
                     let of_count = *tag_totals.get(&lower).unwrap_or(&0);
@@ -4665,9 +4694,9 @@ fn parse_element_to_node_ctx_inner(
         // link too (the outer wins navigationally, but both groups
         // round-trip).
         "a" => {
-            let state = parent_state.merged_with_mctx(mctx, &ctx.stylesheet)?;
+            let state = own_state;
             let saved_ctx = ctx.resolve_ctx;
-            ctx.resolve_ctx = derive_child_ctx(el, mctx, &ctx.stylesheet, &saved_ctx);
+            ctx.resolve_ctx = derive_child_ctx_decls(el, &decls, &saved_ctx);
             let transform = match attr(el, "transform") {
                 Some(v) => transform_or_initial(v),
                 None => Transform2D::identity(),
@@ -4684,7 +4713,7 @@ fn parse_element_to_node_ctx_inner(
             let mut tag_seen: HashMap<String, usize> = HashMap::new();
             for child in &el.children {
                 if let XmlNode::Element(c) = child {
-                    let lower = tag_local(&c.name).to_ascii_lowercase();
+                    let lower = tag_local(&c.name);
                     let of_idx = *tag_seen.entry(lower.clone()).or_insert(0);
                     *tag_seen.get_mut(&lower).unwrap() += 1;
                     let of_count = *tag_totals.get(&lower).unwrap_or(&0);
@@ -4718,9 +4747,9 @@ fn parse_element_to_node_ctx_inner(
             // child in a Group carrying the switch's own transform /
             // opacity so authored grouping survives the parse → encode
             // round-trip (mirrors the `<g>` arm).
-            let state = parent_state.merged_with_mctx(mctx, &ctx.stylesheet)?;
+            let state = own_state;
             let saved_ctx = ctx.resolve_ctx;
-            ctx.resolve_ctx = derive_child_ctx(el, mctx, &ctx.stylesheet, &saved_ctx);
+            ctx.resolve_ctx = derive_child_ctx_decls(el, &decls, &saved_ctx);
             let transform = match attr(el, "transform") {
                 Some(v) => transform_or_initial(v),
                 None => Transform2D::identity(),
@@ -4737,7 +4766,7 @@ fn parse_element_to_node_ctx_inner(
             let mut tag_seen: HashMap<String, usize> = HashMap::new();
             for child in &el.children {
                 if let XmlNode::Element(c) = child {
-                    let lower = tag_local(&c.name).to_ascii_lowercase();
+                    let lower = tag_local(&c.name);
                     let of_idx = *tag_seen.entry(lower.clone()).or_insert(0);
                     *tag_seen.get_mut(&lower).unwrap() += 1;
                     let of_count = *tag_totals.get(&lower).unwrap_or(&0);
@@ -4804,7 +4833,7 @@ fn parse_element_to_node_ctx_inner(
         // §7.10). When there is no `viewBox` the viewport transform is
         // the identity and only the `x`/`y` placement applies.
         "svg" => {
-            let state = parent_state.merged_with_mctx(mctx, &ctx.stylesheet)?;
+            let state = own_state;
             // §8.2: `x` / `y` default to 0; `width` / `height` default
             // to `100%` (the full parent viewport). Resolve percentages
             // against the *parent* viewport axes that are live on the
@@ -4866,13 +4895,7 @@ fn parse_element_to_node_ctx_inner(
                     // says `overflow: visible` (§8.2: the user-agent
                     // style sheet sets `overflow: hidden` on it) — what
                     // makes `preserveAspectRatio="… slice"` slice.
-                    clip: viewport_clip(
-                        el,
-                        &declarations_for(mctx, &ctx.stylesheet),
-                        &viewport_t,
-                        width,
-                        height,
-                    ),
+                    clip: viewport_clip(el, &decls, &viewport_t, width, height),
                     children: Vec::new(),
                     cache_key: None,
                 };
@@ -4881,7 +4904,7 @@ fn parse_element_to_node_ctx_inner(
                 let mut tag_seen: HashMap<String, usize> = HashMap::new();
                 for child in &el.children {
                     if let XmlNode::Element(c) = child {
-                        let lower = tag_local(&c.name).to_ascii_lowercase();
+                        let lower = tag_local(&c.name);
                         let of_idx = *tag_seen.entry(lower.clone()).or_insert(0);
                         *tag_seen.get_mut(&lower).unwrap() += 1;
                         let of_count = *tag_totals.get(&lower).unwrap_or(&0);
@@ -4976,12 +4999,12 @@ fn parse_element_to_node_ctx_inner(
         // x / y / transform / width / height. See `parse_use_element`.
         "use" => parse_use_element(el, parent_state, ctx, mctx)?,
         "rect" | "circle" | "ellipse" | "line" | "polyline" | "polygon" | "path" => {
-            let mut state = parent_state.merged_with_mctx(mctx, &ctx.stylesheet)?;
+            let mut state = own_state;
             // Round 19 — derive the per-element resolve context: any
             // `font-size: …` cascade on this shape applies to its own
             // `em`/`rem` resolution. The viewport / root font-size /
             // viewport axes inherit from the parent unchanged.
-            let elem_ctx = derive_child_ctx(el, mctx, &ctx.stylesheet, &ctx.resolve_ctx);
+            let elem_ctx = derive_child_ctx_decls(el, &decls, &ctx.resolve_ctx);
             state.resolve_relative_lengths(&elem_ctx);
             let path_opt = match local.as_str() {
                 "rect" => parse_rect(el, &elem_ctx)?,
@@ -4993,7 +5016,7 @@ fn parse_element_to_node_ctx_inner(
                 // Round 6: the SVG 2 `d` property allows CSS to set the
                 // path data, which overrides the `d` attribute via the
                 // normal cascade. `parse_path_with_css` honours that.
-                "path" => parse_path_with_css(el, mctx, &ctx.stylesheet)?,
+                "path" => parse_path_with_decls(el, &decls)?,
                 _ => unreachable!(),
             };
             let path = match path_opt {
@@ -5023,7 +5046,15 @@ fn parse_element_to_node_ctx_inner(
             // the same space `path` is expressed in, before the
             // element's `transform`), so `fill` / `stroke` resolve per
             // shape rather than per gradient id.
-            let bbox = BBox::of_path(&path);
+            // Only a paint-server reference needs the box; a document
+            // of plainly coloured paths never computes one.
+            let bbox = if matches!(state.fill, PaintValue::Reference { .. })
+                || matches!(state.stroke, PaintValue::Reference { .. })
+            {
+                BBox::of_path(&path)
+            } else {
+                None
+            };
             let fill_sp = if hidden {
                 ShapePaint::None
             } else {
@@ -5199,7 +5230,7 @@ fn parse_element_to_node_ctx_inner(
         }
         #[cfg(feature = "text")]
         "text" => {
-            let state = parent_state.merged_with_mctx(mctx, &ctx.stylesheet)?;
+            let state = own_state;
             // Round 228 — SVG 2 §13.10.3 `text-rendering` round-trip
             // capture. Mirrors the round-221 `shape-rendering` flow on
             // the shape branch: the cascade has already resolved the
@@ -5229,7 +5260,7 @@ fn parse_element_to_node_ctx_inner(
         // keeps the markup byte-exactly.
         #[cfg(not(feature = "text"))]
         "text" => {
-            let _state = parent_state.merged_with_mctx(mctx, &ctx.stylesheet)?;
+            let _state = own_state;
             ctx.pending_text_rendering = capture_text_rendering_attr(el);
             Some(Node::Group(Group::default()))
         }
@@ -5262,7 +5293,7 @@ fn parse_element_to_node_ctx_inner(
     // unresolved / cyclic / external reference returned `None` above
     // and short-circuited before reaching here, so no binding is
     // recorded for those — they round-trip via the absence of a node).
-    if tag_local(&el.name) == "use"
+    if local == "use"
         && let Some(b) = parse_use_binding(el)
     {
         ctx.record_use(b);
@@ -5275,7 +5306,7 @@ fn parse_element_to_node_ctx_inner(
     // short-circuited before reaching here, so no binding is recorded;
     // it round-trips via the absence of a node — matching the empty
     // render).
-    if tag_local(&el.name) == "switch" {
+    if local == "switch" {
         ctx.record_switch(el.clone());
     }
     // Round 449 — SVG 2 §11.2: record the verbatim `<text>` at the
@@ -5286,7 +5317,7 @@ fn parse_element_to_node_ctx_inner(
     // produced a node — the text branch always yields a group (empty
     // when no font resolver is installed), so every parsed `<text>`
     // gains write-side fidelity.
-    if tag_local(&el.name) == "text" {
+    if local == "text" {
         ctx.record_text(el.clone());
     }
     // Round 449 — SMIL Animation §3.1: record this element's direct
@@ -5299,7 +5330,6 @@ fn parse_element_to_node_ctx_inner(
     // place, and recording here too would double-count the fragment
     // suppression the encoder performs.
     {
-        let local = tag_local(&el.name);
         if local != "text" && local != "switch" {
             ctx.record_anim_targets(el);
         }
@@ -5359,7 +5389,6 @@ fn parse_element_to_node_ctx_inner(
     // flattened form. Skipped inside `<use>` instantiation (the
     // collapsed instance never emits).
     if ctx.track_id_paths && ctx.use_stack.is_empty() {
-        let local = tag_local(&el.name);
         let geom_names: Option<&[&str]> = match local.as_str() {
             "rect" => Some(&["x", "y", "width", "height", "rx", "ry"]),
             "circle" => Some(&["cx", "cy", "r"]),
@@ -7130,24 +7159,33 @@ pub fn derive_child_ctx(
     sheet: &Stylesheet,
     parent: &ResolveContext,
 ) -> ResolveContext {
+    derive_child_ctx_decls(el, &declarations_for(mctx, sheet), parent)
+}
+
+/// [`derive_child_ctx`] over an already-computed declaration list.
+pub(crate) fn derive_child_ctx_decls(
+    el: &Element,
+    decls: &[(String, String)],
+    parent: &ResolveContext,
+) -> ResolveContext {
     // Walk the cascade — last `font-size` declaration wins. Inline
     // `font-size="…"` presentation attrs lose to CSS rules + inline
     // style (per the round-4 cascade), so check attrs first then CSS.
-    let mut effective: Option<String> = None;
-    for (name, _) in &el.attrs {
+    let mut effective: Option<&str> = None;
+    for (name, value) in &el.attrs {
         if name.eq_ignore_ascii_case("font-size") {
-            effective = attr(el, name).map(|s| s.to_string());
+            effective = Some(value);
         }
     }
-    for (name, value) in declarations_for(mctx, sheet) {
+    for (name, value) in decls {
         if name.eq_ignore_ascii_case("font-size") {
             effective = Some(value);
         } else if name.eq_ignore_ascii_case("font")
-            && let Some(size) = crate::text_style::font_shorthand_size(&value)
+            && let Some(size) = crate::text_style::font_shorthand_size(value)
         {
             // CSS `font` shorthand carries the size as its one
             // mandatory component.
-            effective = Some(size.to_string());
+            effective = Some(size);
         }
     }
     let raw = match effective {

@@ -25,8 +25,7 @@ use crate::element::{
 use crate::filter::{MeetOrSlice, PreserveAspectRatio, PreserveAspectRatioAlign};
 use crate::length::ResolveContext;
 use crate::parser::{
-    Element, Node as XmlNode, attr, decode_utf8_lossy_stripping_bom, inflate_gzip_capped, is_gzip,
-    parse_xml_with_limits, tag_local,
+    Element, Node as XmlNode, attr, inflate_gzip_capped, is_gzip, parse_xml_with_limits, tag_local,
 };
 use crate::preserved::{
     AnimTargetBinding, AnimationFragment, ClipRuleBinding, ColorInterpolationBinding,
@@ -131,7 +130,7 @@ pub(crate) fn parse_document_xml(bytes: &[u8], opts: &DecodeOptions) -> Result<V
     } else {
         bytes
     };
-    let text = decode_utf8_lossy_stripping_bom(raw);
+    let text = crate::parser::decode_utf8_lossy_borrowed(raw);
     parse_xml_with_limits(&text, &opts.xml_limits())
 }
 
@@ -844,7 +843,7 @@ fn parse_svg_root(
     let mut tag_seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for child in &svg.children {
         if let XmlNode::Element(c) = child {
-            let lower = tag_local(&c.name).to_ascii_lowercase();
+            let lower = tag_local(&c.name);
             let of_idx = *tag_seen.entry(lower.clone()).or_insert(0);
             *tag_seen.get_mut(&lower).unwrap() += 1;
             let of_count = *tag_totals.get(&lower).unwrap_or(&0);
@@ -1116,7 +1115,7 @@ fn count_element_children(parent: &Element) -> (usize, std::collections::HashMap
     for c in &parent.children {
         if let XmlNode::Element(e) = c {
             total += 1;
-            let lower = tag_local(&e.name).to_ascii_lowercase();
+            let lower = tag_local(&e.name);
             *tag_totals.entry(lower).or_insert(0) += 1;
         }
     }

@@ -106,6 +106,7 @@ impl XmlLimits {
 /// [`parse_xml`] with explicit [`XmlLimits`].
 pub fn parse_xml_with_limits(src: &str, limits: &XmlLimits) -> Result<Vec<Node>> {
     let mut p = XmlParser {
+        text: src,
         src: src.as_bytes(),
         pos: 0,
         limits: *limits,
@@ -132,6 +133,7 @@ pub fn parse_xml_with_limits(src: &str, limits: &XmlLimits) -> Result<Vec<Node>>
 /// before the end of input; `Err` only for malformed tag syntax.
 pub fn parse_root_start_tag(src: &str) -> Result<Option<Element>> {
     let mut p = XmlParser {
+        text: src,
         src: src.as_bytes(),
         pos: 0,
         limits: XmlLimits::default(),
@@ -190,7 +192,10 @@ pub fn parse_root_start_tag(src: &str) -> Result<Option<Element>> {
         {
             p.pos += 1;
         }
-        let name = std::str::from_utf8(&p.src[name_start..p.pos])
+        let name = p
+            .text
+            .get(name_start..p.pos)
+            .ok_or(())
             .map_err(|_| Error::invalid("XML: bad UTF-8 in tag name"))?
             .to_string();
         if name.is_empty() {
@@ -227,6 +232,10 @@ pub fn parse_root_start_tag(src: &str) -> Result<Option<Element>> {
 pub const MAX_XML_DEPTH: usize = 128;
 
 struct XmlParser<'a> {
+    /// The document; `src` is the same bytes. Slices are taken from
+    /// `text` (a boundary check) instead of re-validating UTF-8 per
+    /// name / value / text node.
+    text: &'a str,
     src: &'a [u8],
     pos: usize,
     limits: XmlLimits,
@@ -278,7 +287,10 @@ impl<'a> XmlParser<'a> {
             self.pos += 1;
         }
         if self.pos > start {
-            let raw = std::str::from_utf8(&self.src[start..self.pos])
+            let raw = self
+                .text
+                .get(start..self.pos)
+                .ok_or(())
                 .map_err(|_| Error::invalid("XML: bad UTF-8 in text"))?;
             let decoded = decode_entities(raw);
             // Whitespace-only runs are kept (significant inside <text>),
@@ -299,7 +311,10 @@ impl<'a> XmlParser<'a> {
         if self.src[self.pos..].starts_with(b"<![CDATA[") {
             let data_start = self.pos + b"<![CDATA[".len();
             let end = find_seq(self.src, data_start, b"]]>").unwrap_or(self.src.len());
-            let raw = std::str::from_utf8(&self.src[data_start..end])
+            let raw = self
+                .text
+                .get(data_start..end)
+                .ok_or(())
                 .map_err(|_| Error::invalid("XML: bad UTF-8 in CDATA"))?;
             self.pos = end + 3;
             return Ok(Some(Node::Text(raw.to_string())));
@@ -343,7 +358,10 @@ impl<'a> XmlParser<'a> {
         {
             self.pos += 1;
         }
-        let name = std::str::from_utf8(&self.src[name_start..self.pos])
+        let name = self
+            .text
+            .get(name_start..self.pos)
+            .ok_or(())
             .map_err(|_| Error::invalid("XML: bad UTF-8 in tag name"))?
             .to_string();
         if name.is_empty() {
@@ -408,7 +426,10 @@ impl<'a> XmlParser<'a> {
             {
                 self.pos += 1;
             }
-            let attr_name = std::str::from_utf8(&self.src[attr_name_start..self.pos])
+            let attr_name = self
+                .text
+                .get(attr_name_start..self.pos)
+                .ok_or(())
                 .map_err(|_| Error::invalid("XML: bad UTF-8 in attr name"))?
                 .to_string();
             self.skip_ws();
@@ -449,7 +470,10 @@ impl<'a> XmlParser<'a> {
                 }
                 (start, self.pos)
             };
-            let raw = std::str::from_utf8(&self.src[val_start..val_end])
+            let raw = self
+                .text
+                .get(val_start..val_end)
+                .ok_or(())
                 .map_err(|_| Error::invalid("XML: bad UTF-8 in attr value"))?;
             attrs.push((attr_name, decode_entities(raw)));
             self.skip_ws();
@@ -473,7 +497,10 @@ impl<'a> XmlParser<'a> {
         loop {
             if self.pos + 2 > self.src.len() {
                 // Truncated input — emit whatever we have as text.
-                let raw = std::str::from_utf8(&self.src[start..self.src.len()])
+                let raw = self
+                    .text
+                    .get(start..self.src.len())
+                    .ok_or(())
                     .map_err(|_| Error::invalid("XML: bad UTF-8 in raw-text body"))?;
                 self.pos = self.src.len();
                 return Ok(strip_cdata_wrapper(raw));
@@ -487,11 +514,14 @@ impl<'a> XmlParser<'a> {
                 {
                     q += 1;
                 }
-                if let Ok(close_name) = std::str::from_utf8(&self.src[after_slash..q])
+                if let Ok(close_name) = self.text.get(after_slash..q).ok_or(())
                     && tag_local(close_name) == local_lc
                 {
                     let body_end = self.pos;
-                    let raw = std::str::from_utf8(&self.src[start..body_end])
+                    let raw = self
+                        .text
+                        .get(start..body_end)
+                        .ok_or(())
                         .map_err(|_| Error::invalid("XML: bad UTF-8 in raw-text body"))?;
                     // Advance past `</name ... >`.
                     let close_end = find_seq(self.src, q, b">")
@@ -511,7 +541,10 @@ impl<'a> XmlParser<'a> {
             if self.src[self.pos..].starts_with(b"</") {
                 let tag_end = find_seq(self.src, self.pos, b">")
                     .ok_or_else(|| Error::invalid("XML: truncated close tag"))?;
-                let close_name = std::str::from_utf8(&self.src[self.pos + 2..tag_end])
+                let close_name = self
+                    .text
+                    .get(self.pos + 2..tag_end)
+                    .ok_or(())
                     .map_err(|_| Error::invalid("XML: bad UTF-8 in close tag"))?
                     .trim();
                 self.pos = tag_end + 1;
@@ -596,6 +629,17 @@ pub fn decode_utf8_lossy_stripping_bom(bytes: &[u8]) -> String {
     String::from_utf8_lossy(trimmed).into_owned()
 }
 
+/// [`decode_utf8_lossy_stripping_bom`] without the copy when the input
+/// is already valid UTF-8 (it borrows the bytes).
+pub(crate) fn decode_utf8_lossy_borrowed(bytes: &[u8]) -> std::borrow::Cow<'_, str> {
+    let trimmed = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        &bytes[3..]
+    } else {
+        bytes
+    };
+    String::from_utf8_lossy(trimmed)
+}
+
 /// `true` when `bytes` starts with the RFC 1952 gzip magic (`1f 8b`),
 /// indicating an `.svgz` (gzip-compressed SVG) payload that needs to
 /// be inflated before XML parsing.
@@ -644,6 +688,10 @@ pub fn deflate_gzip(bytes: &[u8]) -> Result<Vec<u8>> {
 /// Anything we don't recognise is left verbatim — keeps the encoder's
 /// round-trip honest when the input contains an unusual entity.
 pub fn decode_entities(s: &str) -> String {
+    // The common case — no reference at all — is a plain copy.
+    if !s.as_bytes().contains(&b'&') {
+        return s.to_owned();
+    }
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
@@ -720,10 +768,33 @@ pub fn tag_local(name: &str) -> String {
 
 /// Look up an attribute by local name (case-insensitive).
 pub fn attr<'a>(el: &'a Element, name: &str) -> Option<&'a str> {
+    let n = name.len();
     el.attrs
         .iter()
-        .find(|(k, _)| tag_local(k).eq_ignore_ascii_case(name))
+        .find(|(k, _)| {
+            // `k` is `name`, or `prefix:name`.
+            let kb = k.as_bytes();
+            match kb.len().checked_sub(n) {
+                Some(0) => k.eq_ignore_ascii_case(name),
+                Some(at) => {
+                    kb[at - 1] == b':'
+                        && kb[at..].eq_ignore_ascii_case(name.as_bytes())
+                        && !kb[at..].contains(&b':')
+                }
+                None => false,
+            }
+        })
         .map(|(_, v)| v.as_str())
+}
+
+/// The local part of a qualified name (`xlink:href` → `href`), as
+/// written — no allocation, no case folding. Compare with
+/// `eq_ignore_ascii_case`; [`tag_local`] is the owned, lower-cased form.
+pub fn local_name(name: &str) -> &str {
+    match name.rfind(':') {
+        Some(i) => &name[i + 1..],
+        None => name,
+    }
 }
 
 /// Escape a string for use as XML text content.

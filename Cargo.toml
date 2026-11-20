@@ -12,7 +12,7 @@ readme = "README.md"
 keywords = ["multimedia", "image", "svg", "vector", "pure-rust"]
 categories = ["multimedia::encoding", "multimedia::images"]
 # crates.io 10 MiB package cap: fixtures and fuzz corpora stay out.
-exclude = ["/tests", "/fuzz"]
+exclude = ["/tests", "/fuzz", "/benches"]
 
 [features]
 default = ["registry", "text"]
@@ -50,3 +50,9 @@ log = "0.4"
 # decoding. `STANDARD` engine implements RFC 4648 §4 — no padding
 # tolerance is acceptable for the data-URI subset.
 base64 = { version = "0.22", default-features = false, features = ["std"] }
+
+# Dependency-free pipeline benchmark (parse → cascade → layout →
+# hand-off, and the filter evaluators at 1× / 4×); see the file header.
+[[bench]]
+name = "pipeline"
+harness = false
