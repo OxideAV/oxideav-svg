@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0](https://github.com/OxideAV/oxideav-svg/compare/v0.2.0...v0.3.0) - 2026-11-20
+
+### Other
+
+- textLength="0" with spacingAndGlyphs keeps finite transforms; fuzz wrapper for degenerate text lengths
+- conditional processing attributes on text spans
+- oxideav-scribe requirement raised to the 0.1.10 the text layout needs (shape_with_features, bidi, feature queries)
+- text fuzz target also drives text-overflow
+- text-overflow clip / ellipsis; white-space pre | nowrap text does not wrap at inline-size
+- README performance table (before -> after), text fuzz target and sweep findings; CHANGELOG
+- caller-granted thread budget for feGaussianBlur (evaluate_filter_graph_threads / gaussian_blur_edge_threads)
+- filter evaluators — box blur by rows into two swapped buffers, separable morphology, tabulated 8-bit decode, shared graph results
+- pipeline benchmark; one cascade pass per element, allocation-free attribute and selector matching, XML slices without re-validation, exact short-decimal parser
+- text fuzz target; writer fixed point for clips inside mask content and empty stroke-dasharray
+- inline-size wrapping, viewport clips on nested <svg> / <symbol>, stroke-width units, viewBox percentage basis, <use> CSS inheritance, :target
+- font-resolution count test isolated from parallel tests
+- the root <svg> takes part in the cascade, opacity is not inherited, currentColor follows color, root size in CSS px
+- text chapter layout engine (SVG 2 §11.5) — paint servers on text, white-space, bidi, vertical writing, baselines, decorations, textPath side / stretch / closed paths
+- feTurbulence table init without index-only loops (clippy 1.100 needless_range_loop)
+- API hygiene: #[non_exhaustive] growable types, #[doc(hidden)] internals
+
 ### Added
 
 - Paint servers on text: `fill` and `stroke` of `<text>`, `<tspan>` and
