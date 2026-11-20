@@ -22,6 +22,7 @@ const WRAPPERS: &[&str] = &[
     r#"style="inline-size: 60px; font: italic bold 9px serif" xml:space="preserve""#,
     r#"dominant-baseline="middle" baseline-shift="super" font-variant="small-caps""#,
     r#"x="5" y="9" style="white-space: pre; inline-size: 30px; text-overflow: ellipsis""#,
+    r#"textLength="0" lengthAdjust="spacingAndGlyphs" font-size="0.01" letter-spacing="-9""#,
     r#"text-anchor="end" style="white-space: nowrap; inline-size: 2em; text-overflow: clip; writing-mode: vertical-lr""#,
 ];
 

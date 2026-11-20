@@ -1219,6 +1219,18 @@ struct Cluster {
     warp: Option<(usize, f32)>,
 }
 
+impl Cluster {
+    /// The inline advance before a `spacingAndGlyphs` stretch (a
+    /// `textLength="0"` collapses the scale to zero).
+    fn unscaled_advance(&self) -> f32 {
+        if self.scale > 0.0 {
+            self.adv.abs() / self.scale
+        } else {
+            0.0
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct CharAttr {
     x: Option<f32>,
@@ -2272,7 +2284,7 @@ impl Layout {
     fn glyph_frame(&self, c: &Cluster) -> Transform2D {
         let line = self.line_frame(c);
         let u = &c.font.unit;
-        let width = c.adv.abs() / c.scale;
+        let width = c.unscaled_advance();
         let centre = (u.ascent - u.descent) * c.size * 0.5;
         let local = match c.orient {
             Orient::Horizontal => {
@@ -2315,7 +2327,7 @@ impl Layout {
             _ => BBox::new(
                 0.0,
                 -u.ascent * c.size,
-                (c.adv.abs() / c.scale).max(c.natural),
+                c.unscaled_advance().max(c.natural),
                 (u.ascent + u.descent) * c.size,
             ),
         }

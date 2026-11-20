@@ -280,6 +280,21 @@ fn text_length_on_a_tspan_stretches_it_and_pushes_what_follows() {
 }
 
 #[test]
+fn zero_text_length_stays_finite() {
+    for adjust in ["spacing", "spacingAndGlyphs"] {
+        let d = doc(&format!(
+            r#"<text x="10" y="50" textLength="0" lengthAdjust="{adjust}">ABC</text>"#
+        ));
+        for t in glyphs(&d) {
+            assert!(
+                [t.a, t.b, t.c, t.d, t.e, t.f].iter().all(|v| v.is_finite()),
+                "{adjust}: {t:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn text_length_accepts_units_and_anchors_on_the_adjusted_width() {
     let d = doc(r#"<text x="300" y="50" textLength="50%" text-anchor="end">ABCD</text>"#);
     let x = xs(&d);
