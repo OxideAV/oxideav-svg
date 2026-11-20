@@ -27,6 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shapes, `path=`, `side`, `method="stretch"`, the closed-path
   wrap-around, `pathLength`-scaled `startOffset`, the target's
   `transform`, and continuation from the path's end point.
+- `systemLanguage` / `requiredExtensions` on `<tspan>` / `<textPath>` /
+  `<a>` inside text: a span whose test fails is not laid out.
 - Inherited text properties on every element's cascade
   (`text_style::TextProps` on `PaintState`): `font-family`,
   `font-style`, `font-weight`, `font-variant`, the `font` shorthand,

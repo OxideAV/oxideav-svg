@@ -202,6 +202,27 @@ fn display_none_span_is_neither_rendered_nor_addressable() {
     assert!(close(x[1], 110.0) && close(x[2], 210.0), "{x:?}");
 }
 
+#[test]
+fn conditional_attributes_drop_a_span() {
+    // No user language is configured for a plain `parse`, so a
+    // `systemLanguage` test fails; so does an empty
+    // `requiredExtensions` (§5.7.4).
+    let d = doc(
+        r#"<text x="10" y="50">A<tspan systemLanguage="xx-zz">B</tspan><tspan requiredExtensions="">C</tspan>D</text>"#,
+    );
+    let x = xs(&d);
+    assert_eq!(x.len(), 2);
+    // The dropped spans take no room either.
+    assert!(close(x[1] - x[0], adv()), "{x:?}");
+    let d = oxideav_svg::parse_at_with_languages(
+        br##"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" font-family="Fixture Mono"><text x="10" y="50">A<tspan systemLanguage="fr">B</tspan></text></svg>"##,
+        0.0,
+        &["fr"],
+    )
+    .unwrap();
+    assert_eq!(xs(&d).len(), 2);
+}
+
 // ───────────── positioning (§11.2.2, §11.5) ─────────────
 
 #[test]

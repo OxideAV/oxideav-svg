@@ -860,6 +860,13 @@ impl Collector<'_> {
                     if depth >= crate::element::MAX_RENDER_DEPTH {
                         continue;
                     }
+                    // Conditional processing attributes (SVG 2 §5.7.2)
+                    // apply to text content child elements too: a span
+                    // whose `systemLanguage` / `requiredExtensions` test
+                    // fails is not rendered.
+                    if !crate::conditional::passes_conditional(c, &self.ctx.system_language) {
+                        continue;
+                    }
                     let state = self.spans[span]
                         .state
                         .merged_with_mctx(&cm, &self.ctx.stylesheet)?;
