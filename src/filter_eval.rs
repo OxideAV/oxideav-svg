@@ -219,15 +219,19 @@ impl FilterImage {
             return None;
         }
         let linear = working_space_is_linear(space);
+        // An 8-bit component has 256 possible decoded values: tabulate
+        // them once instead of running the transfer function (a `powf`)
+        // per component.
+        let mut decoded = [0.0f32; 256];
+        for (c, slot) in decoded.iter_mut().enumerate() {
+            let v = c as f32 / 255.0;
+            *slot = if linear { srgb_to_linear(v) } else { v };
+        }
         let mut data = Vec::with_capacity(rgba.len());
         for px in rgba.as_chunks::<4>().0 {
             let a = px[3] as f32 / 255.0;
             for &c in &px[..3] {
-                let mut v = c as f32 / 255.0;
-                if linear {
-                    v = srgb_to_linear(v);
-                }
-                data.push(v * a);
+                data.push(decoded[c as usize] * a);
             }
             data.push(a);
         }
@@ -245,16 +249,28 @@ impl FilterImage {
     pub fn to_rgba8(&self, space: ColorInterpolationFilters) -> Vec<u8> {
         let linear = working_space_is_linear(space);
         let mut out = Vec::with_capacity(self.data.len());
+        // Runs of identical pixels (flat fills, transparent margins)
+        // encode once: the previous pixel's bits are remembered.
+        let mut prev_in = [f32::NAN; 4];
+        let mut prev_out = [0u8; 4];
         for px in self.data.as_chunks::<4>().0 {
+            if px.map(f32::to_bits) == prev_in.map(f32::to_bits) {
+                out.extend_from_slice(&prev_out);
+                continue;
+            }
             let a = px[3];
-            for &c in &px[..3] {
+            let mut enc = [0u8; 4];
+            for (slot, &c) in enc.iter_mut().zip(&px[..3]) {
                 let mut v = if a > 0.0 { c / a } else { 0.0 };
                 if linear {
                     v = linear_to_srgb(v);
                 }
-                out.push((v.clamp(0.0, 1.0) * 255.0).round() as u8);
+                *slot = (v.clamp(0.0, 1.0) * 255.0).round() as u8;
             }
-            out.push((a.clamp(0.0, 1.0) * 255.0).round() as u8);
+            enc[3] = (a.clamp(0.0, 1.0) * 255.0).round() as u8;
+            out.extend_from_slice(&enc);
+            prev_in = *px;
+            prev_out = enc;
         }
         out
     }
@@ -331,35 +347,80 @@ fn edge_sample(c: isize, len: usize, mode: EdgeMode) -> Option<usize> {
 /// out-of-image samples are transparent black; `duplicate` clamps to the
 /// edge pixel and `wrap` reads from the opposite edge, so neither mode
 /// loses alpha mass at the border.
-fn box_blur_axis(
+///
+/// The result is written into a caller-supplied buffer of the same size
+/// (overwritten), so a chain of passes alternates between two buffers
+/// instead of allocating one per pass.
+///
+/// Each output component is the sum of its window's samples added in
+/// ascending tap order, then divided by the window length — the order
+/// is part of the result's bits, so it is fixed. The sums are built a
+/// whole row at a time (`row += shifted row`), which keeps the
+/// accumulator row in cache and lets the additions vectorise.
+fn box_blur_axis_into(
     src: &FilterImage,
+    out: &mut FilterImage,
     lo: isize,
     hi: isize,
     horizontal: bool,
     mode: EdgeMode,
-) -> FilterImage {
+) {
+    let (w, h) = (src.width, src.height);
     let n = (hi - lo + 1) as f32;
-    let mut out = FilterImage::new(src.width, src.height);
-    for y in 0..src.height {
-        for x in 0..src.width {
-            let mut acc = [0.0f32; 4];
+    out.data.fill(0.0);
+    if w == 0 || h == 0 {
+        return;
+    }
+    let stride = w * 4;
+    let add = |dst: &mut [f32], from: &[f32]| {
+        for (d, s) in dst.iter_mut().zip(from) {
+            *d += *s;
+        }
+    };
+    if horizontal {
+        // For `duplicate` / `wrap`, the source column of each output
+        // column under tap `t`.
+        let mut columns: Vec<usize> = Vec::new();
+        for (dst, row) in out
+            .data
+            .chunks_exact_mut(stride)
+            .zip(src.data.chunks_exact(stride))
+        {
             for t in lo..=hi {
-                let (sx, sy) = if horizontal {
-                    (edge_sample(x as isize + t, src.width, mode), Some(y))
-                } else {
-                    (Some(x), edge_sample(y as isize + t, src.height, mode))
-                };
-                if let (Some(sx), Some(sy)) = (sx, sy) {
-                    let p = src.pixel(sx, sy);
-                    for (a, v) in acc.iter_mut().zip(p) {
-                        *a += v;
+                match mode {
+                    EdgeMode::None => {
+                        // Output columns whose sample `x + t` is inside.
+                        let x0 = (-t).clamp(0, w as isize) as usize;
+                        let x1 = (w as isize - t).clamp(0, w as isize) as usize;
+                        if x0 < x1 {
+                            let s0 = (x0 as isize + t) as usize;
+                            add(&mut dst[x0 * 4..x1 * 4], &row[s0 * 4..(s0 + x1 - x0) * 4]);
+                        }
+                    }
+                    EdgeMode::Duplicate | EdgeMode::Wrap => {
+                        columns.clear();
+                        columns.extend(
+                            (0..w).map(|x| edge_sample(x as isize + t, w, mode).unwrap_or(0)),
+                        );
+                        for (px, &sx) in dst.as_chunks_mut::<4>().0.iter_mut().zip(&columns) {
+                            add(px, &row[sx * 4..sx * 4 + 4]);
+                        }
                     }
                 }
             }
-            out.set_pixel(x, y, acc.map(|v| v / n));
+        }
+    } else {
+        for (y, dst) in out.data.chunks_exact_mut(stride).enumerate() {
+            for t in lo..=hi {
+                if let Some(sy) = edge_sample(y as isize + t, h, mode) {
+                    add(dst, &src.data[sy * stride..(sy + 1) * stride]);
+                }
+            }
         }
     }
-    out
+    for v in &mut out.data {
+        *v /= n;
+    }
 }
 
 /// `<feGaussianBlur>` per Filter Effects §9.14, using the spec's
@@ -389,6 +450,12 @@ pub fn gaussian_blur_edge(
     if std_dev_x < 0.0 || std_dev_y < 0.0 {
         return img;
     }
+    // Two buffers, swapped after every pass.
+    let mut scratch = FilterImage::new(src.width, src.height);
+    let mut pass = |img: &mut FilterImage, lo: isize, hi: isize, horizontal: bool| {
+        box_blur_axis_into(img, &mut scratch, lo, hi, horizontal, edge_mode);
+        std::mem::swap(img, &mut scratch);
+    };
     for (s, horizontal) in [(std_dev_x, true), (std_dev_y, false)] {
         let d = box_size(s) as isize;
         if d == 0 {
@@ -397,13 +464,13 @@ pub fn gaussian_blur_edge(
         if d % 2 == 1 {
             let r = (d - 1) / 2;
             for _ in 0..3 {
-                img = box_blur_axis(&img, -r, r, horizontal, edge_mode);
+                pass(&mut img, -r, r, horizontal);
             }
         } else {
             let h = d / 2;
-            img = box_blur_axis(&img, -h, h - 1, horizontal, edge_mode);
-            img = box_blur_axis(&img, -h + 1, h, horizontal, edge_mode);
-            img = box_blur_axis(&img, -h, h, horizontal, edge_mode);
+            pass(&mut img, -h, h - 1, horizontal);
+            pass(&mut img, -h + 1, h, horizontal);
+            pass(&mut img, -h, h, horizontal);
         }
     }
     img
@@ -1227,31 +1294,52 @@ pub fn morphology(
     if rx <= 0 || ry <= 0 {
         return src.clone();
     }
-    let mut out = FilterImage::new(src.width, src.height);
-    let w = src.width as isize;
-    let h = src.height as isize;
-    for y in 0..src.height {
-        for x in 0..src.width {
-            // erode → component-wise minimum (seed +∞);
-            // dilate → component-wise maximum (seed −∞).
-            let mut acc = match operator {
-                MorphologyOperator::Erode => [f32::INFINITY; 4],
-                MorphologyOperator::Dilate => [f32::NEG_INFINITY; 4],
-            };
-            let yi = y as isize;
-            let xi = x as isize;
-            for ky in (yi - ry).max(0)..=(yi + ry).min(h - 1) {
-                for kx in (xi - rx).max(0)..=(xi + rx).min(w - 1) {
-                    let s = src.pixel(kx as usize, ky as usize);
-                    for c in 0..4 {
-                        acc[c] = match operator {
-                            MorphologyOperator::Erode => acc[c].min(s[c]),
-                            MorphologyOperator::Dilate => acc[c].max(s[c]),
-                        };
-                    }
+    // The minimum (maximum) over the kernel rectangle is the minimum
+    // over its rows of the minimum over each row's columns — `min` and
+    // `max` are exact and order-free, so the two 1-D passes give the
+    // rectangle's result bit for bit at `rx + ry` samples per pixel
+    // instead of `rx · ry`. Windows are clamped to the image.
+    let (w, h) = (src.width, src.height);
+    if w == 0 || h == 0 {
+        return src.clone();
+    }
+    let erode = matches!(operator, MorphologyOperator::Erode);
+    let pick = |a: f32, b: f32| if erode { a.min(b) } else { a.max(b) };
+    let seed = if erode {
+        f32::INFINITY
+    } else {
+        f32::NEG_INFINITY
+    };
+    let (rx, ry) = (rx as usize, ry as usize);
+    let stride = w * 4;
+    // Horizontal pass.
+    let mut rows = FilterImage::new(w, h);
+    for (dst, row) in rows
+        .data
+        .chunks_exact_mut(stride.max(1))
+        .zip(src.data.chunks_exact(stride.max(1)))
+    {
+        for (x, px) in dst.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let mut acc = [seed; 4];
+            for s in &row.as_chunks::<4>().0[x.saturating_sub(rx)..=(x + rx).min(w - 1)] {
+                for (a, v) in acc.iter_mut().zip(s) {
+                    *a = pick(*a, *v);
                 }
             }
-            out.set_pixel(x, y, acc);
+            *px = acc;
+        }
+    }
+    // Vertical pass, a row at a time.
+    let mut out = FilterImage::new(w, h);
+    for (y, dst) in out.data.chunks_exact_mut(stride.max(1)).enumerate() {
+        dst.fill(seed);
+        for ky in y.saturating_sub(ry)..=(y + ry).min(h - 1) {
+            for (a, v) in dst
+                .iter_mut()
+                .zip(&rows.data[ky * stride..(ky + 1) * stride])
+            {
+                *a = pick(*a, *v);
+            }
         }
     }
     out
@@ -3042,37 +3130,43 @@ impl FilterSources {
 /// * `SourceAlpha` / `BackgroundAlpha` are the alpha-only derivations of
 ///   their colour counterparts;
 /// * an undefined standard input is transparent black.
-fn resolve_input(
+fn resolve_input<'a>(
     input: &FilterInput,
-    sources: &FilterSources,
-    results: &HashMap<String, Vec<u8>>,
-    last: Option<&Vec<u8>>,
+    sources: &'a FilterSources,
+    results: &'a HashMap<String, std::rc::Rc<Vec<u8>>>,
+    last: Option<&'a std::rc::Rc<Vec<u8>>>,
     width: usize,
     height: usize,
-) -> Vec<u8> {
-    let transparent = || vec![0u8; width * height * 4];
-    let src_graphic = || sources.source_graphic.clone().unwrap_or_else(transparent);
+) -> std::borrow::Cow<'a, [u8]> {
+    use std::borrow::Cow;
+    // An input that already exists as a buffer — a standard input, a
+    // named result, the previous result — is borrowed; only a derived
+    // one (an alpha-only view, the transparent default) is built.
+    let transparent = || Cow::Owned(vec![0u8; width * height * 4]);
+    let or_transparent = |buf: &'a Option<Vec<u8>>| match buf {
+        Some(b) => Cow::Borrowed(b.as_slice()),
+        None => transparent(),
+    };
     match input {
-        FilterInput::SourceGraphic => src_graphic(),
-        FilterInput::SourceAlpha => source_alpha(&src_graphic()),
-        FilterInput::BackgroundImage => {
-            sources.background_image.clone().unwrap_or_else(transparent)
-        }
-        FilterInput::BackgroundAlpha => sources
-            .background_image
-            .as_deref()
-            .map(source_alpha)
-            .unwrap_or_else(transparent),
-        FilterInput::FillPaint => sources.fill_paint.clone().unwrap_or_else(transparent),
-        FilterInput::StrokePaint => sources.stroke_paint.clone().unwrap_or_else(transparent),
-        FilterInput::Reference(name) => results
-            .get(name)
-            .cloned()
-            // §15.7.2: a reference to an unknown result behaves like the
-            // default input — the previous primitive's output, or
-            // SourceGraphic at the head of the chain.
-            .or_else(|| last.cloned())
-            .unwrap_or_else(src_graphic),
+        FilterInput::SourceGraphic => or_transparent(&sources.source_graphic),
+        FilterInput::SourceAlpha => match &sources.source_graphic {
+            Some(b) => Cow::Owned(source_alpha(b)),
+            None => transparent(),
+        },
+        FilterInput::BackgroundImage => or_transparent(&sources.background_image),
+        FilterInput::BackgroundAlpha => match &sources.background_image {
+            Some(b) => Cow::Owned(source_alpha(b)),
+            None => transparent(),
+        },
+        FilterInput::FillPaint => or_transparent(&sources.fill_paint),
+        FilterInput::StrokePaint => or_transparent(&sources.stroke_paint),
+        // §15.7.2: a reference to an unknown result behaves like the
+        // default input — the previous primitive's output, or
+        // SourceGraphic at the head of the chain.
+        FilterInput::Reference(name) => match results.get(name).or(last) {
+            Some(b) => Cow::Borrowed(b.as_slice()),
+            None => or_transparent(&sources.source_graphic),
+        },
     }
 }
 
@@ -3138,8 +3232,10 @@ pub fn evaluate_filter_graph_clipped(
     if graph.primitives.is_empty() {
         return None;
     }
-    let mut results: HashMap<String, Vec<u8>> = HashMap::new();
-    let mut last: Option<Vec<u8>> = None;
+    // Results are shared, not copied: a named result and "the previous
+    // result" are the same buffer.
+    let mut results: HashMap<String, std::rc::Rc<Vec<u8>>> = HashMap::new();
+    let mut last: Option<std::rc::Rc<Vec<u8>>> = None;
 
     for (idx, node) in graph.primitives.iter().enumerate() {
         let resolve = |input: &FilterInput| {
@@ -3190,8 +3286,8 @@ pub fn evaluate_filter_graph_clipped(
                 evaluate_specular_lighting_node(node, &resolve(input), width, height)
             }
             FilterPrimitive::Merge { inputs } => {
-                let bufs: Vec<Vec<u8>> = inputs.iter().map(&resolve).collect();
-                let refs: Vec<&[u8]> = bufs.iter().map(Vec::as_slice).collect();
+                let bufs: Vec<std::borrow::Cow<'_, [u8]>> = inputs.iter().map(&resolve).collect();
+                let refs: Vec<&[u8]> = bufs.iter().map(|b| b.as_ref()).collect();
                 evaluate_merge_node(node, &refs, width, height)
             }
             FilterPrimitive::Turbulence { .. } => {
@@ -3227,13 +3323,15 @@ pub fn evaluate_filter_graph_clipped(
             clip_to_subregion(&mut out, width, height, *rect);
         }
 
+        let out = std::rc::Rc::new(out);
         if let Some(name) = &node.result {
             results.insert(name.clone(), out.clone());
         }
         last = Some(out);
     }
 
-    last
+    drop(results);
+    last.map(|rc| std::rc::Rc::try_unwrap(rc).unwrap_or_else(|shared| (*shared).clone()))
 }
 
 /// Turn-key §9.4 pipeline: resolve every primitive's subregion from
@@ -6265,5 +6363,190 @@ mod tests {
         // Pixel (3,3) is outside → transparent black.
         let last = (3 * 4 + 3) * 4;
         assert_eq!(&out[last..last + 4], [0, 0, 0, 0]);
+    }
+}
+
+/// The straightforward per-pixel forms the optimised evaluators above
+/// must reproduce bit for bit.
+#[cfg(test)]
+mod reference_tests {
+    use super::*;
+
+    fn noise(w: usize, h: usize, seed: u64) -> FilterImage {
+        let mut state = seed | 1;
+        let mut rgba = Vec::with_capacity(w * h * 4);
+        for _ in 0..w * h * 4 {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            // Flat runs and transparent holes as well as noise.
+            let v = match (state >> 40) % 4 {
+                0 => 0,
+                1 => 255,
+                _ => (state >> 16) as u8,
+            };
+            rgba.push(v);
+        }
+        FilterImage::from_rgba8(w, h, &rgba, ColorInterpolationFilters::LinearRgb).unwrap()
+    }
+
+    fn box_blur_axis(
+        src: &FilterImage,
+        lo: isize,
+        hi: isize,
+        horizontal: bool,
+        mode: EdgeMode,
+    ) -> FilterImage {
+        let mut out = FilterImage::new(src.width, src.height);
+        box_blur_axis_into(src, &mut out, lo, hi, horizontal, mode);
+        out
+    }
+
+    fn bits(img: &FilterImage) -> Vec<u32> {
+        img.data.iter().map(|v| v.to_bits()).collect()
+    }
+
+    fn box_blur_reference(
+        src: &FilterImage,
+        lo: isize,
+        hi: isize,
+        horizontal: bool,
+        mode: EdgeMode,
+    ) -> FilterImage {
+        let n = (hi - lo + 1) as f32;
+        let mut out = FilterImage::new(src.width, src.height);
+        for y in 0..src.height {
+            for x in 0..src.width {
+                let mut acc = [0.0f32; 4];
+                for t in lo..=hi {
+                    let (sx, sy) = if horizontal {
+                        (edge_sample(x as isize + t, src.width, mode), Some(y))
+                    } else {
+                        (Some(x), edge_sample(y as isize + t, src.height, mode))
+                    };
+                    if let (Some(sx), Some(sy)) = (sx, sy) {
+                        let p = src.pixel(sx, sy);
+                        for (a, v) in acc.iter_mut().zip(p) {
+                            *a += v;
+                        }
+                    }
+                }
+                out.set_pixel(x, y, acc.map(|v| v / n));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn box_blur_rows_match_the_per_pixel_sum() {
+        for (w, h) in [(1, 1), (7, 5), (33, 17), (4, 40)] {
+            let img = noise(w, h, (w * 131 + h) as u64);
+            for mode in [EdgeMode::None, EdgeMode::Duplicate, EdgeMode::Wrap] {
+                for (lo, hi) in [(0, 0), (-1, 1), (-3, 2), (-2, 3), (-9, 9), (-40, 40)] {
+                    for horizontal in [true, false] {
+                        let fast = box_blur_axis(&img, lo, hi, horizontal, mode);
+                        let slow = box_blur_reference(&img, lo, hi, horizontal, mode);
+                        assert_eq!(
+                            bits(&fast),
+                            bits(&slow),
+                            "{w}x{h} {mode:?} [{lo}, {hi}] horizontal={horizontal}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn morphology_reference(
+        src: &FilterImage,
+        operator: MorphologyOperator,
+        rx: isize,
+        ry: isize,
+    ) -> FilterImage {
+        let mut out = FilterImage::new(src.width, src.height);
+        let (w, h) = (src.width as isize, src.height as isize);
+        for y in 0..src.height {
+            for x in 0..src.width {
+                let mut acc = match operator {
+                    MorphologyOperator::Erode => [f32::INFINITY; 4],
+                    MorphologyOperator::Dilate => [f32::NEG_INFINITY; 4],
+                };
+                let (yi, xi) = (y as isize, x as isize);
+                for ky in (yi - ry).max(0)..=(yi + ry).min(h - 1) {
+                    for kx in (xi - rx).max(0)..=(xi + rx).min(w - 1) {
+                        let s = src.pixel(kx as usize, ky as usize);
+                        for c in 0..4 {
+                            acc[c] = match operator {
+                                MorphologyOperator::Erode => acc[c].min(s[c]),
+                                MorphologyOperator::Dilate => acc[c].max(s[c]),
+                            };
+                        }
+                    }
+                }
+                out.set_pixel(x, y, acc);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn separable_morphology_matches_the_rectangle_scan() {
+        for (w, h) in [(1, 1), (9, 6), (31, 20)] {
+            let img = noise(w, h, (w * 977 + h) as u64);
+            for operator in [MorphologyOperator::Erode, MorphologyOperator::Dilate] {
+                for (rx, ry) in [(1, 1), (2, 5), (7, 1), (40, 40)] {
+                    let fast = morphology(&img, operator, rx as f32, ry as f32);
+                    let slow = morphology_reference(&img, operator, rx, ry);
+                    // `min` / `max` may pick either zero of a ±0 tie:
+                    // compare values, which is what encoding consumes.
+                    assert!(
+                        fast.data.iter().zip(&slow.data).all(|(a, b)| a == b),
+                        "{w}x{h} {operator:?} r=({rx}, {ry})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn eight_bit_conversions_match_the_per_component_transfer() {
+        let (w, h) = (64, 16);
+        let img = noise(w, h, 99);
+        for space in [
+            ColorInterpolationFilters::LinearRgb,
+            ColorInterpolationFilters::Srgb,
+        ] {
+            let linear = working_space_is_linear(space);
+            // Encode: every pixel through the transfer function.
+            let mut expected = Vec::new();
+            for px in img.data.as_chunks::<4>().0 {
+                let a = px[3];
+                for &c in &px[..3] {
+                    let mut v = if a > 0.0 { c / a } else { 0.0 };
+                    if linear {
+                        v = linear_to_srgb(v);
+                    }
+                    expected.push((v.clamp(0.0, 1.0) * 255.0).round() as u8);
+                }
+                expected.push((a.clamp(0.0, 1.0) * 255.0).round() as u8);
+            }
+            let encoded = img.to_rgba8(space);
+            assert_eq!(encoded, expected);
+            // Decode: the table against the function.
+            let decoded = FilterImage::from_rgba8(w, h, &encoded, space).unwrap();
+            let mut want = Vec::new();
+            for px in encoded.as_chunks::<4>().0 {
+                let a = px[3] as f32 / 255.0;
+                for &c in &px[..3] {
+                    let mut v = c as f32 / 255.0;
+                    if linear {
+                        v = srgb_to_linear(v);
+                    }
+                    want.push((v * a).to_bits());
+                }
+                want.push(a.to_bits());
+            }
+            assert_eq!(bits(&decoded), want);
+        }
     }
 }
